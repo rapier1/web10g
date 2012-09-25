@@ -287,6 +287,9 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 					  np->opt->opt_nflen);
 
 	tp->rx_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) - sizeof(struct ipv6hdr);
+#ifdef CONFIG_TCP_ESTATS
+	tp->rx_opt.rec_mss = 0;
+#endif
 
 	inet->dport = usin->sin6_port;
 
@@ -300,6 +303,9 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 							     np->daddr.s6_addr32,
 							     inet->sport,
 							     inet->dport);
+
+	TCP_ESTATS_VAR_SET(tp, SndInitial, tp->write_seq);
+	TCP_ESTATS_VAR_SET(tp, SndMax, tp->write_seq);
 
 	err = tcp_connect(sk);
 	if (err)
@@ -1202,7 +1208,7 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) - sizeof(struct ipv6hdr);
 	tmp_opt.user_mss = tp->rx_opt.user_mss;
-
+	tmp_opt.rec_mss = 0;
 	tcp_parse_options(skb, &tmp_opt, 0);
 
 	if (want_cookie && !tmp_opt.saw_tstamp)
@@ -1362,6 +1368,8 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	newsk = tcp_create_openreq_child(sk, req, skb);
 	if (newsk == NULL)
 		goto out;
+
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV6);
 
 	/*
 	 * No need to charge this sock to the relevant IPv6 refcnt debug socks
@@ -1671,6 +1679,7 @@ process:
 	skb->dev = NULL;
 
 	bh_lock_sock_nested(sk);
+	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 #ifdef CONFIG_NET_DMA
@@ -1687,6 +1696,8 @@ process:
 		}
 	} else
 		sk_add_backlog(sk, skb);
+
+	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
 	bh_unlock_sock(sk);
 
 	sock_put(sk);
@@ -1863,6 +1874,7 @@ static int tcp_v6_init_sock(struct sock *sk)
 #ifdef CONFIG_TCP_MD5SIG
 	tp->af_specific = &tcp_sock_ipv6_specific;
 #endif
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV6);
 
 	sk->sk_sndbuf = sysctl_tcp_wmem[1];
 	sk->sk_rcvbuf = sysctl_tcp_rmem[1];

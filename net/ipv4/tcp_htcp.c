@@ -235,9 +235,10 @@ static void htcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	if (!tcp_is_cwnd_limited(sk, in_flight))
 		return;
 
-	if (tp->snd_cwnd <= tp->snd_ssthresh)
+	if (tp->snd_cwnd <= tp->snd_ssthresh) {
 		tcp_slow_start(tp);
-	else {
+        	TCP_ESTATS_VAR_INC(tp, SlowStart);
+	} else {
 		/* In dangerous area, increase slowly.
 		 * In theory this is tp->snd_cwnd += alpha / tp->snd_cwnd
 		 */
@@ -250,6 +251,7 @@ static void htcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			tp->snd_cwnd_cnt += ca->pkts_acked;
 
 		ca->pkts_acked = 1;
+        	TCP_ESTATS_VAR_INC(tp, CongAvoid);
 	}
 }
 

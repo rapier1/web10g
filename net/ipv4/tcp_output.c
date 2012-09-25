@@ -67,6 +67,7 @@ static void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 
 	tcp_advance_send_head(sk, skb);
 	tp->snd_nxt = TCP_SKB_CB(skb)->end_seq;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_snd_nxt(tp));
 
 	/* Don't override Nagle indefinately with F-RTO */
 	if (tp->frto_counter == 2)
@@ -260,6 +261,7 @@ static u16 tcp_select_window(struct sock *sk)
 	}
 	tp->rcv_wnd = new_win;
 	tp->rcv_wup = tp->rcv_nxt;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_rwin_sent(tp));
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
@@ -714,11 +716,26 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
 		TCP_INC_STATS(sock_net(sk), TCP_MIB_OUTSEGS);
 
+	{
+#ifdef CONFIG_TCP_ESTATS
+		int len = skb->len;
+		int pcount = tcp_skb_pcount(skb);
+		__u32 seq = TCP_SKB_CB(skb)->seq;
+		__u32 end_seq = TCP_SKB_CB(skb)->end_seq;
+		int flags = TCP_SKB_CB(skb)->flags;
+#endif
+		TCP_ESTATS_UPDATE(tp, 
+				  tcp_estats_update_segsend(sk, len, 
+							    pcount, seq, 
+							    end_seq, flags));
+	}
+
 	err = icsk->icsk_af_ops->queue_xmit(skb, 0);
 	if (likely(err <= 0))
 		return err;
 
 	tcp_enter_cwr(sk, 1);
+	TCP_ESTATS_VAR_INC(tp, SendStall);
 
 	return net_xmit_eval(err);
 }
@@ -1053,6 +1070,7 @@ unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
 	if (icsk->icsk_mtup.enabled)
 		mss_now = min(mss_now, tcp_mtu_to_mss(sk, icsk->icsk_mtup.search_low));
 	tp->mss_cache = mss_now;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_mss(tp));
 
 	return mss_now;
 }
@@ -1256,11 +1274,13 @@ static unsigned int tcp_snd_test(struct sock *sk, struct sk_buff *skb,
 	tcp_init_tso_segs(sk, skb, cur_mss);
 
 	if (!tcp_nagle_test(tp, skb, cur_mss, nonagle))
-		return 0;
+		return -TCP_ESTATS_SNDLIM_SENDER;
 
 	cwnd_quota = tcp_cwnd_test(tp, skb);
-	if (cwnd_quota && !tcp_snd_wnd_test(tp, skb, cur_mss))
-		cwnd_quota = 0;
+	if (!cwnd_quota)
+		return -TCP_ESTATS_SNDLIM_CWND;
+	if (!tcp_snd_wnd_test(tp, skb, cur_mss))
+		return -TCP_ESTATS_SNDLIM_RWIN;
 
 	return cwnd_quota;
 }
@@ -1551,6 +1571,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	unsigned int tso_segs, sent_pkts;
 	int cwnd_quota;
 	int result;
+	int why = TCP_ESTATS_SNDLIM_NONE;
 
 	sent_pkts = 0;
 
@@ -1571,20 +1592,28 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		BUG_ON(!tso_segs);
 
 		cwnd_quota = tcp_cwnd_test(tp, skb);
-		if (!cwnd_quota)
+		if (!cwnd_quota) {
+			why = TCP_ESTATS_SNDLIM_CWND;
 			break;
+		}
 
-		if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now)))
+		if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
+			why = TCP_ESTATS_SNDLIM_RWIN;
 			break;
+		}
 
 		if (tso_segs == 1) {
 			if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
 						     (tcp_skb_is_last(sk, skb) ?
-						      nonagle : TCP_NAGLE_PUSH))))
+						      nonagle : TCP_NAGLE_PUSH)))) {
+				why = TCP_ESTATS_SNDLIM_SENDER;
 				break;
+			}
 		} else {
-			if (!push_one && tcp_tso_should_defer(sk, skb))
+			if (!push_one && tcp_tso_should_defer(sk, skb)) {
+				why = TCP_ESTATS_SNDLIM_CWND;
 				break;
+			}
 		}
 
 		limit = mss_now;
@@ -1593,13 +1622,17 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 						    cwnd_quota);
 
 		if (skb->len > limit &&
-		    unlikely(tso_fragment(sk, skb, limit, mss_now)))
+		    unlikely(tso_fragment(sk, skb, limit, mss_now))) {
+			why = TCP_ESTATS_SNDLIM_SENDER;
 			break;
+		}
 
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 
-		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
+		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp))) {
+			why = TCP_ESTATS_SNDLIM_SENDER;
 			break;
+		}
 
 		/* Advance the send_head.  This one is sent out.
 		 * This call will increment packets_out.
@@ -1612,6 +1645,10 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		if (push_one)
 			break;
 	}
+
+	if (why == TCP_ESTATS_SNDLIM_NONE)
+		why = TCP_ESTATS_SNDLIM_SENDER;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_sndlim(tp, why));
 
 	if (likely(sent_pkts)) {
 		tcp_cwnd_validate(sk);
@@ -2396,6 +2433,7 @@ int tcp_connect(struct sock *sk)
 	 * in order to make this packet get counted in tcpOutSegs.
 	 */
 	tp->snd_nxt = tp->write_seq;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_snd_nxt(tp));
 	tp->pushed_seq = tp->write_seq;
 	TCP_INC_STATS(sock_net(sk), TCP_MIB_ACTIVEOPENS);
 

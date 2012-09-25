@@ -220,6 +220,9 @@ struct tcp_options_received {
 /*	SACKs data	*/
 	u8	num_sacks;	/* Number of SACK blocks		*/
 	u16	user_mss;  	/* mss requested by user in ioctl */
+#ifdef CONFIG_TCP_ESTATS
+	u16	rec_mss;	/* MSS option received			*/
+#endif
 	u16	mss_clamp;	/* Maximal mss, negotiated at connection setup */
 };
 
@@ -243,6 +246,10 @@ static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)
 {
 	return (struct tcp_request_sock *)req;
 }
+
+#ifdef CONFIG_TCP_ESTATS
+struct tcp_estats;
+#endif
 
 struct tcp_sock {
 	/* inet_connection_sock has to be the first member of tcp_sock */
@@ -405,6 +412,9 @@ struct tcp_sock {
 
 /* TCP MD5 Signature Option information */
 	struct tcp_md5sig_info	*md5sig_info;
+#endif
+#ifdef CONFIG_TCP_ESTATS
+	struct tcp_estats	*tcp_stats;
 #endif
 };
 

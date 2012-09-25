@@ -615,6 +615,12 @@ config DEFAULT_TCP_CONG
 	default "reno" if DEFAULT_RENO
 	default "cubic"
 
+config TCP_ESTATS
+	bool "TCP: Extended TCP statistics (TCP ESTATS) MIB"
+	---help---
+	  Support for the TCP extended statistics MIB, RFC 4898
+	  (see http://www.web10g.org).
+
 config TCP_MD5SIG
 	bool "TCP: MD5 Signature Option support (RFC2385) (EXPERIMENTAL)"
 	depends on EXPERIMENTAL
