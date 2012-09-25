@@ -364,11 +364,14 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		return;
 
 	/* In "safe" area, increase. */
-	if (tp->snd_cwnd <= tp->snd_ssthresh)
+	if (tp->snd_cwnd <= tp->snd_ssthresh) {
 		tcp_slow_start(tp);
+		TCP_ESTATS_VAR_INC(tp, SlowStart);
+		return;
+	}
 
 	/* In dangerous area, increase slowly. */
-	else if (sysctl_tcp_abc) {
+	if (sysctl_tcp_abc) {
 		/* RFC3465: Appropriate Byte Count
 		 * increase once for each full cwnd acked
 		 */
@@ -380,6 +383,7 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	} else {
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd);
 	}
+	TCP_ESTATS_VAR_INC(tp, CongAvoid);
 }
 EXPORT_SYMBOL_GPL(tcp_reno_cong_avoid);
 
