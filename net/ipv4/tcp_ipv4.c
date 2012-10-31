@@ -1763,8 +1763,6 @@ int tcp_v4_tw_remember_stamp(struct inet_timewait_sock *tw)
 		return 1;
 	}
 
-	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4);
-
 	return 0;
 }
 
@@ -1841,6 +1839,8 @@ static int tcp_v4_init_sock(struct sock *sk)
 
 	sk->sk_sndbuf = sysctl_tcp_wmem[1];
 	sk->sk_rcvbuf = sysctl_tcp_rmem[1];
+
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4);
 
 	local_bh_disable();
 	percpu_counter_inc(&tcp_sockets_allocated);

@@ -720,13 +720,15 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	if (likely(err <= 0))
 		return err;
 
+/*
 #ifdef CONFIG_TCP_ESTATS
 	int len = skb->len;
 	__u32 seq = TCP_SKB_CB(skb)->seq;
 	__u32 end_seq = TCP_SKB_CB(skb)->end_seq;
-	int flags = TCP_SKB_CB(skb)->tcp_flags;
+	int flags = TCP_SKB_CB(skb)->flags;
 #endif
-	TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, len, tcp_skb_pcount(skb), seq, end_seq, flags));
+*/
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, skb->len, tcp_skb_pcount(skb), TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq, TCP_SKB_CB(skb)->flags));
 
 	tcp_enter_cwr(sk, 1);
 	TCP_ESTATS_VAR_INC(tp, SendStall);

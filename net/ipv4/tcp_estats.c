@@ -21,7 +21,7 @@
  *
  */
 
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/string.h>
@@ -163,12 +163,12 @@ void tcp_estats_establish(struct sock *sk)
 	/* Let's set these here, since they can't change once the
 	 * connection is established.
 	 */
-	vars->LocalPort = inet->inet_num;
-	vars->RemPort = ntohs(inet->inet_dport);
+	vars->LocalPort = inet->num;
+	vars->RemPort = ntohs(inet->dport);
 
 	if (vars->LocalAddressType == TCP_ESTATS_ADDRTYPE_IPV4) {
-		memcpy(&vars->LocalAddress, &inet->inet_rcv_saddr, 4);
-		memcpy(&vars->RemAddress, &inet->inet_daddr, 4);
+		memcpy(&vars->LocalAddress, &inet->rcv_saddr, 4);
+		memcpy(&vars->RemAddress, &inet->daddr, 4);
 	}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	else if (vars->LocalAddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
@@ -373,7 +373,7 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 	}
 
 	/* Check for retransmission. */
-	if (flags & TCPHDR_SYN) {
+	if (flags & 0x02) {
 		if (inet_csk(sk)->icsk_retransmits)
 			stats->estats_vars.SegsRetrans++;
 	} else if (before(seq, stats->estats_vars.SndMax)) {
@@ -516,7 +516,7 @@ void __init tcp_estats_init()
 //        persist_delay = 60 * HZ;
         persist_delay = 0;
 
-        if ((tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256)) == NULL) {
+        if ((tcp_estats_wq = create_workqueue("tcp_estats")) == NULL) {
 		printk(KERN_ERR "tcp_estats_init(): alloc_workqueue failed\n");
 		goto cleanup_fail;
 	}
