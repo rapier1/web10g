@@ -2990,9 +2990,6 @@ static void tcp_fastretrans_alert(struct sock *sk, int pkts_acked, int flag)
 				tp->undo_marker = 0;
 				tcp_set_ca_state(sk, TCP_CA_Open);
 			}
-			break;
-
-		case TCP_CA_Disorder:
 			TCP_ESTATS_VAR_INC(tp, NonRecovDAEpisodes);
 			break;
 
@@ -5532,7 +5529,7 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 		tp->copied_seq = tp->rcv_nxt;
 		smp_mb();
 		tcp_set_state(sk, TCP_ESTABLISHED);
-		tcp_estats_established(sk);
+		tcp_estats_establish(sk);
 
 		security_inet_conn_established(sk, skb);
 
