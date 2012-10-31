@@ -1,4 +1,4 @@
-#include <linux/export.h>
+#include <linux/module.h>
 #include <net/tcp_estats_mib_var.h>
 
 #define OFFSET_TP(field)	((unsigned long)(&(((struct tcp_sock *)NULL)->field)))
