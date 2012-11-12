@@ -1,12 +1,6 @@
 #ifndef _TCP_ESTATS_NL_H_
 #define _TCP_ESTATS_NL_H_
 
-#define DEFAULT_PERF_MASK  0x3ffffffffUL
-#define DEFAULT_PATH_MASK  0x3ffffffUL
-#define DEFAULT_STACK_MASK 0x1ffffffffffUL
-#define DEFAULT_APP_MASK   0xfffUL
-#define DEFAULT_TUNE_MASK  0xfUL
-
 enum nl_estats_msg_types {
         TCPE_CMD_LIST_CONNS,
         TCPE_CMD_READ_ALL,

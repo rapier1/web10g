@@ -29,7 +29,7 @@ enum MIB_TABLE {
 };
 #define MAX_TABLE __MAX_TABLE
 
-extern int max_index[];
+extern int max_index[]; /* MAX_TABLE */
 
 /* The official MIB states are enumerated differently than Linux's. */
 enum tcp_estats_states {
@@ -282,5 +282,19 @@ typedef enum ESTATS_TUNE_INDEX {
 #define TUNE_INDEX_MAX __TUNE_INDEX_MAX
 
 #define TOTAL_NUM_VARS PERF_INDEX_MAX+PATH_INDEX_MAX+STACK_INDEX_MAX+APP_INDEX_MAX+TUNE_INDEX_MAX
+
+#if BITS_PER_LONG == 64
+#define DEFAULT_PERF_MASK  (1UL << PERF_INDEX_MAX)-1
+#define DEFAULT_PATH_MASK  (1UL << PATH_INDEX_MAX)-1
+#define DEFAULT_STACK_MASK (1UL << STACK_INDEX_MAX)-1
+#define DEFAULT_APP_MASK   (1UL << APP_INDEX_MAX)-1
+#define DEFAULT_TUNE_MASK  (1UL << TUNE_INDEX_MAX)-1
+#else
+#define DEFAULT_PERF_MASK  (1ULL << PERF_INDEX_MAX)-1
+#define DEFAULT_PATH_MASK  (1ULL << PATH_INDEX_MAX)-1
+#define DEFAULT_STACK_MASK (1ULL << STACK_INDEX_MAX)-1
+#define DEFAULT_APP_MASK   (1ULL << APP_INDEX_MAX)-1
+#define DEFAULT_TUNE_MASK  (1ULL << TUNE_INDEX_MAX)-1
+#endif
 
 #endif /* _TCP_ESTATS_MIB_VAR_H_ */

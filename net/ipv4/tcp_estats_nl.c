@@ -118,12 +118,12 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         uint64_t masks[MAX_TABLE] = { DEFAULT_PERF_MASK, DEFAULT_PATH_MASK,
                 DEFAULT_STACK_MASK, DEFAULT_APP_MASK, DEFAULT_TUNE_MASK };
 
-        int index[MAX_TABLE] = { PERF_INDEX_MAX, PATH_INDEX_MAX,
-                STACK_INDEX_MAX, APP_INDEX_MAX, TUNE_INDEX_MAX };
         int if_mask[] = { [0 ... MAX_TABLE-1] = 0 };
         static void *mask_jump[] = { &&mask_no, &&mask_yes };
 
-	union estats_val val[TOTAL_NUM_VARS];
+	union estats_val *val = NULL;
+	int numvars = TOTAL_NUM_VARS;
+	size_t valarray_size = numvars*sizeof(union estats_val);
 
 	const struct cred *cred = get_current_cred();
 
@@ -185,6 +185,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 		return -EACCES;
 	}
 
+	val = kmalloc(valarray_size, GFP_KERNEL);
+	if (!val)
+		return -ENOMEM;
+
         lock_sock(stats->estats_sk);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
@@ -194,7 +198,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
               mask_yes:
                 i = 0;
                 mask = masks[tblnum];
-                while ((i < index[tblnum]) && mask) {
+                while ((i < max_index[tblnum]) && mask) {
                         j = __builtin_ctzl(mask);
                         mask = mask >> j;
                         i += j;
@@ -222,7 +226,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	if (msg == NULL)
-		return -ENOMEM;
+		goto nlmsg_failure;
 
 	hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0, TCPE_CMD_READ_VARS);
 	if (hdr == NULL)
@@ -294,6 +298,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
         genlmsg_unicast(sock_net(skb->sk), msg, info->snd_pid);
 
+	kfree(val);
+
 	return 0;
 
 nlmsg_failure:
@@ -303,6 +309,8 @@ nla_put_failure:
         printk(KERN_DEBUG "nla_put_failure\n");
 	genlmsg_cancel(msg, hdr);
 	kfree_skb(msg);
+	kfree(val);
+
 	return -ENOBUFS;
 
 nla_parse_failure:
