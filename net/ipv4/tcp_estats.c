@@ -54,6 +54,11 @@ EXPORT_SYMBOL(establish_notify_func);
 EXPORT_SYMBOL(destroy_notify_func);
 EXPORT_SYMBOL(persist_delay);
 
+/* This is missing in idr.c until v2.6.35, although
+ * listed as exported in idr.h.
+ */
+EXPORT_SYMBOL(idr_get_next);
+
 /* Called whenever a TCP/IPv4 sock is created.
  * net/ipv4/tcp_ipv4.c: tcp_v4_syn_recv_sock,
  *			tcp_v4_init_sock
