@@ -179,7 +179,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         tcp_estats_use(stats);
 
 	if (!(capable(CAP_SYS_ADMIN) ||
-		(sock_i_uid(stats->estats_sk) == cred->uid))) {
+		(stats->uid == cred->uid))) {
 
 		tcp_estats_unuse(stats);
 		return -EACCES;
