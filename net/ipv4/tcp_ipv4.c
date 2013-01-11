@@ -234,7 +234,10 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		inet_csk(sk)->icsk_ext_hdr_len = inet_opt->opt.optlen;
 
 	tp->rx_opt.mss_clamp = TCP_MSS_DEFAULT;
-
+#ifdef CONFIG_TCP_ESTATS
+	tp->rx_opt.rec_mss = 0;
+#endif
+	
 	/* Socket identity is still unknown (sport may be zero).
 	 * However we set state to SYN-SENT and not releasing socket
 	 * lock select source port, enter ourselves into the hash tables and
@@ -261,6 +264,8 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 							   inet->inet_daddr,
 							   inet->inet_sport,
 							   usin->sin_port);
+	TCP_ESTATS_VAR_SET(tp, SndInitial, tp->write_seq);
+	TCP_ESTATS_VAR_SET(tp, SndMax, tp->write_seq);
 
 	inet->inet_id = tp->write_seq ^ jiffies;
 
@@ -1317,6 +1322,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = TCP_MSS_DEFAULT;
 	tmp_opt.user_mss  = tp->rx_opt.user_mss;
+	tmp_opt.rec_mss = 0;
 	tcp_parse_options(skb, &tmp_opt, &hash_location, 0);
 
 	if (tmp_opt.cookie_plus > 0 &&
@@ -1465,6 +1471,8 @@ struct sock *tcp_v4_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	newsk = tcp_create_openreq_child(sk, req, skb);
 	if (!newsk)
 		goto exit_nonewsk;
+
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV4);
 
 	newsk->sk_gso_type = SKB_GSO_TCPV4;
 
@@ -1740,6 +1748,7 @@ process:
 	skb->dev = NULL;
 
 	bh_lock_sock_nested(sk);
+	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 #ifdef CONFIG_NET_DMA
@@ -1760,6 +1769,7 @@ process:
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 		goto discard_and_relse;
 	}
+	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
 	bh_unlock_sock(sk);
 
 	sock_put(sk);
@@ -1900,6 +1910,8 @@ static int tcp_v4_init_sock(struct sock *sk)
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
 #endif
 
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4);
+
 	return 0;
 }
 
@@ -1937,6 +1949,8 @@ void tcp_v4_destroy_sock(struct sock *sk)
 	/* Clean up a referenced TCP bind bucket. */
 	if (inet_csk(sk)->icsk_bind_hash)
 		inet_put_port(sk);
+
+	tcp_estats_destroy(sk);
 
 	/*
 	 * If sendmsg cached page exists, toss it.

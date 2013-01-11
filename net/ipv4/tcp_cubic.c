@@ -314,11 +314,12 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		if (hystart && after(ack, ca->end_seq))
 			bictcp_hystart_reset(sk);
 		tcp_slow_start(tp);
+        	TCP_ESTATS_VAR_INC(tp, SlowStart);
 	} else {
 		bictcp_update(ca, tp->snd_cwnd);
 		tcp_cong_avoid_ai(tp, ca->cnt);
+        	TCP_ESTATS_VAR_INC(tp, CongAvoid);
 	}
-
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
