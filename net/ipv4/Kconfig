@@ -630,3 +630,24 @@ config TCP_MD5SIG
 	  on the Internet.
 
 	  If unsure, say N.
+
+config TCP_ESTATS
+	bool "TCP: Extended TCP statistics (TCP ESTATS) MIB"
+	---help---
+
+	  Support for the TCP extended stastics MIB, RFC 4898.
+	  (see http://www.web10g.org)
+
+if TCP_ESTATS
+
+config TCP_ESTATS_NETLINK
+        tristate "TCP: ESTATS netlink module"
+        depends on TCP_ESTATS
+        default m
+        ---help---
+          Netlink module exposing TCP Extended metrics.
+          (See http://www.web10g.org)
+
+endif
+
+

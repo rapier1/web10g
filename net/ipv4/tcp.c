@@ -919,6 +919,9 @@ wait_for_sndbuf:
 wait_for_memory:
 		tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
 
+		if (copied)
+                        TCP_ESTATS_UPDATE(tp, tcp_estats_update_writeq(sk));
+
 		if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 			goto do_error;
 
@@ -1180,8 +1183,11 @@ new_segment:
 wait_for_sndbuf:
 			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
-			if (copied && likely(!tp->repair))
+
+			if (copied && likely(!tp->repair)) {
 				tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
+				TCP_ESTATS_UPDATE(tp, tcp_estats_update_writeq(sk));
+			}
 
 			if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 				goto do_error;
@@ -1609,6 +1615,8 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			     "recvmsg bug 2: copied %X seq %X rcvnxt %X fl %X\n",
 			     *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt, flags);
 		}
+
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_recvq(sk));
 
 		/* Well, if we have backlog, try to process it now yet. */
 
@@ -3564,6 +3572,7 @@ void __init tcp_init(void)
 		tcp_hashinfo.ehash_mask + 1, tcp_hashinfo.bhash_size);
 
 	tcp_register_congestion_control(&tcp_reno);
+	tcp_estats_init();
 
 	memset(&tcp_secret_one.secrets[0], 0, sizeof(tcp_secret_one.secrets));
 	memset(&tcp_secret_two.secrets[0], 0, sizeof(tcp_secret_two.secrets));
