@@ -5,6 +5,7 @@
  *
  * Authors:
  *   John Estabrook <jestabro@ncsa.illinois.edu>
+ *   Andrew K. Adams <akadams@psc.edu>
  *   John Heffner <jheffner@psc.edu>
  *   Matt Mathis <mathis@psc.edu>
  *   Jeff Semke <semke@psc.edu>
@@ -206,6 +207,7 @@ struct tcp_estats {
         int                             tcpe_cid; // idr map id
 
 	struct sock			*estats_sk;
+        int                             uid;
 
 	atomic_t			estats_users;
 
