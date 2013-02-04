@@ -90,6 +90,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype)
 
 	sock_hold(sk);
 	stats->estats_sk = sk;
+        stats->uid = sock_i_uid(sk);
 	atomic_set(&stats->estats_users, 0);
 
 	stats->estats_limstate = TCP_ESTATS_SNDLIM_STARTUP;
@@ -518,8 +519,7 @@ void __init tcp_estats_init()
         establish_notify_func = &establish_func;
         destroy_notify_func = &destroy_func;
 
-//        persist_delay = 60 * HZ;
-        persist_delay = 0;
+        persist_delay = 60 * HZ;
 
         if ((tcp_estats_wq = create_workqueue("tcp_estats")) == NULL) {
 		printk(KERN_ERR "tcp_estats_init(): alloc_workqueue failed\n");
