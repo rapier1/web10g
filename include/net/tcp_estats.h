@@ -207,6 +207,7 @@ struct tcp_estats {
         int                             tcpe_cid; // idr map id
 
 	struct sock			*estats_sk;
+        int                             uid;
 
 	atomic_t			estats_users;
 
