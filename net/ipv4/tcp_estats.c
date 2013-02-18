@@ -323,6 +323,7 @@ void tcp_estats_update_sndlim(struct tcp_sock *tp, int why)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
 	ktime_t now;
+        s64 now_ns;
 
 	if (why < 0) {
 		printk(KERN_ERR "tcp_estats_update_sndlim: BUG: why < 0\n");
@@ -331,8 +332,7 @@ void tcp_estats_update_sndlim(struct tcp_sock *tp, int why)
 
 	now = ktime_get();
 	stats->estats_vars.snd_lim_time[stats->estats_limstate]
-	    += ktime_to_ns(ktime_sub(now, stats->estats_limstate_ts));
-
+	    += ktime_to_us(ktime_sub(now, stats->estats_limstate_ts));
 	stats->estats_limstate_ts = now;
 	if (stats->estats_limstate != why) {
 		stats->estats_limstate = why;
