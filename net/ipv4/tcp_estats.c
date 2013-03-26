@@ -292,7 +292,7 @@ void tcp_estats_update_finish_segrecv(struct tcp_sock *tp)
 		vars->MaxPipeSize = pipe_size;
 
 	/* Discard initiail ssthresh set at infinity. */
-	if (tp->snd_ssthresh >= 0x7ffffff) {
+	if (tp->snd_ssthresh >= TCP_INFINITE_SSTHRESH) {
 		return;
 	}
 	ssthresh = tp->snd_ssthresh * tp->mss_cache;
