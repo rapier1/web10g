@@ -95,7 +95,7 @@ static void read_CurSsthresh(void *buf, struct tcp_estats *stats,
 	struct tcp_sock *tp = tcp_sk(stats->estats_sk);
 	u32 val;
 
-	val = tp->snd_ssthresh == 0x7fffffff ?
+	val = tp->snd_ssthresh <= 0x7fffffff ?
 	      tp->snd_ssthresh * tp->mss_cache : 0xffffffff;
 	memcpy(buf, &val, 4);
 }
