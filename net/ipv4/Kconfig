@@ -635,8 +635,9 @@ config TCP_ESTATS
 	bool "TCP: Extended TCP statistics (TCP ESTATS) MIB"
 	---help---
 
-	  Support for the TCP extended stastics MIB, RFC 4898.
-	  (see http://www.web10g.org)
+
+	Support for the TCP extended stastics MIB, RFC 4898.
+	(see http://www.web10g.org)
 
 if TCP_ESTATS
 
@@ -649,5 +650,3 @@ config TCP_ESTATS_NETLINK
           (See http://www.web10g.org)
 
 endif
-
-
