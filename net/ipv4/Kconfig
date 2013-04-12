@@ -636,8 +636,8 @@ config TCP_ESTATS
 	---help---
 
 
-	Support for the TCP extended stastics MIB, RFC 4898.
-	(see http://www.web10g.org)
+	  Support for the TCP extended stastics MIB, RFC 4898.
+	  (see http://www.web10g.org)
 
 if TCP_ESTATS
 
