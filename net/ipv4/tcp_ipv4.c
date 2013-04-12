@@ -1325,7 +1325,6 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 #ifdef CONFIG_TCP_ESTATS
 	tmp_opt.rec_mss = 0;
 #endif
-
 	tcp_parse_options(skb, &tmp_opt, &hash_location, 0);
 
 	if (tmp_opt.cookie_plus > 0 &&
