@@ -1,6 +1,8 @@
 #include <linux/export.h>
 #include <net/tcp_estats_mib_var.h>
 
+#ifdef CONFIG_TCP_ESTATS
+
 #define OFFSET_TP(field)	((unsigned long)(&(((struct tcp_sock *)NULL)->field)))
 
 static void read_stats(void *buf, struct tcp_estats *stats,
@@ -550,4 +552,5 @@ void tcp_estats_read_connection_spec(struct tcp_estats_connection_spec *spec,
 }
 EXPORT_SYMBOL(tcp_estats_read_connection_spec);
 
-
+#else
+#endif /* CONFIG_TCP_ESTATS */

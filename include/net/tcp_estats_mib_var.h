@@ -11,6 +11,8 @@
 #include <inttypes.h>
 #endif
 
+#ifdef CONFIG_TCP_ESTATS
+
 union estats_val {
         __u64 o;
         __u32 t;
@@ -296,5 +298,8 @@ typedef enum ESTATS_TUNE_INDEX {
 #define DEFAULT_APP_MASK   (1ULL << APP_INDEX_MAX)-1
 #define DEFAULT_TUNE_MASK  (1ULL << TUNE_INDEX_MAX)-1
 #endif
+
+#else
+#endif /* CONFIG_TCP_ESTATS */
 
 #endif /* _TCP_ESTATS_MIB_VAR_H_ */

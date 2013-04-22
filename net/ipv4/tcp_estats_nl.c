@@ -11,6 +11,7 @@
 #include <net/tcp_estats_mib_var.h>
 #include <net/tcp_estats_nl.h>
 
+#ifdef CONFIG_TCP_ESTATS
 
 static struct genl_family genl_estats_family = {
 	.id     = GENL_ID_GENERATE,
@@ -489,3 +490,6 @@ module_init(tcp_estats_nl_init);
 module_exit(tcp_estats_nl_exit);
 
 MODULE_LICENSE("GPL");
+
+#else
+#endif /* CONFIG_TCP_ESTATS */
