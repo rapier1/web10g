@@ -110,6 +110,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         struct nlattr *tb_mask[NEA_MASK_MAX+1] = {};
         struct nlattr *nest[MAX_TABLE];
         struct nlattr *nest_time;
+        struct nlattr *nest_spec;
+        struct tcp_estats_connection_spec spec;
 
         struct tcp_estats *stats;
         int cid;
@@ -246,6 +248,18 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 				lower_32_bits(read_time.tv_usec)))
 			goto nla_put_failure;
 	nla_nest_end(msg, nest_time);
+
+	tcp_estats_read_connection_spec(&spec, stats);
+
+	nest_spec = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
+
+	nla_put(msg, NEA_REM_ADDR, 17, &spec.rem_addr[0]);
+	nla_put_u16(msg, NEA_REM_PORT, spec.rem_port);
+	nla_put(msg, NEA_LOCAL_ADDR, 17, &spec.local_addr[0]);
+	nla_put_u16(msg, NEA_LOCAL_PORT, spec.local_port);
+	nla_put_u32(msg, NEA_CID, cid);
+
+	nla_nest_end(msg, nest_spec);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
         
