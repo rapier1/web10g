@@ -89,7 +89,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
                 nla_nest_end(msg, nest);
 
 	        genlmsg_end(msg, hdr);
-                genlmsg_unicast(sock_net(skb->sk), msg, info->snd_pid);
+                genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 
                 tmpid = tmpid + 1;
         }
@@ -326,7 +326,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         }
 	genlmsg_end(msg, hdr);
 
-        genlmsg_unicast(sock_net(skb->sk), msg, info->snd_pid);
+        genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 
 	kfree(val);
 
