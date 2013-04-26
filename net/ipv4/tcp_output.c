@@ -716,6 +716,20 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
 		TCP_INC_STATS(sock_net(sk), TCP_MIB_OUTSEGS);
 
+	{
+#ifdef CONFIG_TCP_ESTATS
+		int len = skb->len;
+		int pcount = tcp_skb_pcount(skb);
+		__u32 seq = TCP_SKB_CB(skb)->seq;
+		__u32 end_seq = TCP_SKB_CB(skb)->end_seq;
+		int flags = TCP_SKB_CB(skb)->flags;
+#endif
+		TCP_ESTATS_UPDATE(tp, 
+				  tcp_estats_update_segsend(sk, len, 
+							    pcount, seq, 
+							    end_seq, flags));
+	}
+
 	err = icsk->icsk_af_ops->queue_xmit(skb, 0);
 	if (likely(err <= 0))
 		return err;

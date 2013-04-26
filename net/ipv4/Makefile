@@ -33,7 +33,10 @@ obj-$(CONFIG_INET_XFRM_MODE_TRANSPORT) += xfrm4_mode_transport.o
 obj-$(CONFIG_INET_XFRM_MODE_TUNNEL) += xfrm4_mode_tunnel.o
 obj-$(CONFIG_IP_PNP) += ipconfig.o
 obj-$(CONFIG_TCP_ESTATS) += tcp_estats.o
+<<<<<<< HEAD
 obj-$(CONFIG_TCP_ESTATS_NETLINK) += tcp_estats_nl.o
+=======
+>>>>>>> kis-2.6
 obj-$(CONFIG_NETFILTER)	+= netfilter.o netfilter/
 obj-$(CONFIG_INET_DIAG) += inet_diag.o 
 obj-$(CONFIG_INET_TCP_DIAG) += tcp_diag.o
