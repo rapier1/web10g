@@ -292,11 +292,7 @@ void tcp_estats_update_finish_segrecv(struct tcp_sock *tp)
 		vars->MaxPipeSize = pipe_size;
 
 	/* Discard initiail ssthresh set at infinity. */
-<<<<<<< HEAD
-	if (tp->snd_ssthresh >= 0x7ffffff) {
-=======
 	if (tp->snd_ssthresh >= TCP_INFINITE_SSTHRESH) {
->>>>>>> kis-2.6
 		return;
 	}
 	ssthresh = tp->snd_ssthresh * tp->mss_cache;
@@ -340,11 +336,7 @@ void tcp_estats_update_sndlim(struct tcp_sock *tp, int why)
 
 	now = ktime_get();
 	stats->estats_vars.snd_lim_time[stats->estats_limstate]
-<<<<<<< HEAD
-	    += ktime_to_ns(ktime_sub(now, stats->estats_limstate_ts));
-=======
 	    += ktime_to_us(ktime_sub(now, stats->estats_limstate_ts));
->>>>>>> kis-2.6
 
 	stats->estats_limstate_ts = now;
 	if (stats->estats_limstate != why) {
