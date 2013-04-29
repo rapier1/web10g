@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/genetlink.h>
+#include <linux/time.h>
 #include <net/genetlink.h>
 #include <net/inet_hashtables.h>
 #include <net/tcp.h>
@@ -10,6 +11,7 @@
 #include <net/tcp_estats_mib_var.h>
 #include <net/tcp_estats_nl.h>
 
+#ifdef CONFIG_TCP_ESTATS
 
 static struct genl_family genl_estats_family = {
 	.id     = GENL_ID_GENERATE,
@@ -108,6 +110,9 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         struct nlattr *tb[NEA_4TUPLE_MAX+1];
         struct nlattr *tb_mask[NEA_MASK_MAX+1] = {};
         struct nlattr *nest[MAX_TABLE];
+        struct nlattr *nest_time;
+        struct nlattr *nest_spec;
+        struct tcp_estats_connection_spec spec;
 
         struct tcp_estats *stats;
         int cid;
@@ -124,6 +129,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	union estats_val *val = NULL;
 	int numvars = TOTAL_NUM_VARS;
 	size_t valarray_size = numvars*sizeof(union estats_val);
+
+	struct timeval read_time;
 
 	const struct cred *cred = get_current_cred();
 
@@ -189,6 +196,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	if (!val)
 		return -ENOMEM;
 
+	do_gettimeofday(&read_time);
+
         lock_sock(stats->estats_sk);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
@@ -231,6 +240,27 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0, TCPE_CMD_READ_VARS);
 	if (hdr == NULL)
 		goto nlmsg_failure;
+
+	nest_time = nla_nest_start(msg, NLE_ATTR_TIME | NLA_F_NESTED);
+		if (nla_put_u32(msg, NEA_TIME_SEC,
+			        lower_32_bits(read_time.tv_sec)))
+			goto nla_put_failure;
+		if (nla_put_u32(msg, NEA_TIME_USEC,
+                                lower_32_bits(read_time.tv_usec)))
+			goto nla_put_failure;
+	nla_nest_end(msg, nest_time);
+
+        tcp_estats_read_connection_spec(&spec, stats);
+ 
+        nest_spec = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
+ 
+        nla_put(msg, NEA_REM_ADDR, 17, &spec.rem_addr[0]);
+        nla_put_u16(msg, NEA_REM_PORT, spec.rem_port);
+        nla_put(msg, NEA_LOCAL_ADDR, 17, &spec.local_addr[0]);
+        nla_put_u16(msg, NEA_LOCAL_PORT, spec.local_port);
+        nla_put_u32(msg, NEA_CID, cid);
+ 
+        nla_nest_end(msg, nest_spec);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
         
@@ -460,3 +490,6 @@ module_init(tcp_estats_nl_init);
 module_exit(tcp_estats_nl_exit);
 
 MODULE_LICENSE("GPL");
+
+#else
+#endif /* CONFIG_TCP_ESTATS */

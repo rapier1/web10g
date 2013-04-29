@@ -24,6 +24,7 @@ enum nl_estats_attr {
         NLE_ATTR_MASK,
         NLE_ATTR_4TUPLE,
 	NLE_ATTR_WRITE,
+	NLE_ATTR_TIME,
         __NLE_ATTR_MAX
 };
 #define NLE_ATTR_MAX (__NLE_ATTR_MAX - 1)
@@ -57,5 +58,13 @@ enum neattr_write {
 	__NEA_WRITE_MAX
 };
 #define NEA_WRITE_MAX (__NEA_WRITE_MAX - 1)
+
+enum neattr_time {
+	NEA_UNSPEC_TIME,
+	NEA_TIME_SEC,
+	NEA_TIME_USEC,
+	__NEA_TIME_MAX
+};
+#define NEA_TIME_MAX (__NEA_TIME_MAX - 1)
 
 #endif /* _TCP_ESTATS_NL_H_ */
