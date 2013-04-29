@@ -22,7 +22,6 @@
  */
 
 #include <linux/module.h>
-/*#include <linux/nfsd/export.h>*/
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/string.h>
