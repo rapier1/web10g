@@ -3665,7 +3665,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		tcp_rearm_rto(sk);
 
 	if (after(ack, prior_snd_una)) {
-		flag |= FLAG_SND_UNA_ADVANCED; 
+		flag |= FLAG_SND_UNA_ADVANCED;
 		if (icsk->icsk_ca_state == TCP_CA_Disorder)
 			TCP_ESTATS_VAR_ADD(tp, SumOctetsReordered,
 					   ack - prior_snd_una);
