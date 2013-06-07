@@ -204,13 +204,14 @@ static void read_TimeStamps(void *buf, struct tcp_estats *stats,
 static void read_ECN(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
+	struct sock *sk = stats->estats_sk;
 	struct tcp_sock *tp = tcp_sk(stats->estats_sk);
 	s32 val;
 
 	if (tp->ecn_flags & TCP_ECN_OK)
 		val = 1;
 	else
-		val = sysctl_tcp_ecn ? 3 : 2;
+		val = sock_net(sk)->ipv4.sysctl_tcp_ecn ? 3 : 2;
 	memcpy(buf, &val, 4);
 }
 
