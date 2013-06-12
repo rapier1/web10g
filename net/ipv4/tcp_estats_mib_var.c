@@ -30,17 +30,21 @@ static void read_inf32(void *buf, struct tcp_estats *stats,
 static void read_ElapsedSecs(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
-        u32 val = 0; // currently unimplemented
+	ktime_t elapsed = ktime_sub(stats->estats_current_ts,
+					stats->estats_start_ts);
+	u32 secs = ktime_to_timeval(elapsed).tv_sec;
 
-        memcpy(buf, &val, 4);
+        memcpy(buf, &secs, 4);
 }
 
 static void read_ElapsedMicroSecs(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
-        u32 val = 0; // currently unimplemented
+	ktime_t elapsed = ktime_sub(stats->estats_current_ts,
+					stats->estats_start_ts);
+	u32 usecs = ktime_to_timeval(elapsed).tv_usec;
 
-        memcpy(buf, &val, 4);
+        memcpy(buf, &usecs, 4);
 }
 
 static void read_StartTimeStamp(void *buf, struct tcp_estats *stats,
