@@ -20,7 +20,7 @@ static void read_sk32(void *buf, struct tcp_estats *stats,
 static void read_inf32(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
-        u32 val;
+        u64 val;
 
 	memcpy(&val, (char *)stats + vp->read_data, 8);
         val &= 0xffffffff;

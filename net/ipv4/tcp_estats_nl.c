@@ -132,6 +132,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
 	struct timeval read_time;
 
+	struct sock *sk;
 	const struct cred *cred = get_current_cred();
 
 	if (!info->attrs[NLE_ATTR_4TUPLE])
@@ -185,8 +186,20 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
         tcp_estats_use(stats);
 
+	sk = stats->estats_sk;
+
+	if (!stats->ids) {
+		read_lock_bh(&sk->sk_callback_lock);
+		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : GLOBAL_ROOT_UID;
+		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid : GLOBAL_ROOT_GID;
+		read_unlock_bh(&sk->sk_callback_lock);
+
+		stats->ids = 1;
+	}
+
 	if (!(capable(CAP_SYS_ADMIN) ||
-		(stats->uid == cred->uid))) {
+		(stats->uid == cred->uid) ||
+		(stats->gid == cred->gid))) {
 
 		tcp_estats_unuse(stats);
 		return -EACCES;
@@ -361,6 +374,7 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 	struct tcp_estats_var *var = NULL;
 	uint32_t val;
 
+	struct sock *sk;
 	const struct cred *cred = get_current_cred();
 
 	if (!info->attrs[NLE_ATTR_4TUPLE])
@@ -409,8 +423,19 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 
         tcp_estats_use(stats);
 
+	sk = stats->estats_sk;
+
+	if (!stats->ids) {
+		read_lock_bh(&sk->sk_callback_lock);
+		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : GLOBAL_ROOT_UID;
+		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid : GLOBAL_ROOT_GID;
+		read_unlock_bh(&sk->sk_callback_lock);
+
+		stats->ids = 1;
+	}
+
 	if (!(capable(CAP_SYS_ADMIN) ||
-		(sock_i_uid(stats->estats_sk) == cred->uid))) {
+		(stats->uid == cred->uid))) {
 
 		tcp_estats_unuse(stats);
 		return -EACCES;
