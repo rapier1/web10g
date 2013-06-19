@@ -90,7 +90,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype)
 
 	sock_hold(sk);
 	stats->estats_sk = sk;
-        stats->uid = sock_i_uid(sk);
 	atomic_set(&stats->estats_users, 0);
 
 	stats->estats_limstate = TCP_ESTATS_SNDLIM_STARTUP;
