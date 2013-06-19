@@ -208,6 +208,8 @@ struct tcp_estats {
 
 	struct sock			*estats_sk;
         int                             uid;
+        int                             gid;
+        int                             ids;
 
 	atomic_t			estats_users;
 
