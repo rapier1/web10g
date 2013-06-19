@@ -20,7 +20,7 @@ static void read_sk32(void *buf, struct tcp_estats *stats,
 static void read_inf32(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
-        u32 val;
+        u64 val;
 
 	memcpy(&val, (char *)stats + vp->read_data, 8);
         val &= 0xffffffff;
@@ -30,17 +30,21 @@ static void read_inf32(void *buf, struct tcp_estats *stats,
 static void read_ElapsedSecs(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
-        u32 val = 0; // currently unimplemented
+	ktime_t elapsed = ktime_sub(stats->estats_current_ts,
+                                    stats->estats_start_ts);
+	u32 secs = ktime_to_timeval(elapsed).tv_sec;
 
-        memcpy(buf, &val, 4);
+        memcpy(buf, &secs, 4);
 }
 
 static void read_ElapsedMicroSecs(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
-        u32 val = 0; // currently unimplemented
+	ktime_t elapsed = ktime_sub(stats->estats_current_ts,
+				    stats->estats_start_ts);
+	u32 usecs = ktime_to_timeval(elapsed).tv_usec;
 
-        memcpy(buf, &val, 4);
+        memcpy(buf, &usecs, 4);
 }
 
 static void read_StartTimeStamp(void *buf, struct tcp_estats *stats,
@@ -204,13 +208,14 @@ static void read_TimeStamps(void *buf, struct tcp_estats *stats,
 static void read_ECN(void *buf, struct tcp_estats *stats,
         struct tcp_estats_var *vp)
 {
+	struct sock *sk = stats->estats_sk;
 	struct tcp_sock *tp = tcp_sk(stats->estats_sk);
 	s32 val;
 
 	if (tp->ecn_flags & TCP_ECN_OK)
 		val = 1;
 	else
-		val = sysctl_tcp_ecn ? 3 : 2;
+		val = sock_net(sk)->ipv4.sysctl_tcp_ecn ? 3 : 2;
 	memcpy(buf, &val, 4);
 }
 
