@@ -641,14 +641,19 @@ config TCP_ESTATS
 
 if TCP_ESTATS
 
-config TCP_ESTATS_ELAPSEDTIME
-	bool "TCP: ESTATS ElapsedSecs/Msecs counters"
+config TCP_ESTATS_STRICT_ELAPSEDTIME
+	bool "TCP: ESTATS strict ElapsedSecs/Msecs counters"
 	depends on TCP_ESTATS
 	default n
 	---help---
-	  Elapsed time since beginning of connection, updated for each
-	  protocal event (sending or receiving a segment); as this can be
-	  expensive, on may not want it on.
+	  Elapsed time since beginning of connection.
+	  RFC4898 defines ElapsedSecs/Msecs as being updated at each protocol
+	  event (sending or receiving of a segment); as this can be a
+	  performance hit, leaving this config option off will update elapsed
+	  time on the read instead.
+	  Set to Y for strict conformance with the MIB.
+
+	  If unsure, say N.
 
 endif
 

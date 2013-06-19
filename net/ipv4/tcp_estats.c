@@ -270,7 +270,7 @@ void tcp_estats_update_finish_segrecv(struct tcp_sock *tp)
 	u32 ssthresh;
 	u32 pipe_size;
 
-#ifdef CONFIG_TCP_ESTATS_ELAPSEDTIME
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	stats->estats_current_ts = ktime_get();
 #endif
 
@@ -362,7 +362,7 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
 
-#ifdef CONFIG_TCP_ESTATS_ELAPSEDTIME
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	stats->estats_current_ts = ktime_get();
 #endif
 
