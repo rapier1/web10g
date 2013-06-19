@@ -641,6 +641,19 @@ config TCP_ESTATS
 
 if TCP_ESTATS
 
+config TCP_ESTATS_ELAPSEDTIME
+	bool "TCP: ESTATS ElapsedSecs/Msecs counters"
+	depends on TCP_ESTATS
+	default n
+	---help---
+	  Elapsed time since beginning of connection, updated for each
+	  protocal event (sending or receiving a segment); as this can be
+	  expensive, on may not want it on.
+
+endif
+
+if TCP_ESTATS
+
 config TCP_ESTATS_NETLINK
         tristate "TCP: ESTATS netlink module"
         depends on TCP_ESTATS
