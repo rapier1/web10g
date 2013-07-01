@@ -427,8 +427,8 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 
 	if (!stats->ids) {
 		read_lock_bh(&sk->sk_callback_lock);
-		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : 
-		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid : 
+		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : 0;
+		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid : 0;
 		read_unlock_bh(&sk->sk_callback_lock);
 
 		stats->ids = 1;

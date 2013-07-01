@@ -215,7 +215,7 @@ static void read_ECN(void *buf, struct tcp_estats *stats,
 	if (tp->ecn_flags & TCP_ECN_OK)
 		val = 1;
 	else
-		val = sock_net(sk)->ipv4.sysctl_tcp_ecn ? 3 : 2;
+		val = sysctl_tcp_ecn ? 3 : 2;
 	memcpy(buf, &val, 4);
 }
 
