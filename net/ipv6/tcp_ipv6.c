@@ -304,9 +304,6 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 							     inet->inet_sport,
 							     inet->inet_dport);
 
-	TCP_ESTATS_VAR_SET(tp, SndInitial, tp->write_seq);
-	TCP_ESTATS_VAR_SET(tp, SndMax, tp->write_seq);
-
 	err = tcp_connect(sk);
 	if (err)
 		goto late_failure;
@@ -1221,7 +1218,7 @@ static struct sock * tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	if (newsk == NULL)
 		goto out_nonewsk;
 
-	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV6);
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_ACTIVE);
 
 	/*
 	 * No need to charge this sock to the relevant IPv6 refcnt debug socks
@@ -1766,7 +1763,7 @@ static int tcp_v6_init_sock(struct sock *sk)
 #ifdef CONFIG_TCP_MD5SIG
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv6_specific;
 #endif
-	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV6);
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_INACTIVE);
 
 	return 0;
 }

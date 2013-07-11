@@ -31,79 +31,156 @@
 #include <asm/byteorder.h>
 
 #define ESTATS_INF32	0xffffffff
+#define ESTATS_MAX_CID	1024
 
-int tcp_estats_enabled __read_mostly = 0;
+extern int sysctl_tcp_estats;
 
 struct idr tcp_estats_idr;
+EXPORT_SYMBOL(tcp_estats_idr);
 static int next_id = 1;
 DEFINE_SPINLOCK(tcp_estats_idr_lock);
+EXPORT_SYMBOL(tcp_estats_idr_lock);
 
 int tcp_estats_wq_enabled __read_mostly = 0;
-struct workqueue_struct *tcp_estats_wq = NULL;
-void (*create_notify_func)(struct work_struct *work);
-void (*establish_notify_func)(struct work_struct *work);
-void (*destroy_notify_func)(struct work_struct *work);
-unsigned long persist_delay = 0;
-
-EXPORT_SYMBOL(tcp_estats_idr);
-EXPORT_SYMBOL(tcp_estats_idr_lock);
 EXPORT_SYMBOL(tcp_estats_wq_enabled);
+struct workqueue_struct *tcp_estats_wq = NULL;
 EXPORT_SYMBOL(tcp_estats_wq);
+void (*create_notify_func)(struct work_struct *work);
 EXPORT_SYMBOL(create_notify_func);
+void (*establish_notify_func)(struct work_struct *work);
 EXPORT_SYMBOL(establish_notify_func);
+void (*destroy_notify_func)(struct work_struct *work);
 EXPORT_SYMBOL(destroy_notify_func);
+unsigned long persist_delay = 0;
 EXPORT_SYMBOL(persist_delay);
+
+struct static_key tcp_estats_enabled = STATIC_KEY_INIT_FALSE;
+EXPORT_SYMBOL(tcp_estats_enabled);
+
+static inline void tcp_estats_enable(void)
+{
+	static_key_slow_inc(&tcp_estats_enabled);
+}
+
+static inline void tcp_estats_disable(void)
+{
+	static_key_slow_dec(&tcp_estats_enabled);
+}
+
+/* Calculates the required amount of memory for any enabled tables. */
+int tcp_estats_get_allocation_size(int sysctl)
+{
+	int size = sizeof(struct tcp_estats) +
+		sizeof(struct tcp_estats_connection_table);
+
+	if (sysctl & TCP_ESTATS_TABLEMASK_PERF)
+		size += sizeof(struct tcp_estats_perf_table);
+	if (sysctl & TCP_ESTATS_TABLEMASK_PATH)
+		size += sizeof(struct tcp_estats_path_table);
+	if (sysctl & TCP_ESTATS_TABLEMASK_STACK)
+		size += sizeof(struct tcp_estats_stack_table);
+	if (sysctl & TCP_ESTATS_TABLEMASK_APP)
+		size += sizeof(struct tcp_estats_app_table);
+	/*
+	if ((sysctl & TCP_ESTATS_TABLEMASK_TUNE) != 0)
+		size += sizeof(struct tcp_estats_tune_table);
+	*/
+	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS)
+		size += sizeof(struct tcp_estats_extras_table);
+	return size;
+}
 
 /* Called whenever a TCP/IPv4 sock is created.
  * net/ipv4/tcp_ipv4.c: tcp_v4_syn_recv_sock,
  *			tcp_v4_init_sock
  * Allocates a stats structure and initializes values.
  */
-int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype)
+int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
+		      int active)
 {
 	struct tcp_estats *stats;
-	struct tcp_estats_directs *vars;
+	struct tcp_estats_tables *tables;
 	struct tcp_sock *tp = tcp_sk(sk);
+	void *estats_mem;
+	int sysctl;
         int ret;
 
-	if (!tcp_estats_enabled) {
-		stats = NULL;
-		return -1;
+	/* Read the sysctl once before calculating memory needs and initializing
+	 * tables to avoid raciness. */
+	sysctl = ACCESS_ONCE(sysctl_tcp_estats);
+	if (likely(sysctl == TCP_ESTATS_TABLEMASK_INACTIVE)) {
+		tcp_estats_disable();
+		return 0;
 	}
 
-	stats = kzalloc(sizeof(struct tcp_estats), gfp_any());
-	if (!stats)
+	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
+	if (!estats_mem)
 		return -ENOMEM;
 
-	tp->tcp_stats = stats;
-	vars = &stats->estats_vars;
+
+	stats = estats_mem;
+	estats_mem += sizeof(struct tcp_estats);
+
+	tables = &stats->tables;
+
+	tables->connection_table = estats_mem;
+	estats_mem += sizeof(struct tcp_estats_connection_table);
+
+	tcp_estats_enable();
+
+	if (sysctl & TCP_ESTATS_TABLEMASK_PERF) {
+		tables->perf_table = estats_mem;
+		estats_mem += sizeof(struct tcp_estats_perf_table);
+	}
+	if (sysctl & TCP_ESTATS_TABLEMASK_PATH) {
+		tables->path_table = estats_mem;
+		estats_mem += sizeof(struct tcp_estats_path_table);
+	}
+	if (sysctl & TCP_ESTATS_TABLEMASK_STACK) {
+		tables->stack_table = estats_mem;
+		estats_mem += sizeof(struct tcp_estats_stack_table);
+	}
+	if (sysctl & TCP_ESTATS_TABLEMASK_APP) {
+		tables->app_table = estats_mem;
+		estats_mem += sizeof(struct tcp_estats_app_table);
+	}
+	/*
+	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE) {
+		tables->tune_table = estats_mem;
+		estats_mem += sizeof(struct tcp_estats_tune_table);
+	}
+	*/
+	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS) {
+		tables->extras_table = estats_mem;
+		estats_mem += sizeof(struct tcp_estats_extras_table);
+	}
 
         stats->tcpe_cid = -1;
         stats->queued = 0;
 
-	stats->estats_vars.LocalAddressType = addrtype;
+	tables->connection_table->AddressType = addrtype;
 
 	sock_hold(sk);
-	stats->estats_sk = sk;
-	atomic_set(&stats->estats_users, 0);
+	stats->sk = sk;
+	atomic_set(&stats->users, 0);
 
-	stats->estats_limstate = TCP_ESTATS_SNDLIM_STARTUP;
-	stats->estats_start_ts = stats->estats_limstate_ts =
-	    stats->estats_current_ts = ktime_get();
-	do_gettimeofday(&stats->estats_start_tv);
+	stats->limstate = TCP_ESTATS_SNDLIM_STARTUP;
+	stats->start_ts = stats->limstate_ts = stats->current_ts = ktime_get();
+	do_gettimeofday(&stats->start_tv);
 
-	vars->ActiveOpen = !in_interrupt();
+	TCP_ESTATS_VAR_SET(tp, stack_table, ActiveOpen, active);
+	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->snd_nxt);
+	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->snd_nxt);
 
-	vars->SndMax = tp->snd_nxt;
-	vars->SndInitial = tp->snd_nxt;
+	TCP_ESTATS_VAR_SET(tp, path_table, MinRTT, ESTATS_INF32);
+	TCP_ESTATS_VAR_SET(tp, path_table, MinRTO, ESTATS_INF32);
+	TCP_ESTATS_VAR_SET(tp, stack_table, MinMSS, ESTATS_INF32);
+	TCP_ESTATS_VAR_SET(tp, stack_table, MinSsthresh, ESTATS_INF32);
 
-	vars->MinRTT = vars->MinRTO = vars->MinMSS = vars->MinSsthresh =
-	    ESTATS_INF32;
-
+	tp->tcp_stats = stats;
 	tcp_estats_use(stats);
 
         if (tcp_estats_wq_enabled) {
-
                 tcp_estats_use(stats);
                 stats->queued = 1;
                 stats->tcpe_cid = 0;
@@ -113,6 +190,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype)
 
 	return 0;
 }
+EXPORT_SYMBOL(tcp_estats_create);
 
 void tcp_estats_destroy(struct sock *sk)
 {
@@ -122,8 +200,7 @@ void tcp_estats_destroy(struct sock *sk)
 		return;
 
 	/* Attribute final sndlim time. */
-	tcp_estats_update_sndlim(tcp_sk(stats->estats_sk),
-				 stats->estats_limstate);
+	tcp_estats_update_sndlim(tcp_sk(stats->sk), stats->limstate);
 
         if (tcp_estats_wq_enabled && stats->queued) {
                 INIT_DELAYED_WORK(&stats->destroy_notify,
@@ -138,7 +215,7 @@ void tcp_estats_destroy(struct sock *sk)
 /* Do not call directly.  Called from tcp_estats_unuse(). */
 void tcp_estats_free(struct tcp_estats *stats)
 {
-	sock_put(stats->estats_sk);
+	sock_put(stats->sk);
 	kfree(stats);
 }
 EXPORT_SYMBOL(tcp_estats_free);
@@ -155,38 +232,38 @@ void tcp_estats_establish(struct sock *sk)
 	struct inet_sock *inet = inet_sk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct tcp_estats *stats = tp->tcp_stats;
-	struct tcp_estats_directs *vars = &stats->estats_vars;
+	struct tcp_estats_connection_table *conn_table;
 
 	if (stats == NULL)
 		return;
 
+	conn_table = stats->tables.connection_table;
+
 	/* Let's set these here, since they can't change once the
 	 * connection is established.
 	 */
-	vars->LocalPort = inet->inet_num;
-	vars->RemPort = ntohs(inet->inet_dport);
+	conn_table->LocalPort = inet->inet_num;
+	conn_table->RemPort = ntohs(inet->inet_dport);
 
-	if (vars->LocalAddressType == TCP_ESTATS_ADDRTYPE_IPV4) {
-		memcpy(&vars->LocalAddress, &inet->inet_rcv_saddr, 4);
-		memcpy(&vars->RemAddress, &inet->inet_daddr, 4);
+	if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV4) {
+		memcpy(&conn_table->LocalAddress, &inet->inet_rcv_saddr, 4);
+		memcpy(&conn_table->RemAddress, &inet->inet_daddr, 4);
 	}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
-	else if (vars->LocalAddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
-		memcpy(&vars->LocalAddress, &(inet6_sk(sk)->saddr), 16);
-		memcpy(&vars->RemAddress, &(inet6_sk(sk)->daddr), 16);
+	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
+		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr), 16);
+		memcpy(&conn_table->RemAddress, &(inet6_sk(sk)->daddr), 16);
 	}
 #endif
 	else {
-		printk(KERN_ERR "TCP ESTATS: LocalAddressType not valid.\n");
+		pr_err("TCP ESTATS: AddressType not valid.\n");
 	}
-	((char *)&vars->LocalAddress)[16] = ((char *)&vars->RemAddress)[16] =
-	    vars->LocalAddressType;
 
 	tcp_estats_update_finish_segrecv(tp);
 	tcp_estats_update_rwin_rcvd(tp);
 	tcp_estats_update_rwin_sent(tp);
 
-	vars->RecInitial = tp->rcv_nxt;
+	TCP_ESTATS_VAR_SET(tp, stack_table, RecInitial, tp->rcv_nxt);
 
 	tcp_estats_update_sndlim(tp, TCP_ESTATS_SNDLIM_SENDER);
 
@@ -204,221 +281,279 @@ void tcp_estats_update_snd_nxt(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
 
-	if (after(tp->snd_nxt, stats->estats_vars.SndMax))
-		stats->estats_vars.SndMax = tp->snd_nxt;
+	if (stats->tables.app_table) {
+		if (after(tp->snd_nxt, stats->tables.app_table->SndMax))
+			stats->tables.app_table->SndMax = tp->snd_nxt;
+	}
 }
 
 void tcp_estats_update_acked(struct tcp_sock *tp, u32 ack)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
 
-	stats->estats_vars.ThruOctetsAcked += ack - tp->snd_una;
+	if (stats->tables.app_table)
+		stats->tables.app_table->ThruOctetsAcked += ack - tp->snd_una;
 }
 
 void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
+	struct tcp_estats_path_table *path_table = stats->tables.path_table;
 	unsigned long rtt_sample_msec = rtt_sample * 1000 / HZ;
 	u32 rto;
 
-	stats->estats_vars.SampleRTT = rtt_sample_msec;
+	if (path_table == NULL)
+		return;
 
-	if (rtt_sample_msec > stats->estats_vars.MaxRTT)
-		stats->estats_vars.MaxRTT = rtt_sample_msec;
-	if (rtt_sample_msec < stats->estats_vars.MinRTT)
-		stats->estats_vars.MinRTT = rtt_sample_msec;
+	path_table->SampleRTT = rtt_sample_msec;
 
-	stats->estats_vars.CountRTT++;
-	stats->estats_vars.SumRTT += rtt_sample_msec;
+	if (rtt_sample_msec > path_table->MaxRTT)
+		path_table->MaxRTT = rtt_sample_msec;
+	if (rtt_sample_msec < path_table->MinRTT)
+		path_table->MinRTT = rtt_sample_msec;
+
+	path_table->CountRTT++;
+	path_table->SumRTT += rtt_sample_msec;
 
 	rto = inet_csk(sk)->icsk_rto * 1000 / HZ;
-	if (rto > stats->estats_vars.MaxRTO)
-		stats->estats_vars.MaxRTO = rto;
-	if (rto < stats->estats_vars.MinRTO)
-		stats->estats_vars.MinRTO = rto;
+	if (rto > path_table->MaxRTO)
+		path_table->MaxRTO = rto;
+	if (rto < path_table->MinRTO)
+		path_table->MinRTO = rto;
 }
 
 void tcp_estats_update_timeout(struct sock *sk)
 {
-	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
-
 	if (inet_csk(sk)->icsk_backoff)
-		stats->estats_vars.SubsequentTimeouts++;
+		TCP_ESTATS_VAR_INC(tcp_sk(sk), stack_table, SubsequentTimeouts);
 	else
-		stats->estats_vars.Timeouts++;
+		TCP_ESTATS_VAR_INC(tcp_sk(sk), perf_table, Timeouts);
+
 	if (inet_csk(sk)->icsk_ca_state == TCP_CA_Open)
-		stats->estats_vars.AbruptTimeouts++;
+		TCP_ESTATS_VAR_INC(tcp_sk(sk), stack_table, AbruptTimeouts);
 }
 
 void tcp_estats_update_mss(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
+	struct tcp_estats_stack_table *stack_table = stats->tables.stack_table;
 	int mss = tp->mss_cache;
 
-	if (mss > stats->estats_vars.MaxMSS)
-		stats->estats_vars.MaxMSS = mss;
-	if (mss < stats->estats_vars.MinMSS)
-		stats->estats_vars.MinMSS = mss;
+	if (stack_table == NULL)
+		return;
+
+	if (mss > stack_table->MaxMSS)
+		stack_table->MaxMSS = mss;
+	if (mss < stack_table->MinMSS)
+		stack_table->MinMSS = mss;
 }
 
 void tcp_estats_update_finish_segrecv(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
-	struct tcp_estats_directs *vars = &stats->estats_vars;
+	struct tcp_estats_tables *tables = &stats->tables;
+	struct tcp_estats_perf_table *perf_table = tables->perf_table;
+	struct tcp_estats_stack_table *stack_table = tables->stack_table;
 	u32 mss = tp->mss_cache;
 	u32 cwnd;
 	u32 ssthresh;
 	u32 pipe_size;
 
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
-	stats->estats_current_ts = ktime_get();
+	stats->current_ts = ktime_get();
 #endif
 
-	cwnd = tp->snd_cwnd * mss;
-	if (tp->snd_cwnd <= tp->snd_ssthresh) {
-		if (cwnd > vars->MaxSsCwnd)
-			vars->MaxSsCwnd = cwnd;
-	} else {
-		if (cwnd > vars->MaxCaCwnd)
-			vars->MaxCaCwnd = cwnd;
+	if (stack_table != NULL) {
+		cwnd = tp->snd_cwnd * mss;
+		if (tp->snd_cwnd <= tp->snd_ssthresh) {
+			if (cwnd > stack_table->MaxSsCwnd)
+				stack_table->MaxSsCwnd = cwnd;
+		} else if (cwnd > stack_table->MaxCaCwnd) {
+			stack_table->MaxCaCwnd = cwnd;
+		}
 	}
 
-	pipe_size = tcp_packets_in_flight(tp) * mss;
-	if (pipe_size > vars->MaxPipeSize)
-		vars->MaxPipeSize = pipe_size;
+	if (perf_table != NULL) {
+		pipe_size = tcp_packets_in_flight(tp) * mss;
+		if (pipe_size > perf_table->MaxPipeSize)
+			perf_table->MaxPipeSize = pipe_size;
+	}
 
 	/* Discard initiail ssthresh set at infinity. */
 	if (tp->snd_ssthresh >= TCP_INFINITE_SSTHRESH) {
 		return;
 	}
-	ssthresh = tp->snd_ssthresh * tp->mss_cache;
-	if (ssthresh > vars->MaxSsthresh)
-		vars->MaxSsthresh = ssthresh;
-	if (ssthresh < vars->MinSsthresh)
-		vars->MinSsthresh = ssthresh;
+
+	if (stack_table != NULL) {
+		ssthresh = tp->snd_ssthresh * tp->mss_cache;
+		if (ssthresh > stack_table->MaxSsthresh)
+			stack_table->MaxSsthresh = ssthresh;
+		if (ssthresh < stack_table->MinSsthresh)
+			stack_table->MinSsthresh = ssthresh;
+	}
 }
+EXPORT_SYMBOL(tcp_estats_update_finish_segrecv);
 
 void tcp_estats_update_rwin_rcvd(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
+	struct tcp_estats_perf_table *perf_table = stats->tables.perf_table;
 	u32 win = tp->snd_wnd;
 
-	if (win > stats->estats_vars.MaxRwinRcvd)
-		stats->estats_vars.MaxRwinRcvd = win;
+	if (perf_table == NULL)
+		return;
+
+	if (win > perf_table->MaxRwinRcvd)
+		perf_table->MaxRwinRcvd = win;
 	if (win == 0)
-		stats->estats_vars.ZeroRwinRcvd++;
+		perf_table->ZeroRwinRcvd++;
 }
 
 void tcp_estats_update_rwin_sent(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
+	struct tcp_estats_perf_table *perf_table = stats->tables.perf_table;
 	u32 win = tp->rcv_wnd;
 
-	if (win > stats->estats_vars.MaxRwinSent)
-		stats->estats_vars.MaxRwinSent = win;
+	if (perf_table == NULL)
+		return;
+
+	if (win > perf_table->MaxRwinSent)
+		perf_table->MaxRwinSent = win;
 	if (win == 0)
-		stats->estats_vars.ZeroRwinSent++;
+		perf_table->ZeroRwinSent++;
 }
 
-void tcp_estats_update_sndlim(struct tcp_sock *tp, int why)
+void tcp_estats_update_sndlim(struct tcp_sock *tp,
+			      enum tcp_estats_sndlim_states state)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
+	struct tcp_estats_perf_table *perf_table = stats->tables.perf_table;
 	ktime_t now;
 
-	if (why < 0) {
-		printk(KERN_ERR "tcp_estats_update_sndlim: BUG: why < 0\n");
+	if (state <= TCP_ESTATS_SNDLIM_NONE ||
+	    state >= TCP_ESTATS_SNDLIM_NSTATES) {
+		pr_err("tcp_estats_update_sndlim: BUG: state out of range %d\n",
+		       state);
 		return;
 	}
 
+	if (perf_table == NULL)
+		return;
+
 	now = ktime_get();
-	stats->estats_vars.snd_lim_time[stats->estats_limstate]
-	    += ktime_to_us(ktime_sub(now, stats->estats_limstate_ts));
-	stats->estats_limstate_ts = now;
-	if (stats->estats_limstate != why) {
-		stats->estats_limstate = why;
-		stats->estats_vars.snd_lim_trans[why]++;
+	perf_table->snd_lim_time[stats->limstate]
+	    += ktime_to_us(ktime_sub(now, stats->limstate_ts));
+	stats->limstate_ts = now;
+	if (stats->limstate != state) {
+		stats->limstate = state;
+		perf_table->snd_lim_trans[state]++;
 	}
 }
 
 void tcp_estats_update_congestion(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
+	struct tcp_estats_path_table *path_table = stats->tables.path_table;
 
-	stats->estats_vars.CongSignals++;
-	stats->estats_vars.PreCongSumCwnd += tp->snd_cwnd * tp->mss_cache;
-	stats->estats_vars.PreCongSumRTT += stats->estats_vars.SampleRTT;
+	TCP_ESTATS_VAR_INC(tp, perf_table, CongSignals);
+	path_table->PreCongSumCwnd += tp->snd_cwnd * tp->mss_cache;
+	path_table->PreCongSumRTT += path_table->SampleRTT;
 }
 
 void tcp_estats_update_post_congestion(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
+	struct tcp_estats_path_table *path_table = stats->tables.path_table;
 	
-	stats->estats_vars.PostCongCountRTT++;
-	stats->estats_vars.PostCongSumRTT += stats->estats_vars.SampleRTT;
+	path_table->PostCongCountRTT++;
+	path_table->PostCongSumRTT += path_table->SampleRTT;
 }
 
 void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 			       u32 seq, u32 end_seq, int flags)
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
+	struct tcp_estats_perf_table *perf_table = stats->tables.perf_table;
+	struct tcp_estats_app_table *app_table = stats->tables.app_table;
 
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
-	stats->estats_current_ts = ktime_get();
+	stats->current_ts = ktime_get();
 #endif
 
+	if (perf_table == NULL)
+		return;
+
 	/* We know we're sending a segment. */
-	stats->estats_vars.SegsOut += pcount;
+	perf_table->SegsOut += pcount;
 
 	/* A pure ACK contains no data; everything else is data. */
 	if (len > 0) {
-		stats->estats_vars.DataSegsOut += pcount;
-		stats->estats_vars.DataOctetsOut += len;
+		perf_table->DataSegsOut += pcount;
+		perf_table->DataOctetsOut += len;
 	}
 
 	/* Check for retransmission. */
 	if (flags & TCPHDR_SYN) {
 		if (inet_csk(sk)->icsk_retransmits)
-			stats->estats_vars.SegsRetrans++;
-	} else if (before(seq, stats->estats_vars.SndMax)) {
-		stats->estats_vars.SegsRetrans += pcount;
-		stats->estats_vars.OctetsRetrans += end_seq - seq;
+			perf_table->SegsRetrans++;
+	} else if (app_table != NULL &&
+		   before(seq, app_table->SndMax)) {
+		perf_table->SegsRetrans += pcount;
+		perf_table->OctetsRetrans += end_seq - seq;
 	}
 }
 
 void tcp_estats_update_segrecv(struct tcp_sock *tp, struct sk_buff *skb)
 {
-	struct tcp_estats_directs *vars = &tp->tcp_stats->estats_vars;
+	struct tcp_estats_tables *tables = &tp->tcp_stats->tables;
+	struct tcp_estats_path_table *path_table = tables->path_table;
+	struct tcp_estats_perf_table *perf_table = tables->perf_table;
+	struct tcp_estats_stack_table *stack_table = tables->stack_table;
 	struct tcphdr *th = tcp_hdr(skb);
 	struct iphdr *iph = ip_hdr(skb);
 
-	vars->SegsIn++;
+	if (perf_table != NULL)
+		perf_table->SegsIn++;
+
 	if (skb->len == th->doff * 4) {
-		if (TCP_SKB_CB(skb)->ack_seq == tp->snd_una)
-			vars->DupAcksIn++;
+		if (stack_table != NULL &&
+		    TCP_SKB_CB(skb)->ack_seq == tp->snd_una)
+			stack_table->DupAcksIn++;
 	} else {
-		vars->DataSegsIn++;
-		vars->DataOctetsIn += skb->len - th->doff * 4;
+		if (perf_table != NULL) {
+			perf_table->DataSegsIn++;
+			perf_table->DataOctetsIn += skb->len - th->doff * 4;
+		}
 	}
 
-	vars->IpTtl = iph->ttl;
-	vars->IpTosIn = iph->tos;
+	if (path_table != NULL) {
+		path_table->IpTtl = iph->ttl;
+		path_table->IpTosIn = iph->tos;
+	}
 }
+EXPORT_SYMBOL(tcp_estats_update_segrecv);
 
 void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
 {
-	struct tcp_estats *stats = tp->tcp_stats;
-
-	stats->estats_vars.ThruOctetsReceived += seq - tp->rcv_nxt;
+	TCP_ESTATS_VAR_ADD(tp, app_table, ThruOctetsReceived,
+			   seq - tp->rcv_nxt);
 }
 
 void tcp_estats_update_writeq(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct tcp_estats_directs *vars = &tp->tcp_stats->estats_vars;
-	int len = tp->write_seq - vars->SndMax;
+	struct tcp_estats_app_table *app_table =
+			tp->tcp_stats->tables.app_table;
+	int len;
 
-	if (len > vars->MaxAppWQueue)
-		vars->MaxAppWQueue = len;
+	if (app_table == NULL)
+		return;
+
+	len = tp->write_seq - app_table->SndMax;
+
+	if (len > app_table->MaxAppWQueue)
+		app_table->MaxAppWQueue = len;
 }
 
 static inline u32 ofo_qlen(struct tcp_sock *tp)
@@ -433,15 +568,21 @@ static inline u32 ofo_qlen(struct tcp_sock *tp)
 void tcp_estats_update_recvq(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct tcp_estats_directs *vars = &tp->tcp_stats->estats_vars;
+	struct tcp_estats_tables *tables = &tp->tcp_stats->tables;
+	struct tcp_estats_app_table *app_table = tables->app_table;
+	struct tcp_estats_stack_table *stack_table = tables->stack_table;
 	u32 len1 = tp->rcv_nxt - tp->copied_seq;
 	u32 len2 = ofo_qlen(tp);
 
-	if (vars->MaxAppRQueue < len1)
-		vars->MaxAppRQueue = len1;
+	if (app_table != NULL) {
+		if (app_table->MaxAppRQueue < len1)
+			app_table->MaxAppRQueue = len1;
+	}
 
-	if (vars->MaxReasmQueue < len2)
-		vars->MaxReasmQueue = len2;
+	if (stack_table != NULL) {
+		if (stack_table->MaxReasmQueue < len2)
+			stack_table->MaxReasmQueue = len2;
+	}
 }
 
 /*
@@ -453,14 +594,14 @@ static int get_new_cid(struct tcp_estats *stats)
       int err;
       int id_cid;
 
-      again:
+again:
         if (unlikely(idr_pre_get(&tcp_estats_idr, GFP_KERNEL) == 0))
             return -ENOMEM;
 
         spin_lock_bh(&tcp_estats_idr_lock);
         err = idr_get_new_above(&tcp_estats_idr, stats, next_id, &id_cid);
         if (!err) {
-                next_id = (id_cid + 1) % 1024;
+                next_id = (id_cid + 1) % ESTATS_MAX_CID;
                 stats->tcpe_cid = id_cid;
         }
         spin_unlock_bh(&tcp_estats_idr_lock);
@@ -481,20 +622,31 @@ static void create_func(struct work_struct *work)
 
 static void establish_func(struct work_struct *work)
 {
-        struct tcp_estats *stats = container_of(work, struct tcp_estats, establish_notify);
+        struct tcp_estats *stats = container_of(work, struct tcp_estats,
+						establish_notify);
         int err = 0;
 
-        if ((stats->tcpe_cid) >= 0) {
+	if ((stats->tcpe_cid) > 0) {
+		pr_err("TCP estats container established multiple times.\n");
+		return;
+	}
+
+        if ((stats->tcpe_cid) == 0) {
                 err = get_new_cid(stats);
-                if (err) printk(KERN_DEBUG "get_new_cid error %d\n", err);
+                if (err)
+			pr_devel("get_new_cid error %d\n", err);
         }
 }
 
 static void destroy_func(struct work_struct *work)
 {
-        struct tcp_estats *stats = container_of(work, struct tcp_estats, destroy_notify.work);
+        struct tcp_estats *stats = container_of(work, struct tcp_estats,
+						destroy_notify.work);
 
         int id_cid = stats->tcpe_cid;
+
+	if (id_cid == 0)
+		pr_devel("TCP estats destroyed before being established.\n");
 
         if (id_cid >= 0) {
                 if (id_cid) {
@@ -516,24 +668,17 @@ void __init tcp_estats_init()
         establish_notify_func = &establish_func;
         destroy_notify_func = &destroy_func;
 
-        persist_delay = 60 * HZ;
+        persist_delay = 5 * HZ;
 
-        if ((tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256)) == NULL) {
-		printk(KERN_ERR "tcp_estats_init(): alloc_workqueue failed\n");
+        tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
+        if (tcp_estats_wq == NULL) {
+		pr_err("tcp_estats_init(): alloc_workqueue failed\n");
 		goto cleanup_fail;
 	}
 
-	tcp_estats_enabled = 1;
         tcp_estats_wq_enabled = 1;
-
 	return;
 
-      cleanup_fail:
-	printk("TCP ESTATS: initialization failed.\n");
+cleanup_fail:
+	pr_err("TCP ESTATS: initialization failed.\n");
 }
-
-#ifdef CONFIG_IPV6_MODULE
-EXPORT_SYMBOL(tcp_estats_create);
-EXPORT_SYMBOL(tcp_estats_update_segrecv);
-EXPORT_SYMBOL(tcp_estats_update_finish_segrecv);
-#endif
