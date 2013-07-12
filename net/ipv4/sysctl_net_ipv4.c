@@ -39,6 +39,11 @@ static int ip_ttl_max = 255;
 static int ip_ping_group_range_min[] = { 0, 0 };
 static int ip_ping_group_range_max[] = { GID_T_MAX, GID_T_MAX };
 
+/* Extended statistics (RFC4898). */
+#ifdef CONFIG_TCP_ESTATS
+int sysctl_tcp_estats __read_mostly;
+#endif  /* CONFIG_TCP_ESTATS */
+
 /* Update system visible IP port range */
 static void set_local_port_range(int range[2])
 {
@@ -784,6 +789,13 @@ static struct ctl_table ipv4_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &one
+	},
+	{
+		.procname	= "tcp_estats",
+		.data		= &sysctl_tcp_estats,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec
 	},
 	{ }
 };

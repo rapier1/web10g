@@ -242,9 +242,6 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 							   inet->inet_daddr,
 							   inet->inet_sport,
 							   usin->sin_port);
-	TCP_ESTATS_VAR_SET(tp, SndInitial, tp->write_seq);
-	TCP_ESTATS_VAR_SET(tp, SndMax, tp->write_seq);
-
 	inet->inet_id = tp->write_seq ^ jiffies;
 
 	err = tcp_connect(sk);
@@ -1709,7 +1706,7 @@ struct sock *tcp_v4_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	if (!newsk)
 		goto exit_nonewsk;
 
-	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV4);
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV4, TCP_ESTATS_ACTIVE);
 
 	newsk->sk_gso_type = SKB_GSO_TCPV4;
 	inet_sk_rx_dst_set(newsk, skb);
@@ -2171,7 +2168,7 @@ static int tcp_v4_init_sock(struct sock *sk)
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
 #endif
 
-	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4);
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4, TCP_ESTATS_INACTIVE);
 
 	return 0;
 }

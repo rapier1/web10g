@@ -1004,6 +1004,13 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	struct tcp_md5sig_key *md5;
 	struct tcphdr *th;
 	int err;
+#ifdef CONFIG_TCP_ESTATS
+	int len;
+	__u32 seq;
+	__u32 end_seq;
+	int tcp_flags;
+	int pcount;
+#endif
 
 	BUG_ON(!skb || !tcp_skb_pcount(skb));
 
@@ -1106,31 +1113,28 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 			      tcp_skb_pcount(skb));
 
 #ifdef CONFIG_TCP_ESTATS
-	{
-		/* If the skb isn't cloned, we can't reference it after
-		 * calling queue_xmit, so copy everything we need here. */
-		int len = skb->len;
-		int pcount = tcp_skb_pcount(skb);
-		__u32 seq = TCP_SKB_CB(skb)->seq;
-		__u32 end_seq = TCP_SKB_CB(skb)->end_seq;
-		int flags = TCP_SKB_CB(skb)->tcp_flags;
-
-		err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
-		
-		if (err == 0)
-			TCP_ESTATS_UPDATE(tp,
-				tcp_estats_update_segsend(sk, len, pcount,
-					seq, end_seq, flags));
-		
-	}
-#else
-	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
+	/* If the skb isn't cloned, we can't reference it after
+	 * calling queue_xmit, so copy everything we need here. */
+	len = skb->len;
+	pcount = tcp_skb_pcount(skb);
+	seq = TCP_SKB_CB(skb)->seq;
+	end_seq = TCP_SKB_CB(skb)->end_seq;
+	tcp_flags = TCP_SKB_CB(skb)->tcp_flags;
 #endif
+
+	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
+	
+	if (likely(!err)) {
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, len, pcount,
+								seq, end_seq,
+								tcp_flags));
+	}
+
 	if (likely(err <= 0))
 		return err;
 
 	tcp_enter_cwr(sk, 1);
-	TCP_ESTATS_VAR_INC(tp, SendStall);
+	TCP_ESTATS_VAR_INC(tp, stack_table, SendStall);
 
 	return net_xmit_eval(err);
 }
@@ -1998,7 +2002,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	unsigned int tso_segs, sent_pkts;
 	int cwnd_quota;
 	int result;
-	int why = TCP_ESTATS_SNDLIM_NONE;
+	int why = TCP_ESTATS_SNDLIM_SENDER;
 
 	sent_pkts = 0;
 
@@ -2037,12 +2041,11 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
 						     (tcp_skb_is_last(sk, skb) ?
 						      nonagle : TCP_NAGLE_PUSH)))) {
-				why = TCP_ESTATS_SNDLIM_SENDER;
 				break;
 			}
 		} else {
 			if (!push_one && tcp_tso_should_defer(sk, skb)) {
-				why = TCP_ESTATS_SNDLIM_CWND;
+				why = TCP_ESTATS_SNDLIM_TSODEFER;
 				break;
 			}
 		}
@@ -2063,14 +2066,12 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		if (skb->len > limit &&
 		    unlikely(tso_fragment(sk, skb, limit, mss_now, gfp))) {
-			why = TCP_ESTATS_SNDLIM_SENDER;
 			break;
 		}
 
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp))) {
-			why = TCP_ESTATS_SNDLIM_SENDER;
 			break;
 		}
 
@@ -2087,8 +2088,6 @@ repair:
 			break;
 	}
 
-	if (why == TCP_ESTATS_SNDLIM_NONE)
-		why = TCP_ESTATS_SNDLIM_SENDER;
 	TCP_ESTATS_UPDATE(tp, tcp_estats_update_sndlim(tp, why));
 
 	if (likely(sent_pkts)) {
@@ -3073,13 +3072,17 @@ int tcp_connect(struct sock *sk)
 	 * in order to make this packet get counted in tcpOutSegs.
 	 */
 	tp->snd_nxt = tp->write_seq;
-	TCP_ESTATS_UPDATE(tp, tcp_estats_update_snd_nxt(tp));
 	tp->pushed_seq = tp->write_seq;
-	TCP_INC_STATS(sock_net(sk), TCP_MIB_ACTIVEOPENS);
 
 	/* Timer for repeating the SYN until an answer. */
 	inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 				  inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
+
+	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->write_seq);
+	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->write_seq);
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_snd_nxt(tp));
+	TCP_INC_STATS(sock_net(sk), TCP_MIB_ACTIVEOPENS);
+
 	return 0;
 }
 EXPORT_SYMBOL(tcp_connect);
