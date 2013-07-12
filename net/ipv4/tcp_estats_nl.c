@@ -27,9 +27,10 @@ static struct genl_multicast_group genl_estats_mc = {
 
 static const struct nla_policy spec_policy[NEA_4TUPLE_MAX+1] = {
         [NEA_REM_ADDR]    = { .type = NLA_BINARY,
-	                      .len  = 17 },
+	                      .len  = 16 },
         [NEA_LOCAL_ADDR]  = { .type = NLA_BINARY,
-	                      .len  = 17 },
+	                      .len  = 16 },
+	[NEA_ADDR_TYPE]	  = { .type = NLA_U8 },
         [NEA_REM_PORT]    = { .type = NLA_U16 },
         [NEA_LOCAL_PORT]  = { .type = NLA_U16 },
         [NEA_CID]         = { .type = NLA_U32 },
@@ -41,6 +42,7 @@ static const struct nla_policy mask_policy[NEA_MASK_MAX+1] = {
         [NEA_STACK_MASK]  = { .type = NLA_U64 },
         [NEA_APP_MASK]    = { .type = NLA_U64 },
         [NEA_TUNE_MASK]   = { .type = NLA_U64 },
+	[NEA_EXTRAS_MASK] = { .type = NLA_U64 },
 };
 
 static const struct nla_policy write_policy[NEA_WRITE_MAX+1] = {
@@ -80,10 +82,11 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
                 nest = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
 
-                nla_put(msg, NEA_REM_ADDR, 17, &spec.rem_addr[0]);
+                nla_put(msg, NEA_REM_ADDR, 16, &spec.rem_addr[0]);
                 nla_put_u16(msg, NEA_REM_PORT, spec.rem_port);
-                nla_put(msg, NEA_LOCAL_ADDR, 17, &spec.local_addr[0]);
+                nla_put(msg, NEA_LOCAL_ADDR, 16, &spec.local_addr[0]);
                 nla_put_u16(msg, NEA_LOCAL_PORT, spec.local_port);
+		nla_put_u8(msg, NEA_ADDR_TYPE, spec.addr_type);
                 nla_put_u32(msg, NEA_CID, tmpid);
 
                 nla_nest_end(msg, nest);
@@ -121,10 +124,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         int tblnum;
         uint64_t mask;
         uint64_t masks[MAX_TABLE] = { DEFAULT_PERF_MASK, DEFAULT_PATH_MASK,
-                DEFAULT_STACK_MASK, DEFAULT_APP_MASK, DEFAULT_TUNE_MASK };
+                DEFAULT_STACK_MASK, DEFAULT_APP_MASK, DEFAULT_TUNE_MASK,
+		DEFAULT_EXTRAS_MASK };
 
         int if_mask[] = { [0 ... MAX_TABLE-1] = 0 };
-        static void *mask_jump[] = { &&mask_no, &&mask_yes };
 
 	union estats_val *val = NULL;
 	int numvars = TOTAL_NUM_VARS;
@@ -138,7 +141,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	if (!info->attrs[NLE_ATTR_4TUPLE])
 		return -EINVAL;
 
-        ret = nla_parse_nested(tb, NEA_4TUPLE_MAX, info->attrs[NLE_ATTR_4TUPLE], spec_policy);
+        ret = nla_parse_nested(tb, NEA_4TUPLE_MAX, info->attrs[NLE_ATTR_4TUPLE],
+			       spec_policy);
 
 	if (ret < 0)
 		goto nla_parse_failure;
@@ -177,6 +181,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
                 masks[TUNE_TABLE] = nla_get_u64(tb_mask[NEA_TUNE_MASK]);
                 if_mask[TUNE_TABLE] = 1;
         }
+        if (tb_mask[NEA_EXTRAS_MASK]) {
+                masks[EXTRAS_TABLE] = nla_get_u64(tb_mask[NEA_EXTRAS_MASK]);
+                if_mask[EXTRAS_TABLE] = 1;
+        }
 
         rcu_read_lock();
         stats = idr_find(&tcp_estats_idr, cid);
@@ -186,21 +194,22 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
         tcp_estats_use(stats);
 
-	sk = stats->estats_sk;
+	sk = stats->sk;
 
 	if (!stats->ids) {
 		read_lock_bh(&sk->sk_callback_lock);
-		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : GLOBAL_ROOT_UID;
-		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid : GLOBAL_ROOT_GID;
+		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid :
+				GLOBAL_ROOT_UID;
+		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid :
+				GLOBAL_ROOT_GID;
 		read_unlock_bh(&sk->sk_callback_lock);
 
 		stats->ids = 1;
 	}
 
 	if (!(capable(CAP_SYS_ADMIN) ||
-		(stats->uid == cred->uid) ||
-		(stats->gid == cred->gid))) {
-
+	      (stats->uid == cred->uid) ||
+	      (stats->gid == cred->gid))) {
 		tcp_estats_unuse(stats);
 		return -EACCES;
 	}
@@ -211,38 +220,35 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
 	do_gettimeofday(&read_time);
 
-        lock_sock(stats->estats_sk);
+        lock_sock(stats->sk);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
+		if (if_mask[tblnum]) {
+			i = 0;
+			mask = masks[tblnum];
+			while ((i < max_index[tblnum]) && mask) {
+				j = __builtin_ctzl(mask);
+				mask = mask >> j;
+				i += j;
 
-                goto *mask_jump[if_mask[tblnum]];
+				k = single_index(tblnum, i);
+				read_tcp_estats(&(val[k]), stats,
+						&(estats_var_array[tblnum][i]));
 
-              mask_yes:
-                i = 0;
-                mask = masks[tblnum];
-                while ((i < max_index[tblnum]) && mask) {
-                        j = __builtin_ctzl(mask);
-                        mask = mask >> j;
-                        i += j;
+				mask = mask >> 1;
+				i++;
+			}
+		} else {
+			for (i = 0; i < max_index[tblnum]; i++) {
+				k = single_index(tblnum, i);
+				read_tcp_estats(&(val[k]), stats,
+						&(estats_var_array[tblnum][i]));
 
-			k = single_index(tblnum, i);
-                        read_tcp_estats(&(val[k]), stats, &(estats_var_array[tblnum][i]));
-
-                        mask = mask >> 1;
-                        i++;
-                }
-                
-                continue;
-
-              mask_no:
-                for (i = 0; i < max_index[tblnum]; i++) {
-			k = single_index(tblnum, i);
-                        read_tcp_estats(&(val[k]), stats, &(estats_var_array[tblnum][i]));
-
-                }
+			}
+		}
         }
 
-        release_sock(stats->estats_sk);
+        release_sock(stats->sk);
 
         tcp_estats_unuse(stats);
 
@@ -250,33 +256,34 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	if (msg == NULL)
 		goto nlmsg_failure;
 
-	hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0, TCPE_CMD_READ_VARS);
+	hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
+			  TCPE_CMD_READ_VARS);
 	if (hdr == NULL)
 		goto nlmsg_failure;
 
 	nest_time = nla_nest_start(msg, NLE_ATTR_TIME | NLA_F_NESTED);
-		if (nla_put_u32(msg, NEA_TIME_SEC,
-				lower_32_bits(read_time.tv_sec)))
-			goto nla_put_failure;
-		if (nla_put_u32(msg, NEA_TIME_USEC,
-				lower_32_bits(read_time.tv_usec)))
-			goto nla_put_failure;
+	if (nla_put_u32(msg, NEA_TIME_SEC,
+			lower_32_bits(read_time.tv_sec)))
+		goto nla_put_failure;
+	if (nla_put_u32(msg, NEA_TIME_USEC,
+			lower_32_bits(read_time.tv_usec)))
+		goto nla_put_failure;
 	nla_nest_end(msg, nest_time);
 
 	tcp_estats_read_connection_spec(&spec, stats);
 
 	nest_spec = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
 
-	nla_put(msg, NEA_REM_ADDR, 17, &spec.rem_addr[0]);
+	nla_put(msg, NEA_REM_ADDR, 16, &spec.rem_addr[0]);
 	nla_put_u16(msg, NEA_REM_PORT, spec.rem_port);
-	nla_put(msg, NEA_LOCAL_ADDR, 17, &spec.local_addr[0]);
+	nla_put(msg, NEA_LOCAL_ADDR, 16, &spec.local_addr[0]);
 	nla_put_u16(msg, NEA_LOCAL_PORT, spec.local_port);
+	nla_put_u8(msg, NEA_ADDR_TYPE, spec.addr_type);
 	nla_put_u32(msg, NEA_CID, cid);
 
 	nla_nest_end(msg, nest_spec);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
-        
                 switch (tblnum) {
                 case PERF_TABLE:
                         nest[tblnum] = nla_nest_start(msg, NLE_ATTR_PERF | NLA_F_NESTED);
@@ -293,6 +300,9 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
                 case TUNE_TABLE:
                         nest[tblnum] = nla_nest_start(msg, NLE_ATTR_TUNE | NLA_F_NESTED);
                         break;
+		case EXTRAS_TABLE:
+			nest[tblnum] = nla_nest_start(msg, NLE_ATTR_EXTRAS | NLA_F_NESTED);
+			break;
                 }
                 if (!nest[tblnum])
                         goto nla_put_failure;
@@ -380,7 +390,8 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 	if (!info->attrs[NLE_ATTR_4TUPLE])
 		return -EINVAL;
 
-        ret = nla_parse_nested(tb_tuple, NEA_4TUPLE_MAX, info->attrs[NLE_ATTR_4TUPLE], spec_policy);
+        ret = nla_parse_nested(tb_tuple, NEA_4TUPLE_MAX,
+			       info->attrs[NLE_ATTR_4TUPLE], spec_policy);
 
 	if (ret < 0)
 		goto nla_parse_failure;
@@ -396,7 +407,8 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 	if (!info->attrs[NLE_ATTR_WRITE])
 		return -EINVAL;
 
-        ret = nla_parse_nested(tb_write, NEA_WRITE_MAX, info->attrs[NLE_ATTR_WRITE], write_policy);
+        ret = nla_parse_nested(tb_write, NEA_WRITE_MAX,
+			       info->attrs[NLE_ATTR_WRITE], write_policy);
 
 	if (ret < 0)
 		goto nla_parse_failure;
@@ -423,27 +435,27 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 
         tcp_estats_use(stats);
 
-	sk = stats->estats_sk;
+	sk = stats->sk;
 
 	if (!stats->ids) {
 		read_lock_bh(&sk->sk_callback_lock);
-		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : GLOBAL_ROOT_UID;
-		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid : GLOBAL_ROOT_GID;
+		stats->uid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid :
+				GLOBAL_ROOT_UID;
+		stats->gid = sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_gid :
+				GLOBAL_ROOT_GID;
 		read_unlock_bh(&sk->sk_callback_lock);
 
 		stats->ids = 1;
 	}
 
-	if (!(capable(CAP_SYS_ADMIN) ||
-		(stats->uid == cred->uid))) {
-
+	if (!(capable(CAP_SYS_ADMIN) || (stats->uid == cred->uid))) {
 		tcp_estats_unuse(stats);
 		return -EACCES;
 	}
 
-        lock_sock(stats->estats_sk);
+        lock_sock(stats->sk);
 	ret = write_tcp_estats(&val, stats, var);
-	release_sock(stats->estats_sk);
+	release_sock(stats->sk);
 
 	tcp_estats_unuse(stats);
 
@@ -505,7 +517,6 @@ err:
 
 void __exit tcp_estats_nl_exit(void)
 {
-
         genl_unregister_family(&genl_estats_family);
 
         printk(KERN_INFO "tcp_estats netlink module exiting.\n");

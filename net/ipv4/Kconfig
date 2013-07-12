@@ -664,7 +664,7 @@ config TCP_ESTATS_NETLINK
         depends on TCP_ESTATS
         default m
         ---help---
-          Netlink module exposing TCP Extended metrics.
-          (See http://www.web10g.org)
+          Netlink module exposing RFC4898 TCP Extended metrics.
+          See http://www.web10g.org for more details.
 
 endif
