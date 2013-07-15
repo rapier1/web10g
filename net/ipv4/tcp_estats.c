@@ -457,8 +457,11 @@ void tcp_estats_update_congestion(struct tcp_sock *tp)
 	struct tcp_estats_path_table *path_table = stats->tables.path_table;
 
 	TCP_ESTATS_VAR_INC(tp, perf_table, CongSignals);
-	path_table->PreCongSumCwnd += tp->snd_cwnd * tp->mss_cache;
-	path_table->PreCongSumRTT += path_table->SampleRTT;
+
+	if (path_table != NULL) {
+		path_table->PreCongSumCwnd += tp->snd_cwnd * tp->mss_cache;
+		path_table->PreCongSumRTT += path_table->SampleRTT;
+	}
 }
 
 void tcp_estats_update_post_congestion(struct tcp_sock *tp)
@@ -466,8 +469,10 @@ void tcp_estats_update_post_congestion(struct tcp_sock *tp)
 	struct tcp_estats *stats = tp->tcp_stats;
 	struct tcp_estats_path_table *path_table = stats->tables.path_table;
 	
-	path_table->PostCongCountRTT++;
-	path_table->PostCongSumRTT += path_table->SampleRTT;
+	if (path_table != NULL) {
+		path_table->PostCongCountRTT++;
+		path_table->PostCongSumRTT += path_table->SampleRTT;
+	}
 }
 
 void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
