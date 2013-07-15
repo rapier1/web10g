@@ -59,11 +59,15 @@ EXPORT_SYMBOL(tcp_estats_enabled);
 
 static inline void tcp_estats_enable(void)
 {
+	if (static_key_true(&tcp_estats_enabled))
+		return;
 	static_key_slow_inc(&tcp_estats_enabled);
 }
 
 static inline void tcp_estats_disable(void)
 {
+	if (static_key_false(&tcp_estats_enabled))
+		return;
 	static_key_slow_dec(&tcp_estats_enabled);
 }
 
