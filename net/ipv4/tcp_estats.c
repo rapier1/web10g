@@ -59,12 +59,14 @@ EXPORT_SYMBOL(tcp_estats_enabled);
 
 static inline void tcp_estats_enable(void)
 {
-	static_key_slow_inc(&tcp_estats_enabled);
+	if (!static_key_enabled(&tcp_estats_enabled))
+		static_key_slow_inc(&tcp_estats_enabled);
 }
 
 static inline void tcp_estats_disable(void)
 {
-	static_key_slow_dec(&tcp_estats_enabled);
+	if (static_key_enabled(&tcp_estats_enabled))
+		static_key_slow_dec(&tcp_estats_enabled);
 }
 
 /* Calculates the required amount of memory for any enabled tables. */
