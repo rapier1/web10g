@@ -83,10 +83,8 @@ int tcp_estats_get_allocation_size(int sysctl)
 		size += sizeof(struct tcp_estats_stack_table);
 	if (sysctl & TCP_ESTATS_TABLEMASK_APP)
 		size += sizeof(struct tcp_estats_app_table);
-	/*
-	if ((sysctl & TCP_ESTATS_TABLEMASK_TUNE) != 0)
+	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE)
 		size += sizeof(struct tcp_estats_tune_table);
-	*/
 	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS)
 		size += sizeof(struct tcp_estats_extras_table);
 	return size;
@@ -146,12 +144,10 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		tables->app_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_app_table);
 	}
-	/*
 	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE) {
 		tables->tune_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_tune_table);
 	}
-	*/
 	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS) {
 		tables->extras_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_extras_table);
@@ -173,6 +169,8 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	TCP_ESTATS_VAR_SET(tp, stack_table, ActiveOpen, active);
 	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->snd_nxt);
 	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->snd_nxt);
+	TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
+			   sysctl_tcp_max_ssthresh);
 
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTT, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTO, ESTATS_INF32);

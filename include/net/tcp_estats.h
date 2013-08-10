@@ -66,7 +66,7 @@ enum tcp_estats_softerror_reason {
 #define TCP_ESTATS_TABLEMASK_PATH	0x04
 #define TCP_ESTATS_TABLEMASK_STACK	0x08
 #define TCP_ESTATS_TABLEMASK_APP	0x10
-/* #define TCP_ESTATS_TABLEMASK_TUNE	0x20 */
+#define TCP_ESTATS_TABLEMASK_TUNE	0x20
 #define TCP_ESTATS_TABLEMASK_EXTRAS	0x40
 
 #ifdef CONFIG_TCP_ESTATS
@@ -107,10 +107,8 @@ extern struct static_key	tcp_estats_enabled;
 /*
  * Variables that can be read and written directly.
  *
- * Contains all variables from RFC 4898. Commented fields are
- * either not implemented (only ElapsedSecs, ElapsedMicroSecs,
- * StartTimeStamp remain unimplemented in this release) or have
- * handlers and do not need struct storage.
+ * Contains all variables from RFC 4898. Commented fields have
+ * external handlers and do not need struct storage.
  */
 struct tcp_estats_connection_table {
 	/* Connection table */
@@ -245,14 +243,12 @@ struct tcp_estats_app_table {
 	u32		MaxAppRQueue;
 };
 
-/*
 struct tcp_estats_tune_table {
-	LimCwnd
-	LimSsthresh
-	LimRwin
-	LimMSS
+	/*		LimCwnd */
+	u32		LimSsthresh;
+	/*		LimRwin */
+	/*		LimMSS */
 };
-*/
 
 struct tcp_estats_extras_table {
 	u32		OtherReductionsCV;
@@ -265,7 +261,7 @@ struct tcp_estats_tables {
 	struct tcp_estats_path_table		*path_table;
 	struct tcp_estats_stack_table		*stack_table;
 	struct tcp_estats_app_table		*app_table;
-	/*struct tcp_estats_tune_table		*tune_table;*/
+	struct tcp_estats_tune_table		*tune_table;
 	struct tcp_estats_extras_table		*extras_table;
 };
 
