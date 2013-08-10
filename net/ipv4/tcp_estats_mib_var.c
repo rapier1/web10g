@@ -17,8 +17,8 @@ static char *get_stats_base(struct tcp_estats *stats,
 		base = (char *) stats->tables.stack_table;
 	else if (strcmp(vp->table, "app_table") == 0)
 		base = (char *) stats->tables.app_table;
-	/*else if (strcmp(vp->table, "tune_table") == 0)
-		base = (char *) stats->tables.tune_table;*/
+	else if (strcmp(vp->table, "tune_table") == 0)
+		base = (char *) stats->tables.tune_table;
 	else if (strcmp(vp->table, "extras_table") == 0)
 	       base = (char *) stats->tables.extras_table;
 
@@ -26,7 +26,7 @@ static char *get_stats_base(struct tcp_estats *stats,
 };
 
 static void read_stats(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+		       struct tcp_estats_var *vp)
 {
 	char *base = get_stats_base(stats, vp);
 	if (base != NULL)
@@ -34,13 +34,13 @@ static void read_stats(void *buf, struct tcp_estats *stats,
 }
 
 static void read_sk32(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+		      struct tcp_estats_var *vp)
 {
 	memcpy(buf, (char *)(stats->sk) + vp->read_data, 4);
 }
 
 static void read_inf32(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+		       struct tcp_estats_var *vp)
 {
         u64 val;
 	char *base = get_stats_base(stats, vp);
@@ -52,7 +52,7 @@ static void read_inf32(void *buf, struct tcp_estats *stats,
 }
 
 static void read_ElapsedSecs(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			     struct tcp_estats_var *vp)
 {
 	ktime_t elapsed;
 	u32 secs;
@@ -67,7 +67,7 @@ static void read_ElapsedSecs(void *buf, struct tcp_estats *stats,
 }
 
 static void read_ElapsedMicroSecs(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+				  struct tcp_estats_var *vp)
 {
 	ktime_t elapsed;
 	u32 usecs;
@@ -82,14 +82,14 @@ static void read_ElapsedMicroSecs(void *buf, struct tcp_estats *stats,
 }
 
 static void read_StartTimeStamp(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+				struct tcp_estats_var *vp)
 {
         u8 val = 0; // currently unimplemented
         memcpy(buf, &val, 1);
 }
 
 static void read_PipeSize(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			  struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tcp_packets_in_flight(tp) * tp->mss_cache;
@@ -97,7 +97,7 @@ static void read_PipeSize(void *buf, struct tcp_estats *stats,
 }
 
 static void read_SmoothedRTT(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			     struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = (tp->srtt >> 3) * 1000 / HZ;
@@ -105,7 +105,7 @@ static void read_SmoothedRTT(void *buf, struct tcp_estats *stats,
 }
 
 static void read_CurRTO(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			struct tcp_estats_var *vp)
 {
 	struct inet_connection_sock *icsk = inet_csk(stats->sk);
 	u32 val = icsk->icsk_rto * 1000 / HZ;
@@ -113,7 +113,7 @@ static void read_CurRTO(void *buf, struct tcp_estats *stats,
 }
 
 static void read_CurCwnd(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			 struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tp->snd_cwnd * tp->mss_cache;
@@ -121,7 +121,7 @@ static void read_CurCwnd(void *buf, struct tcp_estats *stats,
 }
 
 static void read_CurSsthresh(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			     struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tp->snd_ssthresh <= 0x7fffffff ?
@@ -130,7 +130,7 @@ static void read_CurSsthresh(void *buf, struct tcp_estats *stats,
 }
 
 static void read_RetranThresh(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			      struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tp->reordering;
@@ -138,7 +138,7 @@ static void read_RetranThresh(void *buf, struct tcp_estats *stats,
 }
 
 static void read_RTTVar(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = (tp->rttvar >> 2) * 1000 / HZ;
@@ -148,14 +148,14 @@ static void read_RTTVar(void *buf, struct tcp_estats *stats,
 /* Note: this value returned is technically incorrect between a
  * setsockopt of IP_TOS, and when the next segment is sent. */
 static void read_IpTosOut(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			  struct tcp_estats_var *vp)
 {
 	struct inet_sock *inet = inet_sk(stats->sk);
 	*(char *)buf = inet->tos;
 }
 
 static void read_RcvRTT(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = ((1000000*tp->rcv_rtt_est.rtt)/HZ)>>3;
@@ -163,7 +163,7 @@ static void read_RcvRTT(void *buf, struct tcp_estats *stats,
 }
 
 static void read_MSSSent(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			 struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tp->advmss;
@@ -171,7 +171,7 @@ static void read_MSSSent(void *buf, struct tcp_estats *stats,
 }
 
 static void read_MSSRcvd(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			 struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tp->rx_opt.rec_mss;
@@ -182,17 +182,19 @@ static void read_MSSRcvd(void *buf, struct tcp_estats *stats,
  * implemented for the case where we sent a scale option
  * but did not receive one. */
 static void read_WinScaleSent(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			      struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	s32 val = tp->rx_opt.wscale_ok ? tp->rx_opt.rcv_wscale : -1;
 	memcpy(buf, &val, 4);
 }
 
 static void read_WinScaleRcvd(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			      struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	s32 val = tp->rx_opt.wscale_ok ? tp->rx_opt.snd_wscale : -1;
 	memcpy(buf, &val, 4);
 }
@@ -200,7 +202,7 @@ static void read_WinScaleRcvd(void *buf, struct tcp_estats *stats,
 /* Note: all these (TimeStamps, ECN, SACK, Nagle) are incorrect
  * if the sysctl values are changed during the connection. */
 static void read_TimeStamps(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			    struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	s32 val = 1;
@@ -211,7 +213,7 @@ static void read_TimeStamps(void *buf, struct tcp_estats *stats,
 }
 
 static void read_ECN(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+		     struct tcp_estats_var *vp)
 {
 	struct sock *sk = stats->sk;
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -223,7 +225,7 @@ static void read_ECN(void *buf, struct tcp_estats *stats,
 }
 
 static void read_WillSendSACK(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			      struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	s32 val = 1;
@@ -257,25 +259,28 @@ static void read_State(void *buf, struct tcp_estats *stats,
 }
 
 static void read_Nagle(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+		       struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	s32 val = tp->nonagle ? 2 : 1;
 	memcpy(buf, &val, 4);
 }
 
 static void read_InRecovery(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			    struct tcp_estats_var *vp)
 {
 	struct inet_connection_sock *icsk = inet_csk(stats->sk);
+
 	s32 val = icsk->icsk_ca_state > TCP_CA_CWR ? 1 : 2;
 	memcpy(buf, &val, 4);
 }
 
 static void read_CurTimeoutCount(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+				 struct tcp_estats_var *vp)
 {
 	struct inet_connection_sock *icsk = inet_csk(stats->sk);
+
 	u32 val = icsk->icsk_retransmits;
 	memcpy(buf, &val, 4);
 }
@@ -290,9 +295,10 @@ static inline u32 ofo_qlen(struct tcp_sock *tp)
 }
 
 static void read_CurReasmQueue(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			       struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	u32 val = ofo_qlen(tp);
 	memcpy(buf, &val, 4);
 }
@@ -312,54 +318,68 @@ static void read_CurAppWQueue(void *buf, struct tcp_estats *stats,
 }
 
 static void read_CurAppRQueue(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			      struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	u32 val = tp->rcv_nxt - tp->copied_seq;
 	memcpy(buf, &val, 4);
 }
 
 static void read_LimCwnd(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			 struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	u32 tmp = (u32) (tp->snd_cwnd_clamp * tp->mss_cache);
 	memcpy(buf, &tmp, 4);
 }
 
 static void read_LimSsthresh(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			     struct tcp_estats_var *vp)
 {
-	u32 tmp = (u32) sysctl_tcp_max_ssthresh;
-	if (tmp == 0)
-		tmp = 0x7fffffff;
-	memcpy(buf, &sysctl_tcp_max_ssthresh, 4);
+	struct tcp_estats_tune_table *tune_table = stats->tables.tune_table;
+
+	if (tune_table)
+		memcpy(buf, &tune_table->LimSsthresh, 4);
+}
+
+static void write_LimSsthresh(void *buf, struct tcp_estats *stats,
+                              struct tcp_estats_var *vp)
+{
+	struct tcp_estats_tune_table *tune_table = stats->tables.tune_table;
+	u32 tmp = *(u32 *) buf;
+
+	if (tune_table)
+		memcpy(&tune_table->LimSsthresh, &tmp, 4);
 }
 
 static void write_LimCwnd(void *buf, struct tcp_estats *stats,
-	struct tcp_estats_var *vp)
+			  struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
+
 	tp->snd_cwnd_clamp = min(*(u32 *) buf / tp->mss_cache, 65535U);
 }
 
 static void read_LimRwin(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			 struct tcp_estats_var *vp)
 {
 	memcpy(buf, (char *)(stats->sk) + OFFSET_TP(window_clamp), 4);
 }
 
 static void write_LimRwin(void *buf, struct tcp_estats *stats,
-	struct tcp_estats_var *vp)
+			  struct tcp_estats_var *vp)
 {
         struct tcp_sock *tp = tcp_sk(stats->sk);
         u32 val;
+
         memcpy(&val, buf, 4);
         tp->window_clamp = min(val, 65535U << tp->rx_opt.rcv_wscale);
 }
 
 static void read_LimMSS(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			struct tcp_estats_var *vp)
 {
 	memcpy(buf, (char *)(stats->sk) + OFFSET_TP(rx_opt.mss_clamp), 4);
 }
@@ -549,7 +569,7 @@ struct tcp_estats_var app_var_array[] = {
 
 struct tcp_estats_var tune_var_array[] = {
         RWFUNC(LimCwnd,UNSIGNED32),
-        READFUNC(LimSsthresh,UNSIGNED32),
+        RWFUNC(LimSsthresh,UNSIGNED32),
         RWFUNC(LimRwin,UNSIGNED32),
         READFUNC(LimMSS,UNSIGNED32),
 };

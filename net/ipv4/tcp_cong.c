@@ -311,14 +311,25 @@ void tcp_slow_start(struct tcp_sock *tp)
 	int cnt; /* increase in packets */
 	unsigned int delta = 0;
 	u32 snd_cwnd = tp->snd_cwnd;
-
+	u32 limssthresh = 0;
+#ifdef CONFIG_TCP_ESTATS
+	struct tcp_estats *stats = tp->tcp_stats;
+#endif
+ 
 	if (unlikely(!snd_cwnd)) {
 		pr_err_once("snd_cwnd is nul, please report this bug.\n");
 		snd_cwnd = 1U;
 	}
 
 	TCP_ESTATS_VAR_INC(tp, stack_table, SlowStart);
-	if (sysctl_tcp_max_ssthresh > 0 && tp->snd_cwnd > sysctl_tcp_max_ssthresh)
+
+#ifdef CONFIG_TCP_ESTATS
+	if (stats->tables.tune_table)
+		limssthresh = (stats->tables.tune_table)->LimSsthresh;
+#endif 
+	if (limssthresh > 0 && tp->snd_cwnd > limssthresh)
+		cnt = limssthresh >> 1;			/* limited slow start */
+	else if (sysctl_tcp_max_ssthresh > 0 && tp->snd_cwnd > sysctl_tcp_max_ssthresh)
 		cnt = sysctl_tcp_max_ssthresh >> 1;	/* limited slow start */
 	else
 		cnt = snd_cwnd;				/* exponential increase */
