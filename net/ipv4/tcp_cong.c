@@ -324,7 +324,7 @@ void tcp_slow_start(struct tcp_sock *tp)
 	TCP_ESTATS_VAR_INC(tp, stack_table, SlowStart);
 
 #ifdef CONFIG_TCP_ESTATS
-	if (stats->tables.tune_table)
+	if (stats && stats->tables.tune_table)
 		limssthresh = (stats->tables.tune_table)->LimSsthresh;
 #endif 
 	if (limssthresh > 0 && tp->snd_cwnd > limssthresh)
