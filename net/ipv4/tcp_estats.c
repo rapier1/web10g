@@ -59,14 +59,12 @@ EXPORT_SYMBOL(tcp_estats_enabled);
 
 static inline void tcp_estats_enable(void)
 {
-	if (!static_key_enabled(&tcp_estats_enabled))
-		static_key_slow_inc(&tcp_estats_enabled);
+	static_key_slow_inc(&tcp_estats_enabled);
 }
 
 static inline void tcp_estats_disable(void)
 {
-	if (static_key_enabled(&tcp_estats_enabled))
-		static_key_slow_dec(&tcp_estats_enabled);
+	static_key_slow_dec(&tcp_estats_enabled);
 }
 
 /* Calculates the required amount of memory for any enabled tables. */
@@ -109,7 +107,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	 * tables to avoid raciness. */
 	sysctl = ACCESS_ONCE(sysctl_tcp_estats);
 	if (likely(sysctl == TCP_ESTATS_TABLEMASK_INACTIVE)) {
-		tcp_estats_disable();
 		return 0;
 	}
 
@@ -125,8 +122,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 
 	tables->connection_table = estats_mem;
 	estats_mem += sizeof(struct tcp_estats_connection_table);
-
-	tcp_estats_enable();
 
 	if (sysctl & TCP_ESTATS_TABLEMASK_PERF) {
 		tables->perf_table = estats_mem;
@@ -188,6 +183,8 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
                 ret = queue_work(tcp_estats_wq, &stats->create_notify);
         }
 
+	tcp_estats_enable();
+
 	return 0;
 }
 EXPORT_SYMBOL(tcp_estats_create);
@@ -215,6 +212,7 @@ void tcp_estats_destroy(struct sock *sk)
 /* Do not call directly.  Called from tcp_estats_unuse(). */
 void tcp_estats_free(struct tcp_estats *stats)
 {
+	tcp_estats_disable();
 	sock_put(stats->sk);
 	kfree(stats);
 }
