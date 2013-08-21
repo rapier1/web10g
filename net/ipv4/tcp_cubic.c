@@ -318,6 +318,7 @@ static void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		bictcp_update(ca, tp->snd_cwnd);
 		tcp_cong_avoid_ai(tp, ca->cnt);
 	}
+
 }
 
 static u32 bictcp_recalc_ssthresh(struct sock *sk)
