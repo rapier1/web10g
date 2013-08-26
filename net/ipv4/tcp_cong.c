@@ -315,6 +315,7 @@ void tcp_slow_start(struct tcp_sock *tp)
 	if (sysctl_tcp_abc && tp->bytes_acked < tp->mss_cache)
 		return;
 
+	TCP_ESTATS_VAR_INC(tp, SlowStart);
 	if (sysctl_tcp_max_ssthresh > 0 && tp->snd_cwnd > sysctl_tcp_max_ssthresh)
 		cnt = sysctl_tcp_max_ssthresh >> 1;	/* limited slow start */
 	else
@@ -339,6 +340,7 @@ EXPORT_SYMBOL_GPL(tcp_slow_start);
 /* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd (or alternative w) */
 void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w)
 {
+	TCP_ESTATS_VAR_INC(tp, CongAvoid);
 	if (tp->snd_cwnd_cnt >= w) {
 		if (tp->snd_cwnd < tp->snd_cwnd_clamp)
 			tp->snd_cwnd++;
@@ -366,7 +368,6 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	/* In "safe" area, increase. */
 	if (tp->snd_cwnd <= tp->snd_ssthresh) {
 		tcp_slow_start(tp);
-		TCP_ESTATS_VAR_INC(tp, SlowStart);
 		return;
 	}
 
@@ -383,7 +384,6 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	} else {
 		tcp_cong_avoid_ai(tp, tp->snd_cwnd);
 	}
-	TCP_ESTATS_VAR_INC(tp, CongAvoid);
 }
 EXPORT_SYMBOL_GPL(tcp_reno_cong_avoid);
 
