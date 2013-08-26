@@ -1621,7 +1621,7 @@ static int tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			}
 		} else {
 			if (!push_one && tcp_tso_should_defer(sk, skb)) {
-				why = TCP_ESTATS_SNDLIM_CWND;
+				why = TCP_ESTATS_SNDLIM_TSODEFER;
 				break;
 			}
 		}

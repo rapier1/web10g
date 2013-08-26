@@ -36,6 +36,7 @@ enum tcp_estats_sndlim_states {
 	TCP_ESTATS_SNDLIM_CWND,
 	TCP_ESTATS_SNDLIM_RWIN,
 	TCP_ESTATS_SNDLIM_STARTUP,
+	TCP_ESTATS_SNDLIM_TSODEFER,
 	TCP_ESTATS_SNDLIM_NSTATES	/* Keep at end */
 };
 
@@ -179,6 +180,8 @@ struct tcp_estats_directs {
 	u32		MaxRetxQueue;
 	/*		CurReasmQueue */
 	u32		MaxReasmQueue;
+	/*u32		EarlyRetrans; */
+	/*u32		EarlyRetransDelay; */
 
 	/* App table */
 	/*		SndUna */
