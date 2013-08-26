@@ -27,6 +27,7 @@ enum MIB_TABLE {
         STACK_TABLE,
         APP_TABLE,
         TUNE_TABLE,
+	EXTRAS_TABLE,
         __MAX_TABLE
 };
 #define MAX_TABLE __MAX_TABLE
@@ -50,8 +51,9 @@ enum tcp_estats_states {
 };
 
 struct tcp_estats_connection_spec {
-	uint8_t  rem_addr[17];
-	uint8_t  local_addr[17];
+	uint8_t rem_addr[17];
+	uint8_t local_addr[17];
+	uint8_t addr_type;
 	uint16_t rem_port;
 	uint16_t local_port;
 };
@@ -71,6 +73,7 @@ typedef void (*estats_rwfunc_t)(void *buf, struct tcp_estats *stats,
 struct tcp_estats_var {
 	char		*name;
 	u32		type;
+/*	char		*table; */
 
 	estats_rwfunc_t	read;
 	unsigned long	read_data;
@@ -84,6 +87,7 @@ extern struct tcp_estats_var   path_var_array[];
 extern struct tcp_estats_var  stack_var_array[];
 extern struct tcp_estats_var    app_var_array[];
 extern struct tcp_estats_var   tune_var_array[];
+extern struct tcp_estats_var   extras_var_array[];
 
 extern struct tcp_estats_var *estats_var_array[];
 
@@ -173,9 +177,11 @@ typedef enum ESTATS_PERF_INDEX {
 	SNDLIMTRANSRWIN,
 	SNDLIMTRANSCWND,
 	SNDLIMTRANSSND,
+	SNDLIMTRANSTSODEFER,
 	SNDLIMTIMERWIN,
 	SNDLIMTIMECWND,
 	SNDLIMTIMESND,
+	SNDLIMTIMETSODEFER,
         __PERF_INDEX_MAX
 } ESTATS_PERF_INDEX;
 #define PERF_INDEX_MAX __PERF_INDEX_MAX
@@ -253,6 +259,8 @@ typedef enum ESTATS_STACK_INDEX {
 	MAXRETXQUEUE,
 	CURREASMQUEUE,
 	MAXREASMQUEUE,
+	EARLYRETRANS,
+	EARLYRETRANSDELAY,
         __STACK_INDEX_MAX
 } ESTATS_STACK_INDEX;
 #define STACK_INDEX_MAX __STACK_INDEX_MAX
@@ -283,20 +291,34 @@ typedef enum ESTATS_TUNE_INDEX {
 } ESTATS_TUNE_INDEX;
 #define TUNE_INDEX_MAX __TUNE_INDEX_MAX
 
-#define TOTAL_NUM_VARS PERF_INDEX_MAX+PATH_INDEX_MAX+STACK_INDEX_MAX+APP_INDEX_MAX+TUNE_INDEX_MAX
+typedef enum ESTATS_EXTRAS_INDEX {
+	OTHERREDUCTIONSCV,
+	OTHERREDUCTIONSCM,
+	__EXTRAS_INDEX_MAX
+} ESTATS_EXTRAS_INDEX;
+#define EXTRAS_INDEX_MAX __EXTRAS_INDEX_MAX
+
+#define TOTAL_NUM_VARS (PERF_INDEX_MAX + \
+			PATH_INDEX_MAX + \
+			STACK_INDEX_MAX + \
+			APP_INDEX_MAX + \
+			TUNE_INDEX_MAX + \
+			EXTRAS_INDEX_MAX)
 
 #if BITS_PER_LONG == 64
-#define DEFAULT_PERF_MASK  (1UL << PERF_INDEX_MAX)-1
-#define DEFAULT_PATH_MASK  (1UL << PATH_INDEX_MAX)-1
-#define DEFAULT_STACK_MASK (1UL << STACK_INDEX_MAX)-1
-#define DEFAULT_APP_MASK   (1UL << APP_INDEX_MAX)-1
-#define DEFAULT_TUNE_MASK  (1UL << TUNE_INDEX_MAX)-1
+#define DEFAULT_PERF_MASK	(1UL << PERF_INDEX_MAX)-1
+#define DEFAULT_PATH_MASK	(1UL << PATH_INDEX_MAX)-1
+#define DEFAULT_STACK_MASK	(1UL << STACK_INDEX_MAX)-1
+#define DEFAULT_APP_MASK	(1UL << APP_INDEX_MAX)-1
+#define DEFAULT_TUNE_MASK	(1UL << TUNE_INDEX_MAX)-1
+#define DEFAULT_EXTRAS_MASK	(1UL << EXTRAS_INDEX_MAX)-1
 #else
-#define DEFAULT_PERF_MASK  (1ULL << PERF_INDEX_MAX)-1
-#define DEFAULT_PATH_MASK  (1ULL << PATH_INDEX_MAX)-1
-#define DEFAULT_STACK_MASK (1ULL << STACK_INDEX_MAX)-1
-#define DEFAULT_APP_MASK   (1ULL << APP_INDEX_MAX)-1
-#define DEFAULT_TUNE_MASK  (1ULL << TUNE_INDEX_MAX)-1
+#define DEFAULT_PERF_MASK	(1ULL << PERF_INDEX_MAX)-1
+#define DEFAULT_PATH_MASK	(1ULL << PATH_INDEX_MAX)-1
+#define DEFAULT_STACK_MASK	(1ULL << STACK_INDEX_MAX)-1
+#define DEFAULT_APP_MASK	(1ULL << APP_INDEX_MAX)-1
+#define DEFAULT_TUNE_MASK	(1ULL << TUNE_INDEX_MAX)-1
+#define DEFAULT_EXTRAS_MASK	(1ULL << EXTRAS_INDEX_MAX)-1
 #endif
 
 #else

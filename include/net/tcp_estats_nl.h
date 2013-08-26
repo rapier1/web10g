@@ -16,11 +16,13 @@ enum nl_estats_attr {
         NLE_ATTR_STACK,
         NLE_ATTR_APP,
         NLE_ATTR_TUNE,
+        NLE_ATTR_EXTRAS,
         NLE_ATTR_PERF_MASK,
         NLE_ATTR_PATH_MASK,
         NLE_ATTR_STACK_MASK,
         NLE_ATTR_APP_MASK,
         NLE_ATTR_TUNE_MASK,
+        NLE_ATTR_EXTRAS_MASK,
         NLE_ATTR_MASK,
         NLE_ATTR_4TUPLE,
 	NLE_ATTR_WRITE,
@@ -35,6 +37,7 @@ enum neattr_4tuple {
         NEA_REM_PORT,
         NEA_LOCAL_ADDR,
         NEA_LOCAL_PORT,
+	NEA_ADDR_TYPE,
         NEA_CID,
         __NEA_4TUPLE_MAX
 };
@@ -47,6 +50,7 @@ enum neattr_mask {
         NEA_STACK_MASK,
         NEA_APP_MASK,
         NEA_TUNE_MASK,
+	NEA_EXTRAS_MASK,
         __NEA_MASK_MAX
 };
 #define NEA_MASK_MAX (__NEA_MASK_MAX - 1)
