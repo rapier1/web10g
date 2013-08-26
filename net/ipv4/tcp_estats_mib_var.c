@@ -417,12 +417,16 @@ struct tcp_estats_var perf_var_array[] = {
                 snd_lim_trans[TCP_ESTATS_SNDLIM_CWND]),
         ESTATSVARN(SndLimTransSnd,UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_SENDER]),
+        ESTATSVARN(SndLimTransTSODefer,UNSIGNED32,
+                snd_lim_trans[TCP_ESTATS_SNDLIM_TSODEFER]),
         ESTATSVARN(SndLimTimeRwin,UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_RWIN]),
         ESTATSVARN(SndLimTimeCwnd,UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_CWND]),
         ESTATSVARN(SndLimTimeSnd,UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_SENDER]),
+        ESTATSVARN(SndLimTimeTSODefer,UNSIGNED32,
+                snd_lim_time[TCP_ESTATS_SNDLIM_TSODEFER]),
 };
 
 struct tcp_estats_var path_var_array[] = {

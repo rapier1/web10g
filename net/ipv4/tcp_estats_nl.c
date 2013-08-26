@@ -30,6 +30,7 @@ static const struct nla_policy spec_policy[NEA_4TUPLE_MAX+1] = {
 	                      .len  = 17 },
         [NEA_LOCAL_ADDR]  = { .type = NLA_BINARY,
 	                      .len  = 17 },
+	[NEA_ADDR_TYPE]   = { .type = NLA_U8 },
         [NEA_REM_PORT]    = { .type = NLA_U16 },
         [NEA_LOCAL_PORT]  = { .type = NLA_U16 },
         [NEA_CID]         = { .type = NLA_U32 },
@@ -41,6 +42,7 @@ static const struct nla_policy mask_policy[NEA_MASK_MAX+1] = {
         [NEA_STACK_MASK]  = { .type = NLA_U64 },
         [NEA_APP_MASK]    = { .type = NLA_U64 },
         [NEA_TUNE_MASK]   = { .type = NLA_U64 },
+        [NEA_EXTRAS_MASK] = { .type = NLA_U64 },
 };
 
 static const struct nla_policy write_policy[NEA_WRITE_MAX+1] = {
@@ -121,7 +123,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         int tblnum;
         uint64_t mask;
         uint64_t masks[MAX_TABLE] = { DEFAULT_PERF_MASK, DEFAULT_PATH_MASK,
-                DEFAULT_STACK_MASK, DEFAULT_APP_MASK, DEFAULT_TUNE_MASK };
+                DEFAULT_STACK_MASK, DEFAULT_APP_MASK, DEFAULT_TUNE_MASK,
+		DEFAULT_EXTRAS_MASK };
 
         int if_mask[] = { [0 ... MAX_TABLE-1] = 0 };
         static void *mask_jump[] = { &&mask_no, &&mask_yes };
@@ -176,6 +179,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         if (tb_mask[NEA_TUNE_MASK]) {
                 masks[TUNE_TABLE] = nla_get_u64(tb_mask[NEA_TUNE_MASK]);
                 if_mask[TUNE_TABLE] = 1;
+        }
+        if (tb_mask[NEA_EXTRAS_MASK]) {
+                masks[EXTRAS_TABLE] = nla_get_u64(tb_mask[NEA_EXTRAS_MASK]);
+                if_mask[EXTRAS_TABLE] = 1;
         }
 
         rcu_read_lock();
@@ -291,6 +298,9 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
                         break;
                 case TUNE_TABLE:
                         nest[tblnum] = nla_nest_start(msg, NLE_ATTR_TUNE | NLA_F_NESTED);
+                        break;
+                case EXTRAS_TABLE:
+                        nest[tblnum] = nla_nest_start(msg, NLE_ATTR_EXTRAS | NLA_F_NESTED);
                         break;
                 }
                 if (!nest[tblnum])
