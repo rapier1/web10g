@@ -4,7 +4,7 @@
  * Implementation of TCP ESTATS MIB (RFC 4898)
  *
  * Authors:
- *   John Estabrook <jestabro@ncsa.illinois.edu>
+ *   John Estabrook <jestabro@illinois.edu>
  *   Andrew K. Adams <akadams@psc.edu>
  *   John Heffner <jheffner@psc.edu>
  *   Matt Mathis <mathis@psc.edu>
