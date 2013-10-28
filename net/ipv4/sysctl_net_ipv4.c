@@ -781,6 +781,7 @@ static struct ctl_table ipv4_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &one
 	},
+#ifdef CONFIG_TCP_ESTATS
 	{
 		.procname	= "tcp_estats",
 		.data		= &sysctl_tcp_estats,
@@ -788,6 +789,7 @@ static struct ctl_table ipv4_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
 	},
+#endif /* CONFIG TCP ESTATS */
 	{ }
 };
 
