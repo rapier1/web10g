@@ -57,13 +57,40 @@ EXPORT_SYMBOL(persist_delay);
 struct static_key tcp_estats_enabled = STATIC_KEY_INIT_FALSE;
 EXPORT_SYMBOL(tcp_estats_enabled);
 
+static atomic_t tcp_estats_enabled_deferred;
+
+static void tcp_estats_handle_deferred_enable_disable(void)
+{
+	int count = atomic_xchg(&tcp_estats_enabled_deferred, 0);
+
+	while (count > 0) {
+		static_key_slow_inc(&tcp_estats_enabled);
+		--count;
+	}
+
+	while (count < 0) {
+		static_key_slow_dec(&tcp_estats_enabled);
+		++count;
+	}
+}
+
 static inline void tcp_estats_enable(void)
 {
+	if (in_interrupt()) {
+		atomic_inc(&tcp_estats_enabled_deferred);
+		return;
+	}
+	tcp_estats_handle_deferred_enable_disable();
 	static_key_slow_inc(&tcp_estats_enabled);
 }
 
 static inline void tcp_estats_disable(void)
 {
+	if (in_interrupt()) {
+		atomic_dec(&tcp_estats_enabled_deferred);
+		return;
+	}
+	tcp_estats_handle_deferred_enable_disable();
 	static_key_slow_dec(&tcp_estats_enabled);
 }
 
