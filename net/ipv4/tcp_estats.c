@@ -57,13 +57,40 @@ EXPORT_SYMBOL(persist_delay);
 struct static_key tcp_estats_enabled = STATIC_KEY_INIT_FALSE;
 EXPORT_SYMBOL(tcp_estats_enabled);
 
+static atomic_t tcp_estats_enabled_deferred;
+
+static void tcp_estats_handle_deferred_enable_disable(void)
+{
+	int count = atomic_xchg(&tcp_estats_enabled_deferred, 0);
+
+	while (count > 0) {
+		static_key_slow_inc(&tcp_estats_enabled);
+		--count;
+	}
+
+	while (count < 0) {
+		static_key_slow_dec(&tcp_estats_enabled);
+		++count;
+	}
+}
+
 static inline void tcp_estats_enable(void)
 {
+	if (in_interrupt()) {
+		atomic_inc(&tcp_estats_enabled_deferred);
+		return;
+	}
+	tcp_estats_handle_deferred_enable_disable();
 	static_key_slow_inc(&tcp_estats_enabled);
 }
 
 static inline void tcp_estats_disable(void)
 {
+	if (in_interrupt()) {
+		atomic_dec(&tcp_estats_enabled_deferred);
+		return;
+	}
+	tcp_estats_handle_deferred_enable_disable();
 	static_key_slow_dec(&tcp_estats_enabled);
 }
 
@@ -156,7 +183,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	sock_hold(sk);
 	stats->sk = sk;
 	atomic_set(&stats->users, 0);
-
 	stats->limstate = TCP_ESTATS_SNDLIM_STARTUP;
 	stats->start_ts = stats->limstate_ts = stats->current_ts = ktime_get();
 	do_gettimeofday(&stats->start_tv);
@@ -166,7 +192,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->snd_nxt);
 	TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
 			   sysctl_tcp_max_ssthresh);
-
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTT, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTO, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, stack_table, MinMSS, ESTATS_INF32);
@@ -552,9 +577,7 @@ void tcp_estats_update_writeq(struct sock *sk)
 
 	if (app_table == NULL)
 		return;
-
 	len = tp->write_seq - app_table->SndMax;
-
 	if (len > app_table->MaxAppWQueue)
 		app_table->MaxAppWQueue = len;
 }
