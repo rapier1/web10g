@@ -32,7 +32,7 @@ enum MIB_TABLE {
 };
 #define MAX_TABLE __MAX_TABLE
 
-extern int max_index[]; /* MAX_TABLE */
+extern int estats_max_index[]; /* MAX_TABLE */
 
 /* The official MIB states are enumerated differently than Linux's. */
 enum tcp_estats_states {
@@ -98,7 +98,7 @@ static inline int single_index(int inda, int indb)
 
 	if (inda > 0) {
 		for (i = 0; i < inda; i++) {
-			ret += max_index[i];
+			ret += estats_max_index[i];
 		}
 	}
 	return ret;
@@ -174,13 +174,15 @@ typedef enum ESTATS_PERF_INDEX {
 	CURRWINRCVD,
 	MAXRWINRCVD,
 	ZERORWINRCVD,
-	SNDLIMTRANSRWIN,
-	SNDLIMTRANSCWND,
 	SNDLIMTRANSSND,
+	SNDLIMTRANSCWND,
+	SNDLIMTRANSRWIN,
+	SNDLIMTRANSSTARTUP,
 	SNDLIMTRANSTSODEFER,
-	SNDLIMTIMERWIN,
-	SNDLIMTIMECWND,
 	SNDLIMTIMESND,
+	SNDLIMTIMECWND,
+	SNDLIMTIMERWIN,
+	SNDLIMTIMESTARTUP,
 	SNDLIMTIMETSODEFER,
         __PERF_INDEX_MAX
 } ESTATS_PERF_INDEX;

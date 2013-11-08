@@ -269,13 +269,17 @@ void tcp_estats_establish(struct sock *sk)
 	conn_table->RemPort = ntohs(inet->inet_dport);
 
 	if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV4) {
-		memcpy(&conn_table->LocalAddress, &inet->inet_rcv_saddr, 4);
-		memcpy(&conn_table->RemAddress, &inet->inet_daddr, 4);
+		memcpy(&conn_table->LocalAddress.addr, &inet->inet_rcv_saddr,
+		       sizeof(struct in_addr));
+		memcpy(&conn_table->RemAddress.addr, &inet->inet_daddr,
+		       sizeof(struct in_addr));
 	}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
-		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr), 16);
-		memcpy(&conn_table->RemAddress, &(inet6_sk(sk)->daddr), 16);
+		memcpy(&conn_table->LocalAddress.addr6, &(inet6_sk(sk)->saddr),
+		       sizeof(struct in6_addr));
+		memcpy(&conn_table->RemAddress.addr6, &(inet6_sk(sk)->daddr),
+		       sizeof(struct in6_addr));
 	}
 #endif
 	else {
