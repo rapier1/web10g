@@ -31,6 +31,8 @@ static void read_stats(void *buf, struct tcp_estats *stats,
 	char *base = get_stats_base(stats, vp);
 	if (base != NULL)
 		memcpy(buf, base + vp->read_data, tcp_estats_var_len(vp));
+	else
+		memset(buf, 0, tcp_estats_var_len(vp));
 }
 
 static void read_sk32(void *buf, struct tcp_estats *stats,
@@ -48,6 +50,8 @@ static void read_inf32(void *buf, struct tcp_estats *stats,
 		memcpy(&val, base + vp->read_data, 8);
 		val &= 0xffffffff;
 		memcpy(buf, &val, 4);
+	} else {
+		memset(buf, 0, 4);
 	}
 }
 
@@ -425,9 +429,10 @@ static void read_LimMSS(void *buf, struct tcp_estats *stats,
 	.read = read_##__name, \
 	.write = write_##__name } 
 
-int max_index[MAX_TABLE] = { PERF_INDEX_MAX, PATH_INDEX_MAX, STACK_INDEX_MAX,
-			     APP_INDEX_MAX, TUNE_INDEX_MAX, EXTRAS_INDEX_MAX };
-EXPORT_SYMBOL(max_index);
+int estats_max_index[MAX_TABLE] = { PERF_INDEX_MAX, PATH_INDEX_MAX,
+				    STACK_INDEX_MAX, APP_INDEX_MAX,
+				    TUNE_INDEX_MAX, EXTRAS_INDEX_MAX };
+EXPORT_SYMBOL(estats_max_index);
 
 struct tcp_estats_var perf_var_array[] = {
         ESTATSVAR(SegsOut,UNSIGNED32, perf_table),
@@ -458,20 +463,24 @@ struct tcp_estats_var perf_var_array[] = {
         TPVAR32(CurRwinRcvd,UNSIGNED32, snd_wnd),
         ESTATSVAR(MaxRwinRcvd,UNSIGNED32, perf_table),
         ESTATSVAR(ZeroRwinRcvd,UNSIGNED32, perf_table),
-        ESTATSVARN(SndLimTransRwin,UNSIGNED32,
-                snd_lim_trans[TCP_ESTATS_SNDLIM_RWIN], perf_table),
-        ESTATSVARN(SndLimTransCwnd,UNSIGNED32,
-                snd_lim_trans[TCP_ESTATS_SNDLIM_CWND], perf_table),
         ESTATSVARN(SndLimTransSnd,UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_SENDER], perf_table),
+        ESTATSVARN(SndLimTransCwnd,UNSIGNED32,
+                snd_lim_trans[TCP_ESTATS_SNDLIM_CWND], perf_table),
+        ESTATSVARN(SndLimTransRwin,UNSIGNED32,
+                snd_lim_trans[TCP_ESTATS_SNDLIM_RWIN], perf_table),
+        ESTATSVARN(SndLimTransStartup,UNSIGNED32,
+                snd_lim_trans[TCP_ESTATS_SNDLIM_STARTUP], perf_table),
         ESTATSVARN(SndLimTransTSODefer,UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_TSODEFER], perf_table),
-        ESTATSVARN(SndLimTimeRwin,UNSIGNED32,
-                snd_lim_time[TCP_ESTATS_SNDLIM_RWIN], perf_table),
-        ESTATSVARN(SndLimTimeCwnd,UNSIGNED32,
-                snd_lim_time[TCP_ESTATS_SNDLIM_CWND], perf_table),
         ESTATSVARN(SndLimTimeSnd,UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_SENDER], perf_table),
+        ESTATSVARN(SndLimTimeCwnd,UNSIGNED32,
+                snd_lim_time[TCP_ESTATS_SNDLIM_CWND], perf_table),
+        ESTATSVARN(SndLimTimeRwin,UNSIGNED32,
+                snd_lim_time[TCP_ESTATS_SNDLIM_RWIN], perf_table),
+        ESTATSVARN(SndLimTimeStartup,UNSIGNED32,
+                snd_lim_time[TCP_ESTATS_SNDLIM_STARTUP], perf_table),
         ESTATSVARN(SndLimTimeTSODefer,UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_TSODEFER], perf_table),
 };
@@ -595,7 +604,7 @@ void tcp_estats_find_var_by_iname(struct tcp_estats_var **var, const char *name)
 
 	*var = NULL;
 	for (i = 0; i < MAX_TABLE; i++) {
-		for (j = 0; j < max_index[i]; j++) {
+		for (j = 0; j < estats_max_index[i]; j++) {
 			if (strnicmp(estats_var_array[i][j].name,
 				     name, 21) == 0) {
 				*var = &estats_var_array[i][j];
@@ -611,8 +620,10 @@ void tcp_estats_read_connection_spec(struct tcp_estats_connection_spec *spec,
 {
 	struct tcp_estats_connection_table *connection_table =
 		stats->tables.connection_table;
-        memcpy(&spec->rem_addr[0], connection_table->RemAddress.data, 16);
-        memcpy(&spec->local_addr[0], connection_table->LocalAddress.data, 16);
+        memcpy(&spec->rem_addr[0], &connection_table->RemAddress,
+	       sizeof(connection_table->RemAddress));
+        memcpy(&spec->local_addr[0], &connection_table->LocalAddress,
+	       sizeof(connection_table->LocalAddress));
 	spec->addr_type = connection_table->AddressType;
         spec->rem_port = connection_table->RemPort;
         spec->local_port = connection_table->LocalPort;

@@ -1,6 +1,10 @@
 #ifndef _TCP_ESTATS_MIB_VAR_H_
 #define _TCP_ESTATS_MIB_VAR_H_
 
+#ifndef CONFIG_TCP_ESTATS
+#error This should not be included outside of CONFIG_TCP_ESTATS enabled builds.
+#endif
+
 #ifdef __KERNEL__
 #include <net/sock.h>
 #include <linux/tcp.h>
@@ -11,28 +15,26 @@
 #include <inttypes.h>
 #endif
 
-#ifdef CONFIG_TCP_ESTATS
-
 union estats_val {
-        __u64 o;
-        __u32 t;
-        __s32 s;
-        __u16 w;
-        __u8  b;
+	__u64 o;
+	__u32 t;
+	__s32 s;
+	__u16 w;
+	__u8  b;
 };
 
 enum MIB_TABLE {
-        PERF_TABLE,
-        PATH_TABLE,
-        STACK_TABLE,
-        APP_TABLE,
-        TUNE_TABLE,
+	PERF_TABLE,
+	PATH_TABLE,
+	STACK_TABLE,
+	APP_TABLE,
+	TUNE_TABLE,
 	EXTRAS_TABLE,
         __MAX_TABLE
 };
 #define MAX_TABLE __MAX_TABLE
 
-extern int max_index[]; /* MAX_TABLE */
+extern int estats_max_index[]; /* MAX_TABLE */
 
 /* The official MIB states are enumerated differently than Linux's. */
 enum tcp_estats_states {
@@ -98,7 +100,7 @@ static inline int single_index(int inda, int indb)
 
 	if (inda > 0) {
 		for (i = 0; i < inda; i++) {
-			ret += max_index[i];
+			ret += estats_max_index[i];
 		}
 	}
 	return ret;
@@ -174,13 +176,15 @@ typedef enum ESTATS_PERF_INDEX {
 	CURRWINRCVD,
 	MAXRWINRCVD,
 	ZERORWINRCVD,
-	SNDLIMTRANSRWIN,
-	SNDLIMTRANSCWND,
 	SNDLIMTRANSSND,
+	SNDLIMTRANSCWND,
+	SNDLIMTRANSRWIN,
+	SNDLIMTRANSSTARTUP,
 	SNDLIMTRANSTSODEFER,
-	SNDLIMTIMERWIN,
-	SNDLIMTIMECWND,
 	SNDLIMTIMESND,
+	SNDLIMTIMECWND,
+	SNDLIMTIMERWIN,
+	SNDLIMTIMESTARTUP,
 	SNDLIMTIMETSODEFER,
         __PERF_INDEX_MAX
 } ESTATS_PERF_INDEX;
@@ -306,22 +310,20 @@ typedef enum ESTATS_EXTRAS_INDEX {
 			EXTRAS_INDEX_MAX)
 
 #if BITS_PER_LONG == 64
-#define DEFAULT_PERF_MASK	(1UL << PERF_INDEX_MAX)-1
-#define DEFAULT_PATH_MASK	(1UL << PATH_INDEX_MAX)-1
-#define DEFAULT_STACK_MASK	(1UL << STACK_INDEX_MAX)-1
-#define DEFAULT_APP_MASK	(1UL << APP_INDEX_MAX)-1
-#define DEFAULT_TUNE_MASK	(1UL << TUNE_INDEX_MAX)-1
-#define DEFAULT_EXTRAS_MASK	(1UL << EXTRAS_INDEX_MAX)-1
+#define DEFAULT_PERF_MASK	((1UL << PERF_INDEX_MAX)-1)
+#define DEFAULT_PATH_MASK	((1UL << PATH_INDEX_MAX)-1)
+#define DEFAULT_STACK_MASK	((1UL << STACK_INDEX_MAX)-1)
+#define DEFAULT_APP_MASK	((1UL << APP_INDEX_MAX)-1)
+#define DEFAULT_TUNE_MASK	((1UL << TUNE_INDEX_MAX)-1)
+#define DEFAULT_EXTRAS_MASK	((1UL << EXTRAS_INDEX_MAX)-1)
 #else
-#define DEFAULT_PERF_MASK	(1ULL << PERF_INDEX_MAX)-1
-#define DEFAULT_PATH_MASK	(1ULL << PATH_INDEX_MAX)-1
-#define DEFAULT_STACK_MASK	(1ULL << STACK_INDEX_MAX)-1
-#define DEFAULT_APP_MASK	(1ULL << APP_INDEX_MAX)-1
-#define DEFAULT_TUNE_MASK	(1ULL << TUNE_INDEX_MAX)-1
-#define DEFAULT_EXTRAS_MASK	(1ULL << EXTRAS_INDEX_MAX)-1
+#define DEFAULT_PERF_MASK	((1ULL << PERF_INDEX_MAX)-1)
+#define DEFAULT_PATH_MASK	((1ULL << PATH_INDEX_MAX)-1)
+#define DEFAULT_STACK_MASK	((1ULL << STACK_INDEX_MAX)-1)
+#define DEFAULT_APP_MASK	((1ULL << APP_INDEX_MAX)-1)
+#define DEFAULT_TUNE_MASK	((1ULL << TUNE_INDEX_MAX)-1)
+#define DEFAULT_EXTRAS_MASK	((1ULL << EXTRAS_INDEX_MAX)-1)
 #endif
 
-#else
-#endif /* CONFIG_TCP_ESTATS */
 
 #endif /* _TCP_ESTATS_MIB_VAR_H_ */
