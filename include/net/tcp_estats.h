@@ -25,10 +25,11 @@
 #define _TCP_ESTATS_H
 
 #include <net/sock.h>
-#include <linux/tcp.h>
 #include <linux/idr.h>
+#include <linux/in.h>
 #include <linux/jump_label.h>
 #include <linux/spinlock.h>
+#include <linux/tcp.h>
 #include <linux/workqueue.h>
 
 enum tcp_estats_sndlim_states {
@@ -113,8 +114,8 @@ extern struct static_key	tcp_estats_enabled;
 struct tcp_estats_connection_table {
 	/* Connection table */
 	u32			AddressType;
-	struct { u8 data[16]; }	LocalAddress;
-	struct { u8 data[16]; }	RemAddress;
+	union { struct in_addr addr; struct in6_addr addr6; }	LocalAddress;
+	union { struct in_addr addr; struct in6_addr addr6; }	RemAddress;
 	u16			LocalPort;
 	u16			RemPort;
 };
