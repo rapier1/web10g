@@ -26,14 +26,14 @@ static struct genl_multicast_group genl_estats_mc = {
 };
 
 static const struct nla_policy spec_policy[NEA_4TUPLE_MAX+1] = {
-        [NEA_REM_ADDR]    = { .type = NLA_BINARY,
-	                      .len  = 16 },
-        [NEA_LOCAL_ADDR]  = { .type = NLA_BINARY,
-	                      .len  = 16 },
+	[NEA_REM_ADDR]    = { .type = NLA_BINARY,
+			      .len  = 16 },
+	[NEA_LOCAL_ADDR]  = { .type = NLA_BINARY,
+			      .len  = 16 },
 	[NEA_ADDR_TYPE]	  = { .type = NLA_U8 },
-        [NEA_REM_PORT]    = { .type = NLA_U16 },
-        [NEA_LOCAL_PORT]  = { .type = NLA_U16 },
-        [NEA_CID]         = { .type = NLA_U32 },
+	[NEA_REM_PORT]    = { .type = NLA_U16 },
+	[NEA_LOCAL_PORT]  = { .type = NLA_U16 },
+	[NEA_CID]         = { .type = NLA_U32 },
 };
 
 static const struct nla_policy mask_policy[NEA_MASK_MAX+1] = {
@@ -62,12 +62,18 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
         int tmpid = 0;
 
+	if (skb == NULL) {
+		pr_debug("invalid netlink socket");
+		goto nlmsg_failure;
+	}
+
         while (1) {
                 msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	        if (msg == NULL)
                         return -ENOMEM;
 
-	        hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0, TCPE_CMD_LIST_CONNS);
+	        hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
+				  TCPE_CMD_LIST_CONNS);
 	        if (hdr == NULL)
                         goto nlmsg_failure;
 
@@ -100,7 +106,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
         return 0;
 
 nlmsg_failure:
-        printk(KERN_DEBUG "nlmsg_failure\n");
+        pr_err("nlmsg_failure\n");
 
         return -ENOBUFS;
 }
@@ -144,47 +150,59 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         ret = nla_parse_nested(tb, NEA_4TUPLE_MAX, info->attrs[NLE_ATTR_4TUPLE],
 			       spec_policy);
 
-	if (ret < 0)
+	if (ret < 0) {
+		pr_debug("Failed to parse nested 4tuple\n");
 		goto nla_parse_failure;
+	}
 
-        if(!tb[NEA_CID])
+        if(!tb[NEA_CID]) {
+		pr_debug("No CID found in table\n");
                 goto nla_parse_failure;
+	}
 
         cid = nla_get_u32(tb[NEA_CID]);
 
-        if (cid < 1)
+        if (cid < 1) {
+		pr_debug("Invalid CID %d found in table\n", cid);
                 goto nla_parse_failure;
+	}
 
-        ret = nla_parse_nested(tb_mask, NEA_MASK_MAX,
-                info->attrs[NLE_ATTR_MASK], mask_policy);
+	if (info->attrs[NLE_ATTR_MASK]) {
+		ret = nla_parse_nested(tb_mask, NEA_MASK_MAX,
+			info->attrs[NLE_ATTR_MASK], mask_policy);
 
-	if (ret < 0)
-		goto nla_parse_failure;
+		if (ret < 0) {
+			pr_debug("Failed to parse nested mask\n");
+			goto nla_parse_failure;
+		}
 
-        if (tb_mask[NEA_PERF_MASK]) {
-                masks[PERF_TABLE] = nla_get_u64(tb_mask[NEA_PERF_MASK]);
-                if_mask[PERF_TABLE] = 1;
-        }
-        if (tb_mask[NEA_PATH_MASK]) {
-                masks[PATH_TABLE] = nla_get_u64(tb_mask[NEA_PATH_MASK]);
-                if_mask[PATH_TABLE] = 1;
-        }
-        if (tb_mask[NEA_STACK_MASK]) {
-                masks[STACK_TABLE] = nla_get_u64(tb_mask[NEA_STACK_MASK]);
-                if_mask[STACK_TABLE] = 1;
-        }
-        if (tb_mask[NEA_APP_MASK]) {
-                masks[APP_TABLE] = nla_get_u64(tb_mask[NEA_APP_MASK]);
-                if_mask[APP_TABLE] = 1;
-        }
-        if (tb_mask[NEA_TUNE_MASK]) {
-                masks[TUNE_TABLE] = nla_get_u64(tb_mask[NEA_TUNE_MASK]);
-                if_mask[TUNE_TABLE] = 1;
-        }
-        if (tb_mask[NEA_EXTRAS_MASK]) {
-                masks[EXTRAS_TABLE] = nla_get_u64(tb_mask[NEA_EXTRAS_MASK]);
-                if_mask[EXTRAS_TABLE] = 1;
-        }
+		if (tb_mask[NEA_PERF_MASK]) {
+			masks[PERF_TABLE] = nla_get_u64(tb_mask[NEA_PERF_MASK]);
+			if_mask[PERF_TABLE] = 1;
+		}
+		if (tb_mask[NEA_PATH_MASK]) {
+			masks[PATH_TABLE] = nla_get_u64(tb_mask[NEA_PATH_MASK]);
+			if_mask[PATH_TABLE] = 1;
+		}
+		if (tb_mask[NEA_STACK_MASK]) {
+			masks[STACK_TABLE] = nla_get_u64(
+					tb_mask[NEA_STACK_MASK]);
+			if_mask[STACK_TABLE] = 1;
+		}
+		if (tb_mask[NEA_APP_MASK]) {
+			masks[APP_TABLE] = nla_get_u64(tb_mask[NEA_APP_MASK]);
+			if_mask[APP_TABLE] = 1;
+		}
+		if (tb_mask[NEA_TUNE_MASK]) {
+			masks[TUNE_TABLE] = nla_get_u64(tb_mask[NEA_TUNE_MASK]);
+			if_mask[TUNE_TABLE] = 1;
+		}
+		if (tb_mask[NEA_EXTRAS_MASK]) {
+			masks[EXTRAS_TABLE] = nla_get_u64(
+					tb_mask[NEA_EXTRAS_MASK]);
+			if_mask[EXTRAS_TABLE] = 1;
+		}
+	}
 
         rcu_read_lock();
         stats = idr_find(&tcp_estats_idr, cid);
@@ -226,7 +244,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 		if (if_mask[tblnum]) {
 			i = 0;
 			mask = masks[tblnum];
-			while ((i < max_index[tblnum]) && mask) {
+			while ((i < estats_max_index[tblnum]) && mask) {
 				j = __builtin_ctzl(mask);
 				mask = mask >> j;
 				i += j;
@@ -239,7 +257,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 				i++;
 			}
 		} else {
-			for (i = 0; i < max_index[tblnum]; i++) {
+			for (i = 0; i < estats_max_index[tblnum]; i++) {
 				k = single_index(tblnum, i);
 				read_tcp_estats(&(val[k]), stats,
 						&(estats_var_array[tblnum][i]));
@@ -286,30 +304,38 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
                 switch (tblnum) {
                 case PERF_TABLE:
-                        nest[tblnum] = nla_nest_start(msg, NLE_ATTR_PERF | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(
+					msg, NLE_ATTR_PERF | NLA_F_NESTED);
                         break;
                 case PATH_TABLE:
-                        nest[tblnum] = nla_nest_start(msg, NLE_ATTR_PATH | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(
+					msg, NLE_ATTR_PATH | NLA_F_NESTED);
                         break;
                 case STACK_TABLE:
-                        nest[tblnum] = nla_nest_start(msg, NLE_ATTR_STACK | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(
+					msg, NLE_ATTR_STACK | NLA_F_NESTED);
                         break;
                 case APP_TABLE:
-                        nest[tblnum] = nla_nest_start(msg, NLE_ATTR_APP | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(
+					msg, NLE_ATTR_APP | NLA_F_NESTED);
                         break;
                 case TUNE_TABLE:
-                        nest[tblnum] = nla_nest_start(msg, NLE_ATTR_TUNE | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(
+					msg, NLE_ATTR_TUNE | NLA_F_NESTED);
                         break;
 		case EXTRAS_TABLE:
-			nest[tblnum] = nla_nest_start(msg, NLE_ATTR_EXTRAS | NLA_F_NESTED);
+			nest[tblnum] = nla_nest_start(
+					msg, NLE_ATTR_EXTRAS | NLA_F_NESTED);
 			break;
                 }
-                if (!nest[tblnum])
+                if (!nest[tblnum]) {
+			pr_debug("Failed to nest table %d\n", tblnum);
                         goto nla_put_failure;
+		}
 
                 i = 0;
                 mask = masks[tblnum];
-                while ((i < max_index[tblnum]) && mask) {
+                while ((i < estats_max_index[tblnum]) && mask) {
                         j = __builtin_ctzl(mask);
                         mask = mask >> j;
                         i += j;
@@ -349,6 +375,11 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         }
 	genlmsg_end(msg, hdr);
 
+	if (skb == NULL) {
+		pr_debug("Invalid netlink socket\n");
+		goto nlmsg_failure;
+	}
+
         genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 
 	kfree(val);
@@ -356,10 +387,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	return 0;
 
 nlmsg_failure:
-        printk(KERN_DEBUG "nlmsg_failure\n");
+        pr_err("nlmsg_failure\n");
 
 nla_put_failure:
-        printk(KERN_DEBUG "nla_put_failure\n");
+        pr_err("nla_put_failure\n");
 	genlmsg_cancel(msg, hdr);
 	kfree_skb(msg);
 	kfree(val);
@@ -367,8 +398,7 @@ nla_put_failure:
 	return -ENOBUFS;
 
 nla_parse_failure:
-        printk(KERN_DEBUG "nla_parse_failure\n");
-
+        pr_err("nla_parse_failure\n");
         return -EINVAL;
 }
 
