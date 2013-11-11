@@ -658,3 +658,15 @@ config TCP_ESTATS_STRICT_ELAPSEDTIME
 	  If unsure, say N.
 
 endif
+
+if TCP_ESTATS
+
+config TCP_ESTATS_NETLINK
+        tristate "TCP: ESTATS netlink module"
+        depends on TCP_ESTATS
+        default m
+        ---help---
+          Netlink module exposing RFC4898 TCP Extended metrics.
+          See http://www.web10g.org for more details.
+
+endif
