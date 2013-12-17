@@ -53,13 +53,7 @@ static const struct nla_policy write_policy[NEA_WRITE_MAX+1] = {
 static int
 genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 {
-
-	struct sk_buff *msg = NULL;
-	void *hdr = NULL;
-        struct nlattr *nest;
-        struct tcp_estats *stats;
         struct tcp_estats_connection_spec spec;
-
         int tmpid = 0;
 
 	if (skb == NULL) {
@@ -68,23 +62,42 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 	}
 
         while (1) {
+		struct sk_buff *msg = NULL;
+		void *hdr = NULL;
+		struct nlattr *nest = NULL;
+		struct tcp_estats *stats = NULL;
+
+		/* Get estats pointer from idr. */
+		rcu_read_lock();
+		stats = idr_get_next(&tcp_estats_idr, &tmpid);
+		if (stats == NULL) {
+			pr_debug("invalid stats pointer for %d\n", tmpid);
+			rcu_read_unlock();
+			break;
+		}
+
+		if (!tcp_estats_use_if_valid(stats)) {
+			pr_debug("stats were already freed for %d\n", tmpid);
+			rcu_read_unlock();
+			continue;
+		}
+		rcu_read_unlock();
+
+		/* Read the connection table into spec. */
+                tcp_estats_read_connection_spec(&spec, stats);
+		tcp_estats_unuse(stats);
+
+		/* Build and send the connection spec netlink message. */
                 msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
-	        if (msg == NULL)
+	        if (msg == NULL) {
+			pr_debug("failed to allocate memory for message.\n");
                         return -ENOMEM;
+		}
 
 	        hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
 				  TCPE_CMD_LIST_CONNS);
 	        if (hdr == NULL)
                         goto nlmsg_failure;
-
-                spin_lock(&tcp_estats_idr_lock);
-                stats = idr_get_next(&tcp_estats_idr, &tmpid);
-                spin_unlock(&tcp_estats_idr_lock);
-
-                if (stats == NULL)
-                        break;
-
-                tcp_estats_read_connection_spec(&spec, stats);
 
                 nest = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
 
@@ -206,12 +219,18 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
         rcu_read_lock();
         stats = idr_find(&tcp_estats_idr, cid);
+
+	if (stats == NULL)
+		rcu_read_unlock();
+		return -EINVAL;
+	
+	if (!tcp_estats_use_if_valid(stats)) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
         rcu_read_unlock();
-        if (stats == NULL)
-                return -EINVAL;
 
-        tcp_estats_use(stats);
-
+	lock_sock(stats->sk);
 	sk = stats->sk;
 
 	if (!stats->ids) {
@@ -237,8 +256,6 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 		return -ENOMEM;
 
 	do_gettimeofday(&read_time);
-
-        lock_sock(stats->sk);
 
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
 		if (if_mask[tblnum]) {
@@ -267,7 +284,6 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         }
 
         release_sock(stats->sk);
-
         tcp_estats_unuse(stats);
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
