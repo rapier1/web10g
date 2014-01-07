@@ -234,11 +234,11 @@ void tcp_estats_destroy(struct sock *sk)
 	tcp_estats_unuse(stats);
 }
 
-/* Do not call directly.  Called from tcp_estats_unuse(). */
-void tcp_estats_free(struct tcp_estats *stats)
+/* Do not call directly.  Called from tcp_estats_unuse() through call_rcu. */
+void tcp_estats_free(struct rcu_head *rcu)
 {
+	struct tcp_estats *stats = container_of(rcu, struct tcp_estats, rcu);
 	tcp_estats_disable();
-	sock_put(stats->sk);
 	kfree(stats);
 }
 EXPORT_SYMBOL(tcp_estats_free);
@@ -326,7 +326,7 @@ void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
 	struct tcp_estats_path_table *path_table = stats->tables.path_table;
-	unsigned long rtt_sample_msec = rtt_sample * 1000 / HZ;
+	unsigned long rtt_sample_msec = jiffies_to_msecs(rtt_sample);
 	u32 rto;
 
 	if (path_table == NULL)
@@ -342,7 +342,7 @@ void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 	path_table->CountRTT++;
 	path_table->SumRTT += rtt_sample_msec;
 
-	rto = inet_csk(sk)->icsk_rto * 1000 / HZ;
+	rto = jiffies_to_msecs(inet_csk(sk)->icsk_rto);
 	if (rto > path_table->MaxRTO)
 		path_table->MaxRTO = rto;
 	if (rto < path_table->MinRTO)
@@ -601,17 +601,17 @@ void tcp_estats_update_recvq(struct sock *sk)
 	struct tcp_estats_tables *tables = &tp->tcp_stats->tables;
 	struct tcp_estats_app_table *app_table = tables->app_table;
 	struct tcp_estats_stack_table *stack_table = tables->stack_table;
-	u32 len1 = tp->rcv_nxt - tp->copied_seq;
-	u32 len2 = ofo_qlen(tp);
 
 	if (app_table != NULL) {
-		if (app_table->MaxAppRQueue < len1)
-			app_table->MaxAppRQueue = len1;
+		u32 len = tp->rcv_nxt - tp->copied_seq;
+		if (app_table->MaxAppRQueue < len)
+			app_table->MaxAppRQueue = len;
 	}
 
 	if (stack_table != NULL) {
-		if (stack_table->MaxReasmQueue < len2)
-			stack_table->MaxReasmQueue = len2;
+		u32 len = ofo_qlen(tp);
+		if (stack_table->MaxReasmQueue < len)
+			stack_table->MaxReasmQueue = len;
 	}
 }
 
