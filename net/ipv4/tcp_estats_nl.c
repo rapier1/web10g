@@ -220,9 +220,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         rcu_read_lock();
         stats = idr_find(&tcp_estats_idr, cid);
 
-	if (stats == NULL)
+	if (stats == NULL) {
 		rcu_read_unlock();
 		return -EINVAL;
+	}
 	
 	if (!tcp_estats_use_if_valid(stats)) {
 		rcu_read_unlock();
