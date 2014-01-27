@@ -60,12 +60,25 @@ struct tcp_estats_connection_spec {
 	uint16_t local_port;
 };
 
-enum TCP_ESTATS_TYPE {
-        TCP_ESTATS_UNSIGNED64,
-        TCP_ESTATS_UNSIGNED32,
-        TCP_ESTATS_SIGNED32,
-        TCP_ESTATS_UNSIGNED16,
-        TCP_ESTATS_UNSIGNED8,
+enum TCP_ESTATS_VAR_TYPE {
+	TCP_ESTATS_VAR_INTEGER,
+	TCP_ESTATS_VAR_INTEGER32,
+	TCP_ESTATS_VAR_COUNTER32,
+	TCP_ESTATS_VAR_GAUGE32,
+	TCP_ESTATS_VAR_UNSIGNED32,
+	TCP_ESTATS_VAR_COUNTER64,
+	TCP_ESTATS_VAR_DATEANDTIME,
+	TCP_ESTATS_VAR_TIMESTAMP,
+	TCP_ESTATS_VAR_TRUTHVALUE,
+	TCP_ESTATS_VAR_OCTET,
+};
+
+enum TCP_ESTATS_VAL_TYPE {
+        TCP_ESTATS_VAL_UNSIGNED64,
+        TCP_ESTATS_VAL_UNSIGNED32,
+        TCP_ESTATS_VAL_SIGNED32,
+        TCP_ESTATS_VAL_UNSIGNED16,
+        TCP_ESTATS_VAL_UNSIGNED8,
 };
 
 struct tcp_estats_var;
@@ -74,7 +87,8 @@ typedef void (*estats_rwfunc_t)(void *buf, struct tcp_estats *stats,
 
 struct tcp_estats_var {
 	char		*name;
-	u32		type;
+	u32		vartype;
+	u32		valtype;
 	char		*table;
 
 	estats_rwfunc_t	read;
@@ -124,21 +138,21 @@ static inline int write_tcp_estats(void *buf, struct tcp_estats *stats,
 
 static inline int tcp_estats_var_len(struct tcp_estats_var *vp)
 {
-	switch (vp->type) {
-        case TCP_ESTATS_UNSIGNED64:
+	switch (vp->valtype) {
+        case TCP_ESTATS_VAL_UNSIGNED64:
                 return 8;
-        case TCP_ESTATS_UNSIGNED32:
+        case TCP_ESTATS_VAL_UNSIGNED32:
                 return 4;
-        case TCP_ESTATS_SIGNED32:
+        case TCP_ESTATS_VAL_SIGNED32:
                 return 4;
-        case TCP_ESTATS_UNSIGNED16:
+        case TCP_ESTATS_VAL_UNSIGNED16:
                 return 2;
-        case TCP_ESTATS_UNSIGNED8:
+        case TCP_ESTATS_VAL_UNSIGNED8:
                 return 1;
 	}
 	
 	printk(KERN_WARNING
-	       "TCP ESTATS: Adding variable of unknown type %d.\n", vp->type);
+	       "TCP ESTATS: Adding variable of unknown type %d.\n", vp->valtype);
 	return 0;
 }
 

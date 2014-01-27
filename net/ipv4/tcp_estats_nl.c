@@ -157,8 +157,10 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	struct sock *sk;
 	const struct cred *cred = get_current_cred();
 
-	if (!info->attrs[NLE_ATTR_4TUPLE])
+	if (!info->attrs[NLE_ATTR_4TUPLE]) {
+		pr_debug("Did not receive connection info\n");
 		return -EINVAL;
+	}
 
         ret = nla_parse_nested(tb, NEA_4TUPLE_MAX, info->attrs[NLE_ATTR_4TUPLE],
 			       spec_policy);
@@ -359,25 +361,25 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 
 			k = single_index(tblnum, i);
 
-                        switch (estats_var_array[tblnum][i].type) {
+                        switch (estats_var_array[tblnum][i].valtype) {
         
-                        case TCP_ESTATS_UNSIGNED64:
+                        case TCP_ESTATS_VAL_UNSIGNED64:
                                 if (nla_put_u64(msg, i, val[k].o))
 					goto nla_put_failure;
                                 break;
-                        case TCP_ESTATS_UNSIGNED32:
+                        case TCP_ESTATS_VAL_UNSIGNED32:
                                 if (nla_put_u32(msg, i, val[k].t))
 					goto nla_put_failure;
                         	break;
-                        case TCP_ESTATS_SIGNED32:
+                        case TCP_ESTATS_VAL_SIGNED32:
                                 if (nla_put_u32(msg, i, val[k].s))
 					goto nla_put_failure;
                                 break;
-                        case TCP_ESTATS_UNSIGNED16:
+                        case TCP_ESTATS_VAL_UNSIGNED16:
                                 if (nla_put_u16(msg, i, val[k].w))
 					goto nla_put_failure;
                                 break;
-                        case TCP_ESTATS_UNSIGNED8:
+                        case TCP_ESTATS_VAL_UNSIGNED8:
                                 if (nla_put_u8(msg, i, val[k].b))
 					goto nla_put_failure;
                                 break;
