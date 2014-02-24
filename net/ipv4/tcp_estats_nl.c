@@ -51,6 +51,93 @@ static const struct nla_policy write_policy[NEA_WRITE_MAX+1] = {
 };
 
 static int
+genl_get_mib(struct sk_buff *skb, struct genl_info *info)
+{
+	struct sk_buff *msg = NULL;
+	void *hdr = NULL;
+	struct nlattr *nest[MAX_TABLE];
+	struct nlattr *entry_nest;
+	int tblnum, i;
+
+	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	if (msg == NULL)
+		goto nlmsg_failure;
+
+	hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
+			  TCPE_CMD_INIT);
+	if (hdr == NULL)
+		goto nlmsg_failure;
+
+	if (nla_put_u32(msg, NLE_ATTR_NUM_TABLES, MAX_TABLE))
+		goto nla_put_failure;
+
+	if (nla_put_u32(msg, NLE_ATTR_NUM_VARS, TOTAL_NUM_VARS))
+		goto nla_put_failure;
+
+	for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
+		switch (tblnum) {
+		case PERF_TABLE:
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_PERF_VARS | NLA_F_NESTED);
+			break;
+		case PATH_TABLE:
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_PATH_VARS | NLA_F_NESTED);
+			break;
+		case STACK_TABLE:
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_STACK_VARS | NLA_F_NESTED);
+			break;
+		case APP_TABLE:
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_APP_VARS | NLA_F_NESTED);
+			break;
+		case TUNE_TABLE:
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_TUNE_VARS | NLA_F_NESTED);
+			break;
+		case EXTRAS_TABLE:
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_EXTRAS_VARS | NLA_F_NESTED);
+			break;
+		}
+		if (!nest[tblnum])
+			goto nla_put_failure;
+
+		for (i=0; i < estats_max_index[tblnum]; i++) {
+			entry_nest = nla_nest_start(msg, i | NLA_F_NESTED);
+
+			if (nla_put_string(msg, NEA_VAR_NAME,
+					estats_var_array[tblnum][i].name))
+				goto nla_put_failure;
+
+			if (nla_put_u32(msg, NEA_VAR_TYPE,
+					estats_var_array[tblnum][i].vartype))
+				goto nla_put_failure;
+
+			nla_nest_end(msg, entry_nest);
+		}
+
+		nla_nest_end(msg, nest[tblnum]);
+        }
+	genlmsg_end(msg, hdr);
+
+	genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
+
+	return 0;
+
+nlmsg_failure:
+	pr_err("nlmsg_failure\n");
+
+nla_put_failure:
+	pr_err("nla_put_failure\n");
+	genlmsg_cancel(msg, hdr);
+	kfree_skb(msg);
+
+	return -ENOBUFS;
+}
+
+static int
 genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 {
         struct tcp_estats_connection_spec spec;
@@ -323,28 +410,28 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         for (tblnum = 0; tblnum < MAX_TABLE; tblnum++) {
                 switch (tblnum) {
                 case PERF_TABLE:
-                        nest[tblnum] = nla_nest_start(
-					msg, NLE_ATTR_PERF | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_PERF_VALS | NLA_F_NESTED);
                         break;
                 case PATH_TABLE:
-                        nest[tblnum] = nla_nest_start(
-					msg, NLE_ATTR_PATH | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_PATH_VALS | NLA_F_NESTED);
                         break;
                 case STACK_TABLE:
-                        nest[tblnum] = nla_nest_start(
-					msg, NLE_ATTR_STACK | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_STACK_VALS | NLA_F_NESTED);
                         break;
                 case APP_TABLE:
-                        nest[tblnum] = nla_nest_start(
-					msg, NLE_ATTR_APP | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_APP_VALS | NLA_F_NESTED);
                         break;
                 case TUNE_TABLE:
-                        nest[tblnum] = nla_nest_start(
-					msg, NLE_ATTR_TUNE | NLA_F_NESTED);
+                        nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_TUNE_VALS | NLA_F_NESTED);
                         break;
 		case EXTRAS_TABLE:
-			nest[tblnum] = nla_nest_start(
-					msg, NLE_ATTR_EXTRAS | NLA_F_NESTED);
+			nest[tblnum] = nla_nest_start(msg,
+					NLE_ATTR_EXTRAS_VALS | NLA_F_NESTED);
 			break;
                 }
                 if (!nest[tblnum]) {
@@ -520,6 +607,10 @@ nla_parse_failure:
 }
 
 static struct genl_ops genl_estats_ops[] = {
+	{
+		.cmd  = TCPE_CMD_INIT,
+		.doit = genl_get_mib,
+	},
         {
                 .cmd  = TCPE_CMD_READ_VARS,
                 .doit = genl_read_vars,
