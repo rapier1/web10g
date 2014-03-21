@@ -71,8 +71,9 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		rcu_read_lock();
 		stats = idr_get_next(&tcp_estats_idr, &tmpid);
 		if (stats == NULL) {
-			pr_debug("invalid stats pointer for %d\n", tmpid);
+			/* We're done, however we need to free msg. */
 			rcu_read_unlock();
+			kfree_skb(msg);
 			break;
 		}
 
@@ -111,6 +112,8 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
                 nla_nest_end(msg, nest);
 
 	        genlmsg_end(msg, hdr);
+
+		/* netlink_unicast_kernel() will free msg. */
                 genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 
                 tmpid = tmpid + 1;
@@ -120,6 +123,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
 nlmsg_failure:
         pr_err("nlmsg_failure\n");
+	kfree_skb(msg);
 
         return -ENOBUFS;
 }
@@ -397,6 +401,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 		goto nlmsg_failure;
 	}
 
+	/* netlink_unicast_kernel() will free msg. */
         genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 
 	kfree(val);
