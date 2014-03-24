@@ -73,7 +73,8 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		if (stats == NULL) {
 			/* We're done, however we need to free msg. */
 			rcu_read_unlock();
-			kfree_skb(msg);
+			if (msg != NULL)
+				kfree_skb(msg);
 			break;
 		}
 
@@ -123,7 +124,8 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
 nlmsg_failure:
         pr_err("nlmsg_failure\n");
-	kfree_skb(msg);
+	if (msg != NULL)
+		kfree_skb(msg);
 
         return -ENOBUFS;
 }
@@ -414,7 +416,8 @@ nlmsg_failure:
 nla_put_failure:
         pr_err("nla_put_failure\n");
 	genlmsg_cancel(msg, hdr);
-	kfree_skb(msg);
+	if (msg != NULL)
+		kfree_skb(msg);
 	kfree(val);
 
 	return -ENOBUFS;
