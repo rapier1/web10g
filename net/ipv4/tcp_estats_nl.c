@@ -105,7 +105,8 @@ genl_get_mib(struct sk_buff *skb, struct genl_info *info)
 			goto nla_put_failure;
 
 		for (i=0; i < estats_max_index[tblnum]; i++) {
-			entry_nest = nla_nest_start(msg, i | NLA_F_NESTED);
+			entry_nest = nla_nest_start(msg,
+					NLE_ATTR_VAR | NLA_F_NESTED);
 
 			if (nla_put_string(msg, NEA_VAR_NAME,
 					estats_var_array[tblnum][i].name))
