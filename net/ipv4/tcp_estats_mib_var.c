@@ -391,41 +391,47 @@ static void read_LimMSS(void *buf, struct tcp_estats *stats,
 #define OFFSET_ST(field, table)	\
 	((unsigned long)(&(((struct tcp_estats_##table *)NULL)->field)))
 
-#define ESTATSVAR(__name, __type, __table)  { \
+#define ESTATSVAR(__name, __vartype, __valtype, __table)  { \
 	.name = #__name, \
-	.type = TCP_ESTATS_##__type, \
+	.vartype = TCP_ESTATS_VAR_##__vartype, \
+	.valtype = TCP_ESTATS_VAL_##__valtype, \
 	.table = #__table, \
 	.read = read_stats, \
 	.read_data = OFFSET_ST(__name, __table), \
 	.write = NULL }
-#define ESTATSVARN(__name, __type, __var, __table) { \
+#define ESTATSVARN(__name, __vartype, __valtype, __var, __table) { \
 	.name = #__name, \
-	.type = TCP_ESTATS_##__type, \
+	.vartype = TCP_ESTATS_VAR_##__vartype, \
+	.valtype = TCP_ESTATS_VAL_##__valtype, \
 	.table = #__table, \
 	.read = read_stats, \
 	.read_data = OFFSET_ST(__var, __table), \
 	.write = NULL }
-#define TPVAR32(__name, __type, __var) { \
+#define TPVAR32(__name, __vartype, __valtype, __var) { \
 	.name = #__name, \
-	.type = TCP_ESTATS_##__type, \
+	.vartype = TCP_ESTATS_VAR_##__vartype, \
+	.valtype = TCP_ESTATS_VAL_##__valtype, \
 	.read = read_sk32, \
 	.read_data = OFFSET_TP(__var), \
 	.write = NULL }
-#define HCINF32(__name, __type, __table) { \
+#define HCINF32(__name, __vartype, __valtype, __table) { \
 	.name = #__name, \
-	.type = TCP_ESTATS_##__type, \
+	.vartype = TCP_ESTATS_VAR_##__vartype, \
+	.valtype = TCP_ESTATS_VAL_##__valtype, \
 	.table = #__table, \
 	.read = read_inf32, \
 	.read_data = OFFSET_ST(__name, __table), \
 	.write = NULL }
-#define READFUNC(__name, __type) { \
+#define READFUNC(__name, __vartype, __valtype) { \
 	.name = #__name, \
-	.type = TCP_ESTATS_##__type, \
+	.vartype = TCP_ESTATS_VAR_##__vartype, \
+	.valtype = TCP_ESTATS_VAL_##__valtype, \
 	.read = read_##__name, \
 	.write = NULL }
-#define RWFUNC(__name, __type) { \
+#define RWFUNC(__name, __vartype, __valtype) { \
 	.name = #__name, \
-	.type = TCP_ESTATS_##__type, \
+	.vartype = TCP_ESTATS_VAR_##__vartype, \
+	.valtype = TCP_ESTATS_VAL_##__valtype, \
 	.read = read_##__name, \
 	.write = write_##__name } 
 
@@ -435,157 +441,160 @@ int estats_max_index[MAX_TABLE] = { PERF_INDEX_MAX, PATH_INDEX_MAX,
 EXPORT_SYMBOL(estats_max_index);
 
 struct tcp_estats_var perf_var_array[] = {
-        ESTATSVAR(SegsOut,UNSIGNED32, perf_table),
-        ESTATSVAR(DataSegsOut,UNSIGNED32, perf_table),
-        HCINF32(DataOctetsOut,UNSIGNED32, perf_table),
-        ESTATSVARN(HCDataOctetsOut,UNSIGNED64, DataOctetsOut, perf_table),
-        ESTATSVAR(SegsRetrans,UNSIGNED32, perf_table),
-        ESTATSVAR(OctetsRetrans,UNSIGNED32, perf_table),
-        ESTATSVAR(SegsIn,UNSIGNED32, perf_table),
-        ESTATSVAR(DataSegsIn,UNSIGNED32, perf_table),
-        HCINF32(DataOctetsIn,UNSIGNED32, perf_table),
-        ESTATSVARN(HCDataOctetsIn,UNSIGNED64, DataOctetsIn, perf_table),
-        READFUNC(ElapsedSecs,UNSIGNED32),
-        READFUNC(ElapsedMicroSecs,UNSIGNED32),
-        READFUNC(StartTimeStamp,UNSIGNED8),
-        TPVAR32(CurMSS,UNSIGNED32, mss_cache),
-        READFUNC(PipeSize,UNSIGNED32),
-        ESTATSVAR(MaxPipeSize,UNSIGNED32, perf_table),
-        READFUNC(SmoothedRTT,UNSIGNED32),
-        READFUNC(CurRTO,UNSIGNED32),
-        ESTATSVAR(CongSignals,UNSIGNED32, perf_table),
-        READFUNC(CurCwnd,UNSIGNED32),
-        READFUNC(CurSsthresh,UNSIGNED32),
-        ESTATSVAR(Timeouts,UNSIGNED32, perf_table),
-        TPVAR32(CurRwinSent,UNSIGNED32, rcv_wnd),
-        ESTATSVAR(MaxRwinSent,UNSIGNED32, perf_table),
-        ESTATSVAR(ZeroRwinSent,UNSIGNED32, perf_table),
-        TPVAR32(CurRwinRcvd,UNSIGNED32, snd_wnd),
-        ESTATSVAR(MaxRwinRcvd,UNSIGNED32, perf_table),
-        ESTATSVAR(ZeroRwinRcvd,UNSIGNED32, perf_table),
-        ESTATSVARN(SndLimTransSnd,UNSIGNED32,
+        ESTATSVAR(SegsOut, COUNTER32, UNSIGNED32, perf_table),
+        ESTATSVAR(DataSegsOut, COUNTER32, UNSIGNED32, perf_table),
+        HCINF32(DataOctetsOut, COUNTER32, UNSIGNED32, perf_table),
+        ESTATSVARN(HCDataOctetsOut, COUNTER64, UNSIGNED64, DataOctetsOut,
+		   perf_table),
+        ESTATSVAR(SegsRetrans, COUNTER32, UNSIGNED32, perf_table),
+        ESTATSVAR(OctetsRetrans, COUNTER32, UNSIGNED32, perf_table),
+        ESTATSVAR(SegsIn, COUNTER32, UNSIGNED32, perf_table),
+        ESTATSVAR(DataSegsIn, COUNTER32, UNSIGNED32, perf_table),
+        HCINF32(DataOctetsIn, COUNTER32, UNSIGNED32, perf_table),
+        ESTATSVARN(HCDataOctetsIn, COUNTER64, UNSIGNED64, DataOctetsIn,
+		   perf_table),
+        READFUNC(ElapsedSecs, COUNTER32, UNSIGNED32),
+        READFUNC(ElapsedMicroSecs, COUNTER32, UNSIGNED32),
+        READFUNC(StartTimeStamp, DATEANDTIME, UNSIGNED8),
+        TPVAR32(CurMSS, GAUGE32, UNSIGNED32, mss_cache),
+        READFUNC(PipeSize, GAUGE32, UNSIGNED32),
+        ESTATSVAR(MaxPipeSize, GAUGE32, UNSIGNED32, perf_table),
+        READFUNC(SmoothedRTT, GAUGE32, UNSIGNED32),
+        READFUNC(CurRTO, GAUGE32, UNSIGNED32),
+        ESTATSVAR(CongSignals, COUNTER32, UNSIGNED32, perf_table),
+        READFUNC(CurCwnd, GAUGE32, UNSIGNED32),
+        READFUNC(CurSsthresh, GAUGE32, UNSIGNED32),
+        ESTATSVAR(Timeouts, COUNTER32, UNSIGNED32, perf_table),
+        TPVAR32(CurRwinSent, GAUGE32, UNSIGNED32, rcv_wnd),
+        ESTATSVAR(MaxRwinSent, GAUGE32, UNSIGNED32, perf_table),
+        ESTATSVAR(ZeroRwinSent, GAUGE32, UNSIGNED32, perf_table),
+        TPVAR32(CurRwinRcvd, GAUGE32, UNSIGNED32, snd_wnd),
+        ESTATSVAR(MaxRwinRcvd, GAUGE32, UNSIGNED32, perf_table),
+        ESTATSVAR(ZeroRwinRcvd, GAUGE32, UNSIGNED32, perf_table),
+        ESTATSVARN(SndLimTransSnd, COUNTER32, UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_SENDER], perf_table),
-        ESTATSVARN(SndLimTransCwnd,UNSIGNED32,
+        ESTATSVARN(SndLimTransCwnd, COUNTER32, UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_CWND], perf_table),
-        ESTATSVARN(SndLimTransRwin,UNSIGNED32,
+        ESTATSVARN(SndLimTransRwin, COUNTER32, UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_RWIN], perf_table),
-        ESTATSVARN(SndLimTransStartup,UNSIGNED32,
+        ESTATSVARN(SndLimTransStartup, COUNTER32, UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_STARTUP], perf_table),
-        ESTATSVARN(SndLimTransTSODefer,UNSIGNED32,
+        ESTATSVARN(SndLimTransTSODefer, COUNTER32, UNSIGNED32,
                 snd_lim_trans[TCP_ESTATS_SNDLIM_TSODEFER], perf_table),
-        ESTATSVARN(SndLimTimeSnd,UNSIGNED32,
+        ESTATSVARN(SndLimTimeSnd, COUNTER32, UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_SENDER], perf_table),
-        ESTATSVARN(SndLimTimeCwnd,UNSIGNED32,
+        ESTATSVARN(SndLimTimeCwnd, COUNTER32, UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_CWND], perf_table),
-        ESTATSVARN(SndLimTimeRwin,UNSIGNED32,
+        ESTATSVARN(SndLimTimeRwin, COUNTER32, UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_RWIN], perf_table),
-        ESTATSVARN(SndLimTimeStartup,UNSIGNED32,
+        ESTATSVARN(SndLimTimeStartup, COUNTER32, UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_STARTUP], perf_table),
-        ESTATSVARN(SndLimTimeTSODefer,UNSIGNED32,
+        ESTATSVARN(SndLimTimeTSODefer, COUNTER32, UNSIGNED32,
                 snd_lim_time[TCP_ESTATS_SNDLIM_TSODEFER], perf_table),
 };
 
 struct tcp_estats_var path_var_array[] = {
-        READFUNC(RetranThresh,UNSIGNED32),
-        ESTATSVAR(NonRecovDAEpisodes,UNSIGNED32, path_table),
-        ESTATSVAR(SumOctetsReordered,UNSIGNED32, path_table),
-        ESTATSVAR(NonRecovDA,UNSIGNED32, path_table),
-        ESTATSVAR(SampleRTT,UNSIGNED32, path_table),
-        READFUNC(RTTVar,UNSIGNED32),
-        ESTATSVAR(MaxRTT,UNSIGNED32, path_table),
-        ESTATSVAR(MinRTT,UNSIGNED32, path_table),
-        HCINF32(SumRTT,UNSIGNED32, path_table),
-        ESTATSVARN(HCSumRTT,UNSIGNED64, SumRTT, path_table),
-        ESTATSVAR(CountRTT,UNSIGNED32, path_table),
-        ESTATSVAR(MaxRTO,UNSIGNED32, path_table),
-        ESTATSVAR(MinRTO,UNSIGNED32, path_table),
-        ESTATSVAR(IpTtl,UNSIGNED32, path_table),
-        ESTATSVAR(IpTosIn,UNSIGNED8, path_table),
-        READFUNC(IpTosOut,UNSIGNED8),
-        ESTATSVAR(PreCongSumCwnd,UNSIGNED32, path_table),
-        ESTATSVAR(PreCongSumRTT,UNSIGNED32, path_table),
-        ESTATSVAR(PostCongSumRTT,UNSIGNED32, path_table),
-        ESTATSVAR(PostCongCountRTT,UNSIGNED32, path_table),
-        ESTATSVAR(ECNsignals,UNSIGNED32, path_table),
-        ESTATSVAR(DupAckEpisodes,UNSIGNED32, path_table),
-        READFUNC(RcvRTT,UNSIGNED32),
-        ESTATSVAR(DupAcksOut,UNSIGNED32, path_table),
-        ESTATSVAR(CERcvd,UNSIGNED32, path_table),
-        ESTATSVAR(ECESent,UNSIGNED32, path_table),
+        READFUNC(RetranThresh, GAUGE32, UNSIGNED32),
+        ESTATSVAR(NonRecovDAEpisodes, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(SumOctetsReordered, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(NonRecovDA, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(SampleRTT, GAUGE32, UNSIGNED32, path_table),
+        READFUNC(RTTVar, GAUGE32, UNSIGNED32),
+        ESTATSVAR(MaxRTT, GAUGE32, UNSIGNED32, path_table),
+        ESTATSVAR(MinRTT, GAUGE32, UNSIGNED32, path_table),
+        HCINF32(SumRTT, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVARN(HCSumRTT, COUNTER64, UNSIGNED64, SumRTT, path_table),
+        ESTATSVAR(CountRTT, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(MaxRTO, GAUGE32, UNSIGNED32, path_table),
+        ESTATSVAR(MinRTO, GAUGE32, UNSIGNED32, path_table),
+        ESTATSVAR(IpTtl, UNSIGNED32, UNSIGNED32, path_table),
+        ESTATSVAR(IpTosIn, OCTET, UNSIGNED8, path_table),
+        READFUNC(IpTosOut, OCTET, UNSIGNED8),
+        ESTATSVAR(PreCongSumCwnd, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(PreCongSumRTT, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(PostCongSumRTT, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(PostCongCountRTT, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(ECNsignals, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(DupAckEpisodes, COUNTER32, UNSIGNED32, path_table),
+        READFUNC(RcvRTT, GAUGE32, UNSIGNED32),
+        ESTATSVAR(DupAcksOut, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(CERcvd, COUNTER32, UNSIGNED32, path_table),
+        ESTATSVAR(ECESent, COUNTER32, UNSIGNED32, path_table),
 };
 
 struct tcp_estats_var stack_var_array[] = {
-	ESTATSVAR(ActiveOpen,SIGNED32, stack_table),
-	READFUNC(MSSSent,UNSIGNED32),
-	READFUNC(MSSRcvd,UNSIGNED32),
-	READFUNC(WinScaleSent,SIGNED32),
-	READFUNC(WinScaleRcvd,SIGNED32),
-	READFUNC(TimeStamps,SIGNED32),
-	READFUNC(ECN,SIGNED32),
-	READFUNC(WillSendSACK,SIGNED32),
-	READFUNC(WillUseSACK,SIGNED32),
-	READFUNC(State,SIGNED32),
-	READFUNC(Nagle,SIGNED32),
-	ESTATSVAR(MaxSsCwnd,UNSIGNED32, stack_table),
-	ESTATSVAR(MaxCaCwnd,UNSIGNED32, stack_table),
-	ESTATSVAR(MaxSsthresh,UNSIGNED32, stack_table),
-	ESTATSVAR(MinSsthresh,UNSIGNED32, stack_table),
-	READFUNC(InRecovery,SIGNED32),
-	ESTATSVAR(DupAcksIn,UNSIGNED32, stack_table),
-	ESTATSVAR(SpuriousFrDetected,UNSIGNED32, stack_table),
-	ESTATSVAR(SpuriousRtoDetected,UNSIGNED32, stack_table),
-	ESTATSVAR(SoftErrors,UNSIGNED32, stack_table),
-	ESTATSVAR(SoftErrorReason,SIGNED32, stack_table),
-	ESTATSVAR(SlowStart,UNSIGNED32, stack_table),
-	ESTATSVAR(CongAvoid,UNSIGNED32, stack_table),
-	ESTATSVAR(OtherReductions,UNSIGNED32, stack_table),
-	ESTATSVAR(CongOverCount,UNSIGNED32, stack_table),
-	ESTATSVAR(FastRetran,UNSIGNED32, stack_table),
-	ESTATSVAR(SubsequentTimeouts,UNSIGNED32, stack_table),
-	READFUNC(CurTimeoutCount,UNSIGNED32),
-	ESTATSVAR(AbruptTimeouts,UNSIGNED32, stack_table),
-	ESTATSVAR(SACKsRcvd,UNSIGNED32, stack_table),
-	ESTATSVAR(SACKBlocksRcvd,UNSIGNED32, stack_table),
-	ESTATSVAR(SendStall,UNSIGNED32, stack_table),
-	ESTATSVAR(DSACKDups,UNSIGNED32, stack_table),
-	ESTATSVAR(MaxMSS,UNSIGNED32, stack_table),
-	ESTATSVAR(MinMSS,UNSIGNED32, stack_table),
-	ESTATSVAR(SndInitial,UNSIGNED32, stack_table),
-	ESTATSVAR(RecInitial,UNSIGNED32, stack_table),
-	ESTATSVAR(CurRetxQueue,UNSIGNED32, stack_table),
-	ESTATSVAR(MaxRetxQueue,UNSIGNED32, stack_table),
-	READFUNC(CurReasmQueue,UNSIGNED32),
-	ESTATSVAR(MaxReasmQueue,UNSIGNED32, stack_table),
-	ESTATSVAR(EarlyRetrans,UNSIGNED32, stack_table),
-	ESTATSVAR(EarlyRetransDelay,UNSIGNED32, stack_table),
+	ESTATSVAR(ActiveOpen, INTEGER, SIGNED32, stack_table),
+	READFUNC(MSSSent, UNSIGNED32, UNSIGNED32),
+	READFUNC(MSSRcvd, UNSIGNED32, UNSIGNED32),
+	READFUNC(WinScaleSent, INTEGER32, SIGNED32),
+	READFUNC(WinScaleRcvd, INTEGER32, SIGNED32),
+	READFUNC(TimeStamps, INTEGER, SIGNED32),
+	READFUNC(ECN, INTEGER, SIGNED32),
+	READFUNC(WillSendSACK, INTEGER, SIGNED32),
+	READFUNC(WillUseSACK, INTEGER, SIGNED32),
+	READFUNC(State, INTEGER, SIGNED32),
+	READFUNC(Nagle, INTEGER, SIGNED32),
+	ESTATSVAR(MaxSsCwnd, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(MaxCaCwnd, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(MaxSsthresh, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(MinSsthresh, GAUGE32, UNSIGNED32, stack_table),
+	READFUNC(InRecovery, INTEGER, SIGNED32),
+	ESTATSVAR(DupAcksIn, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SpuriousFrDetected, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SpuriousRtoDetected, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SoftErrors, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SoftErrorReason, COUNTER32, SIGNED32, stack_table),
+	ESTATSVAR(SlowStart, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(CongAvoid, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(OtherReductions, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(CongOverCount, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(FastRetran, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SubsequentTimeouts, COUNTER32, UNSIGNED32, stack_table),
+	READFUNC(CurTimeoutCount, GAUGE32, UNSIGNED32),
+	ESTATSVAR(AbruptTimeouts, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SACKsRcvd, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SACKBlocksRcvd, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(SendStall, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(DSACKDups, COUNTER32, UNSIGNED32, stack_table),
+	ESTATSVAR(MaxMSS, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(MinMSS, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(SndInitial, UNSIGNED32, UNSIGNED32, stack_table),
+	ESTATSVAR(RecInitial, UNSIGNED32, UNSIGNED32, stack_table),
+	ESTATSVAR(CurRetxQueue, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(MaxRetxQueue, GAUGE32, UNSIGNED32, stack_table),
+	READFUNC(CurReasmQueue, GAUGE32, UNSIGNED32),
+	ESTATSVAR(MaxReasmQueue, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(EarlyRetrans, UNSIGNED32, UNSIGNED32, stack_table),
+	ESTATSVAR(EarlyRetransDelay, UNSIGNED32, UNSIGNED32, stack_table),
 };
 
 struct tcp_estats_var app_var_array[] = {
-        TPVAR32(SndUna,UNSIGNED32, snd_una),
-        TPVAR32(SndNxt,UNSIGNED32, snd_nxt),
-        ESTATSVAR(SndMax,UNSIGNED32, app_table),
-        HCINF32(ThruOctetsAcked,UNSIGNED32, app_table),
-        ESTATSVARN(HCThruOctetsAcked,UNSIGNED64, ThruOctetsAcked, app_table),
-        TPVAR32(RcvNxt,UNSIGNED32, rcv_nxt),
-        HCINF32(ThruOctetsReceived,UNSIGNED32, app_table),
-        ESTATSVARN(HCThruOctetsReceived,UNSIGNED64, ThruOctetsReceived,
+        TPVAR32(SndUna, COUNTER32, UNSIGNED32, snd_una),
+        TPVAR32(SndNxt, UNSIGNED32, UNSIGNED32, snd_nxt),
+        ESTATSVAR(SndMax, COUNTER32, UNSIGNED32, app_table),
+        HCINF32(ThruOctetsAcked, COUNTER32, UNSIGNED32, app_table),
+        ESTATSVARN(HCThruOctetsAcked, COUNTER64, UNSIGNED64, ThruOctetsAcked,
 		   app_table),
-        READFUNC(CurAppWQueue,UNSIGNED32),
-        ESTATSVAR(MaxAppWQueue,UNSIGNED32, app_table),
-        READFUNC(CurAppRQueue,UNSIGNED32),
-        ESTATSVAR(MaxAppRQueue,UNSIGNED32, app_table),
+        TPVAR32(RcvNxt, COUNTER32, UNSIGNED32, rcv_nxt),
+        HCINF32(ThruOctetsReceived, COUNTER32, UNSIGNED32, app_table),
+        ESTATSVARN(HCThruOctetsReceived, COUNTER64, UNSIGNED64,
+		   ThruOctetsReceived, app_table),
+        READFUNC(CurAppWQueue, GAUGE32, UNSIGNED32),
+        ESTATSVAR(MaxAppWQueue, GAUGE32, UNSIGNED32, app_table),
+        READFUNC(CurAppRQueue, GAUGE32, UNSIGNED32),
+        ESTATSVAR(MaxAppRQueue, GAUGE32, UNSIGNED32, app_table),
 };
 
 struct tcp_estats_var tune_var_array[] = {
-        RWFUNC(LimCwnd,UNSIGNED32),
-        RWFUNC(LimSsthresh,UNSIGNED32),
-        RWFUNC(LimRwin,UNSIGNED32),
-        READFUNC(LimMSS,UNSIGNED32),
+        RWFUNC(LimCwnd, GAUGE32, UNSIGNED32),
+        RWFUNC(LimSsthresh, GAUGE32, UNSIGNED32),
+        RWFUNC(LimRwin, GAUGE32, UNSIGNED32),
+        READFUNC(LimMSS, GAUGE32, UNSIGNED32),
 };
 
 struct tcp_estats_var extras_var_array[] = {
-	ESTATSVAR(OtherReductionsCV, UNSIGNED32, extras_table),
-	ESTATSVAR(OtherReductionsCM, UNSIGNED32, extras_table),
+	ESTATSVAR(OtherReductionsCV, COUNTER32, UNSIGNED32, extras_table),
+	ESTATSVAR(OtherReductionsCM, COUNTER32, UNSIGNED32, extras_table),
 };
 
 struct tcp_estats_var *estats_var_array[] = {
