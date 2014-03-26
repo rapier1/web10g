@@ -98,8 +98,11 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
 	        hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
 				  TCPE_CMD_LIST_CONNS);
-	        if (hdr == NULL)
+	        if (hdr == NULL) {
+			if (msg != NULL)
+				kfree_skb(msg);
                         goto nlmsg_failure;
+		}
 
                 nest = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
 
@@ -124,8 +127,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
 nlmsg_failure:
         pr_err("nlmsg_failure\n");
-	if (msg != NULL)
-		kfree_skb(msg);
 
         return -ENOBUFS;
 }
