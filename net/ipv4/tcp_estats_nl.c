@@ -8,10 +8,10 @@
 #include <net/tcp.h>
 #include <net/sock.h>
 
+#ifdef CONFIG_TCP_ESTATS
 #include <net/tcp_estats_mib_var.h>
 #include <net/tcp_estats_nl.h>
 
-#ifdef CONFIG_TCP_ESTATS
 
 static struct genl_family genl_estats_family = {
 	.id     = GENL_ID_GENERATE,
