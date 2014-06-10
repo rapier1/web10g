@@ -353,6 +353,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	val = kmalloc(valarray_size, GFP_KERNEL);
 	if (!val) {
 		release_sock(stats->sk);
+		tcp_estats_unuse(stats);
 		return -ENOMEM;
 	}
 
