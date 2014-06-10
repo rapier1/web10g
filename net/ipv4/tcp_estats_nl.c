@@ -344,13 +344,17 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	if (!(capable(CAP_SYS_ADMIN) ||
 	      (stats->uid == cred->uid) ||
 	      (stats->gid == cred->gid))) {
+		release_sock(stats->sk);
 		tcp_estats_unuse(stats);
 		return -EACCES;
 	}
 
 	val = kmalloc(valarray_size, GFP_KERNEL);
-	if (!val)
+	if (!val) {
+		release_sock(stats->sk);
+		tcp_estats_unuse(stats);
 		return -ENOMEM;
+	}
 
 	do_gettimeofday(&read_time);
 
