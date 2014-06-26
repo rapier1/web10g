@@ -143,6 +143,8 @@ static bool retransmits_timed_out(struct sock *sk,
 	if (likely(timeout == 0)) {
 		linear_backoff_thresh = ilog2(TCP_RTO_MAX/rto_base);
 
+                TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_timeout(sk));
+
 		if (boundary <= linear_backoff_thresh)
 			timeout = ((2 << boundary) - 1) * rto_base;
 		else
@@ -299,7 +301,6 @@ static void tcp_probe_timer(struct sock *sk)
 		if (tcp_out_of_resources(sk, alive || icsk->icsk_probes_out <= max_probes))
 			return;
 	}
-	TCP_ESTATS_UPDATE(tp, tcp_estats_update_timeout(sk));
 
 	if (icsk->icsk_probes_out > max_probes) {
 		tcp_write_err(sk);
