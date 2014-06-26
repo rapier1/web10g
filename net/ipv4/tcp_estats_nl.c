@@ -9,7 +9,7 @@
 #include <net/sock.h>
 
 #ifdef CONFIG_TCP_ESTATS
-#include <net/tcp_estats_mib_var.h>
+#include <net/tcp_estats_mib_var.h"
 #include <net/tcp_estats_nl.h>
 
 static struct genl_family genl_estats_family = {
@@ -138,6 +138,150 @@ nla_put_failure:
 }
 
 static int
+tcp_estats_put_connection_spec(struct sk_buff *msg, 
+			       struct tcp_estats_connection_spec *spec,
+			       int cid) {
+	int ret = 0;
+	struct nlattr *nest = NULL;
+	nest = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
+	if (!nest)
+		return -EMSGSIZE;
+
+	ret = nla_put(msg, NEA_REM_ADDR, 16, &spec->rem_addr[0]);
+	if (ret<0)
+		return ret;
+	ret = nla_put_u16(msg, NEA_REM_PORT, spec->rem_port);
+	if (ret<0)
+		return ret;
+	ret = nla_put(msg, NEA_LOCAL_ADDR, 16, &spec->local_addr[0]);
+	if (ret<0)
+		return ret;
+	ret = nla_put_u16(msg, NEA_LOCAL_PORT, spec->local_port);
+	if (ret<0)
+		return ret;
+	ret = nla_put_u8(msg, NEA_ADDR_TYPE, spec->addr_type);
+	if (ret<0)
+		return ret;
+	ret = nla_put_u32(msg, NEA_CID, cid);
+	if (ret<0)
+		return ret;
+
+	nla_nest_end(msg, nest);
+	return 0;	
+}
+
+static int
+genl_list_conns(struct sk_buff *skb, struct genl_info *info)
+{
+	struct tcp_estats_connection_spec spec;
+	int tmpid = 0;
+	struct nlattr *tb[NEA_4TUPLE_MAX+1];
+        struct sk_buff *msg = NULL;
+	unsigned int sk_buff_size = nlmsg_total_size(NLMSG_DEFAULT_SIZE);
+	int ret = 0;
+
+	if (skb == NULL) {
+		pr_debug("invalid netlink socket\n");
+		goto nlmsg_failure;
+	}
+
+	/* NLE_ATTR_4TUPLE is optional */
+	if (info->attrs[NLE_ATTR_4TUPLE]) {
+        	ret = nla_parse_nested(tb, NEA_4TUPLE_MAX, 
+				       info->attrs[NLE_ATTR_4TUPLE],
+				       spec_policy);
+		if (ret<0 || !tb[NEA_CID]) {
+			pr_debug("Invalid 4tuple for TCPE_LIST_CONNS\n");
+			return -EINVAL;
+		}
+
+		tmpid = nla_get_u32(tb[NEA_CID]);
+		/* tpmid == 0 is fine - means "start from beginning" */
+		if (tmpid<0) {
+			pr_debug("Invalid starting CID (%d)\n",tmpid);
+			return -EINVAL;
+		}
+	}
+	
+	/* optional - user can specify desired sk_buff size */ 
+	if (info->attrs[NLE_ATTR_RCV_BUF_LEN]) {
+		sk_buff_size = nla_get_u32(info->attrs[NLE_ATTR_RCV_BUF_LEN]);
+	}	
+
+        msg = alloc_skb(sk_buff_size, GFP_KERNEL);
+	if (msg == NULL) {
+		pr_debug("failed to allocate memory for message\n");
+		return -ENOMEM;
+	}
+
+	while (1) {
+		/* there are only 2 ways to break out of this loop:
+			- run out of connections => free or send msg
+			- run out of space => cancel last and free or send msg
+		*/
+		void *hdr = NULL;
+		struct tcp_estats *stats = NULL;
+
+		/* Get estats pointer from idr. */
+		rcu_read_lock();
+		stats = idr_get_next(&tcp_estats_idr, &tmpid);
+		if (stats == NULL) {
+			/* Out of connections - we're done */
+			rcu_read_unlock();
+			break;
+		}
+
+		if (!tcp_estats_use_if_valid(stats)) {
+			pr_debug("stats were already freed for %d\n", tmpid);
+			rcu_read_unlock();
+			continue;
+		}
+		rcu_read_unlock();
+
+		/* Read the connection table into spec. */
+		tcp_estats_read_connection_spec(&spec, stats);
+		tcp_estats_unuse(stats);
+
+		/* add a new message to batch msg */
+		hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
+				  TCPE_CMD_LIST_CONNS);
+	        if (hdr == NULL) {
+			/* msg is full - no message was added, therefore
+			    we may safely leave and either free or send msg */
+                        break;
+		}
+
+		if (tcp_estats_put_connection_spec(msg, &spec, tmpid) < 0) {
+			/* msg is full - cancel this last hdr, then
+			    we are safe to leave and either free or send msg */
+			genlmsg_cancel(msg, hdr);
+			break;
+		}
+
+		/* updates nlmsg_len only - can't fail */
+		genlmsg_end(msg, hdr);
+
+		tmpid = tmpid + 1;
+	}
+	/* reached end of list, or out of room in socket buffer -
+		free message if empty, otherwise, send socket buffer.
+		(if message freed, receiver will still get ACK message) */
+	if (msg->len==0) {
+		kfree_skb(msg);
+	} else {
+		/* msg is attached to receiving socket
+		   and freed during rcvfrom() */
+		genlmsg_unicast(sock_net(skb->sk), msg, info->snd_pid);
+	}
+	return 0;
+
+nlmsg_failure:
+	pr_err("nlmsg_failure\n");
+	return -ENOBUFS;
+}
+
+#if 0
+static int
 genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 {
         struct tcp_estats_connection_spec spec;
@@ -217,6 +361,7 @@ nlmsg_failure:
 
         return -ENOBUFS;
 }
+#endif
 
 static int
 genl_read_vars(struct sk_buff *skb, struct genl_info *info)

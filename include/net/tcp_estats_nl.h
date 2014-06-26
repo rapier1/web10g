@@ -37,6 +37,7 @@ enum nl_estats_attr {
 	NLE_ATTR_TUNE_VARS,
 	NLE_ATTR_EXTRAS_VARS,
 	NLE_ATTR_VAR,
+        NLE_ATTR_RCV_BUF_LEN, /* for limiting long messages */ 
 	__NLE_ATTR_MAX
 };
 #define NLE_ATTR_MAX (__NLE_ATTR_MAX - 1)
