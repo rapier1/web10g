@@ -269,7 +269,6 @@ static void tcp_probe_timer(struct sock *sk)
 		if (tcp_out_of_resources(sk, alive || icsk->icsk_probes_out <= max_probes))
 			return;
 	}
-	TCP_ESTATS_UPDATE(tp, tcp_estats_update_timeout(sk));
 
 	if (icsk->icsk_probes_out > max_probes) {
 		tcp_write_err(sk);
@@ -322,6 +321,7 @@ void tcp_retransmit_timer(struct sock *sk)
 		}
 		tcp_enter_loss(sk, 0);
 		tcp_retransmit_skb(sk, tcp_write_queue_head(sk));
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_timeout(sk));
 		__sk_dst_reset(sk);
 		goto out_reset_timer;
 	}
