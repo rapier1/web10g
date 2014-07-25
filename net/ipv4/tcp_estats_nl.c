@@ -9,7 +9,7 @@
 #include <net/sock.h>
 
 #ifdef CONFIG_TCP_ESTATS
-#include <net/tcp_estats_mib_var.h"
+#include <net/tcp_estats_mib_var.h>
 #include <net/tcp_estats_nl.h>
 
 static struct genl_family genl_estats_family = {
@@ -20,8 +20,8 @@ static struct genl_family genl_estats_family = {
 	.maxattr = NLE_ATTR_MAX,
 };
 
-static struct genl_multicast_group genl_estats_mc = {
-	.name   = "tcp_estats_mc",
+static const struct genl_multicast_group genl_estats_mc[] = {
+	{ .name   = "tcp_estats_mc", },
 };
 
 static const struct nla_policy spec_policy[NEA_4TUPLE_MAX+1] = {
@@ -271,7 +271,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 	} else {
 		/* msg is attached to receiving socket
 		   and freed during rcvfrom() */
-		genlmsg_unicast(sock_net(skb->sk), msg, info->snd_pid);
+		genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 	}
 	return 0;
 
@@ -487,8 +487,8 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	if (!(capable(CAP_SYS_ADMIN) ||
-	      (stats->uid == cred->uid) ||
-	      (stats->gid == cred->gid))) {
+	      uid_eq(stats->uid, cred->uid) ||
+	      gid_eq(stats->gid, cred->gid))) {
 		release_sock(stats->sk);
 		tcp_estats_unuse(stats);
 		return -EACCES;
@@ -742,7 +742,7 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 		stats->ids = 1;
 	}
 
-	if (!(capable(CAP_SYS_ADMIN) || (stats->uid == cred->uid))) {
+	if (!(capable(CAP_SYS_ADMIN) || uid_eq(stats->uid, cred->uid))) {
 		tcp_estats_unuse(stats);
 		return -EACCES;
 	}
@@ -764,7 +764,7 @@ nla_parse_failure:
 	return -EINVAL;
 }
 
-static struct genl_ops genl_estats_ops[] = {
+static const struct genl_ops genl_estats_ops[] = {
 	{
 		.cmd  = TCPE_CMD_INIT,
 		.doit = genl_get_mib,
@@ -786,6 +786,15 @@ static struct genl_ops genl_estats_ops[] = {
 static int __init tcp_estats_nl_init(void)
 {
 	int ret = -EINVAL;
+
+	ret = genl_register_family_with_ops_groups(&genl_estats_family,
+						genl_estats_ops, 
+						genl_estats_mc);
+	if (ret > 0) {
+		return ret;
+	}
+        
+/*
         int i;
 
 	ret = genl_register_family(&genl_estats_family);
@@ -803,14 +812,15 @@ static int __init tcp_estats_nl_init(void)
 	if (ret < 0)
 		goto err_unregister;
 
-        printk(KERN_INFO "tcp_estats netlink module initialized.\n");
-
-        return ret;
-
 err_unregister:
 	genl_unregister_family(&genl_estats_family);
 err:
 	return ret;
+*/
+
+        printk(KERN_INFO "tcp_estats netlink module initialized.\n");
+
+        return ret;
 }
 
 void __exit tcp_estats_nl_exit(void)

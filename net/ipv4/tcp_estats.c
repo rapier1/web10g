@@ -190,8 +190,8 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	TCP_ESTATS_VAR_SET(tp, stack_table, ActiveOpen, active);
 	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->snd_nxt);
 	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->snd_nxt);
-	TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
-			   sysctl_tcp_max_ssthresh);
+	/*TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
+			   sysctl_tcp_max_ssthresh); */
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTT, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTO, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, stack_table, MinMSS, ESTATS_INF32);
@@ -278,7 +278,8 @@ void tcp_estats_establish(struct sock *sk)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
 		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr),
 		       sizeof(struct in6_addr));
-		memcpy(&conn_table->RemAddress, &(inet6_sk(sk)->daddr),
+		/* daddr_cache is a struct* now - aka */
+		memcpy(&conn_table->RemAddress, inet6_sk(sk)->daddr_cache,
 		       sizeof(struct in6_addr));
 	}
 #endif
