@@ -183,7 +183,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	sock_hold(sk);
 	stats->sk = sk;
 	atomic_set(&stats->users, 0);
-
 	stats->limstate = TCP_ESTATS_SNDLIM_STARTUP;
 	stats->start_ts = stats->limstate_ts = stats->current_ts = ktime_get();
 	do_gettimeofday(&stats->start_tv);
@@ -191,9 +190,8 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	TCP_ESTATS_VAR_SET(tp, stack_table, ActiveOpen, active);
 	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->snd_nxt);
 	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->snd_nxt);
-	TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
-			   sysctl_tcp_max_ssthresh);
-
+	/*TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
+			   sysctl_tcp_max_ssthresh); */
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTT, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTO, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, stack_table, MinMSS, ESTATS_INF32);
@@ -236,11 +234,11 @@ void tcp_estats_destroy(struct sock *sk)
 	tcp_estats_unuse(stats);
 }
 
-/* Do not call directly.  Called from tcp_estats_unuse(). */
-void tcp_estats_free(struct tcp_estats *stats)
+/* Do not call directly.  Called from tcp_estats_unuse() through call_rcu. */
+void tcp_estats_free(struct rcu_head *rcu)
 {
+	struct tcp_estats *stats = container_of(rcu, struct tcp_estats, rcu);
 	tcp_estats_disable();
-	sock_put(stats->sk);
 	kfree(stats);
 }
 EXPORT_SYMBOL(tcp_estats_free);
@@ -280,7 +278,8 @@ void tcp_estats_establish(struct sock *sk)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
 		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr),
 		       sizeof(struct in6_addr));
-		memcpy(&conn_table->RemAddress, &(inet6_sk(sk)->daddr),
+		/* daddr_cache is a struct* now - aka */
+		memcpy(&conn_table->RemAddress, inet6_sk(sk)->daddr_cache,
 		       sizeof(struct in6_addr));
 	}
 #endif
@@ -328,7 +327,7 @@ void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
 	struct tcp_estats_path_table *path_table = stats->tables.path_table;
-	unsigned long rtt_sample_msec = rtt_sample * 1000 / HZ;
+	unsigned long rtt_sample_msec = jiffies_to_msecs(rtt_sample);
 	u32 rto;
 
 	if (path_table == NULL)
@@ -344,7 +343,7 @@ void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 	path_table->CountRTT++;
 	path_table->SumRTT += rtt_sample_msec;
 
-	rto = inet_csk(sk)->icsk_rto * 1000 / HZ;
+	rto = jiffies_to_msecs(inet_csk(sk)->icsk_rto);
 	if (rto > path_table->MaxRTO)
 		path_table->MaxRTO = rto;
 	if (rto < path_table->MinRTO)
@@ -583,9 +582,7 @@ void tcp_estats_update_writeq(struct sock *sk)
 
 	if (app_table == NULL)
 		return;
-
 	len = tp->write_seq - app_table->SndMax;
-
 	if (len > app_table->MaxAppWQueue)
 		app_table->MaxAppWQueue = len;
 }
@@ -605,17 +602,17 @@ void tcp_estats_update_recvq(struct sock *sk)
 	struct tcp_estats_tables *tables = &tp->tcp_stats->tables;
 	struct tcp_estats_app_table *app_table = tables->app_table;
 	struct tcp_estats_stack_table *stack_table = tables->stack_table;
-	u32 len1 = tp->rcv_nxt - tp->copied_seq;
-	u32 len2 = ofo_qlen(tp);
 
 	if (app_table != NULL) {
-		if (app_table->MaxAppRQueue < len1)
-			app_table->MaxAppRQueue = len1;
+		u32 len = tp->rcv_nxt - tp->copied_seq;
+		if (app_table->MaxAppRQueue < len)
+			app_table->MaxAppRQueue = len;
 	}
 
 	if (stack_table != NULL) {
-		if (stack_table->MaxReasmQueue < len2)
-			stack_table->MaxReasmQueue = len2;
+		u32 len = ofo_qlen(tp);
+		if (stack_table->MaxReasmQueue < len)
+			stack_table->MaxReasmQueue = len;
 	}
 }
 
