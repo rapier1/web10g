@@ -278,9 +278,7 @@ void tcp_estats_establish(struct sock *sk)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
 		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr),
 		       sizeof(struct in6_addr));
-		/* daddr_cache is a struct* now - aka */
-/*		memcpy(&conn_table->RemAddress, inet6_sk(sk)->daddr_cache,
-		sizeof(struct in6_addr));*/
+		/* ipv6 daddr now uses a different struct than saddr */
 		memcpy(&conn_table->RemAddress, &(sk)->sk_v6_daddr,
 		       sizeof(struct in6_addr));
 	}
