@@ -279,7 +279,9 @@ void tcp_estats_establish(struct sock *sk)
 		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr),
 		       sizeof(struct in6_addr));
 		/* daddr_cache is a struct* now - aka */
-		memcpy(&conn_table->RemAddress, inet6_sk(sk)->daddr_cache,
+/*		memcpy(&conn_table->RemAddress, inet6_sk(sk)->daddr_cache,
+		sizeof(struct in6_addr));*/
+		memcpy(&conn_table->RemAddress, &(sk)->sk_v6_daddr,
 		       sizeof(struct in6_addr));
 	}
 #endif
