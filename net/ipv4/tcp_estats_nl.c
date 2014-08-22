@@ -177,7 +177,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 	int tmpid = 0;
 	struct nlattr *tb[NEA_4TUPLE_MAX+1];
         struct sk_buff *msg = NULL;
-	unsigned int sk_buff_size = nlmsg_total_size(NLMSG_DEFAULT_SIZE);
+	size_t sk_buff_size = nlmsg_total_size(NLMSG_DEFAULT_SIZE);
 	int ret = 0;
 
 	if (skb == NULL) {
@@ -208,7 +208,8 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		sk_buff_size = nla_get_u32(info->attrs[NLE_ATTR_RCV_BUF_LEN]);
 	}	
 
-        msg = alloc_skb(sk_buff_size, GFP_KERNEL);
+//        msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	msg = alloc_skb(sk_buff_size, GFP_KERNEL);
 	if (msg == NULL) {
 		pr_debug("failed to allocate memory for message\n");
 		return -ENOMEM;
@@ -223,20 +224,21 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		struct tcp_estats *stats = NULL;
 
 		/* Get estats pointer from idr. */
-		rcu_read_lock();
+		rcu_read_lock();  // read lock #1
 		stats = idr_get_next(&tcp_estats_idr, &tmpid);
+		tmpid = tmpid + 1;
 		if (stats == NULL) {
 			/* Out of connections - we're done */
-			rcu_read_unlock();
+			rcu_read_unlock(); // read lock #1 unlock
 			break;
 		}
 
 		if (!tcp_estats_use_if_valid(stats)) {
 			pr_debug("stats were already freed for %d\n", tmpid);
-			rcu_read_unlock();
+			rcu_read_unlock(); // read lock #1 unlock
 			continue;
 		}
-		rcu_read_unlock();
+		rcu_read_unlock(); //read lock #1 unlock
 
 		/* Read the connection table into spec. */
 		tcp_estats_read_connection_spec(&spec, stats);
@@ -261,7 +263,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		/* updates nlmsg_len only - can't fail */
 		genlmsg_end(msg, hdr);
 
-		tmpid = tmpid + 1;
 	}
 	/* reached end of list, or out of room in socket buffer -
 		free message if empty, otherwise, send socket buffer.
@@ -280,88 +281,6 @@ nlmsg_failure:
 	return -ENOBUFS;
 }
 
-#if 0
-static int
-genl_list_conns(struct sk_buff *skb, struct genl_info *info)
-{
-        struct tcp_estats_connection_spec spec;
-        int tmpid = 0;
-
-	if (skb == NULL) {
-		pr_debug("invalid netlink socket");
-		goto nlmsg_failure;
-	}
-
-        while (1) {
-		struct sk_buff *msg = NULL;
-		void *hdr = NULL;
-		struct nlattr *nest = NULL;
-		struct tcp_estats *stats = NULL;
-
-		/* Get estats pointer from idr. */
-		rcu_read_lock();
-		stats = idr_get_next(&tcp_estats_idr, &tmpid);
-		if (stats == NULL) {
-			/* We're done, however we need to free msg. */
-			rcu_read_unlock();
-			if (msg != NULL)
-				kfree_skb(msg);
-			break;
-		}
-
-		if (!tcp_estats_use_if_valid(stats)) {
-			pr_debug("stats were already freed for %d\n", tmpid);
-			rcu_read_unlock();
-			continue;
-		}
-		rcu_read_unlock();
-
-		/* Read the connection table into spec. */
-                tcp_estats_read_connection_spec(&spec, stats);
-		tcp_estats_unuse(stats);
-
-		/* Build and send the connection spec netlink message. */
-                msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
-	        if (msg == NULL) {
-			pr_debug("failed to allocate memory for message.\n");
-                        return -ENOMEM;
-		}
-
-	        hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
-				  TCPE_CMD_LIST_CONNS);
-	        if (hdr == NULL) {
-			if (msg != NULL)
-				kfree_skb(msg);
-                        goto nlmsg_failure;
-		}
-
-                nest = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
-
-                nla_put(msg, NEA_REM_ADDR, 16, &spec.rem_addr[0]);
-                nla_put_u16(msg, NEA_REM_PORT, spec.rem_port);
-                nla_put(msg, NEA_LOCAL_ADDR, 16, &spec.local_addr[0]);
-                nla_put_u16(msg, NEA_LOCAL_PORT, spec.local_port);
-		nla_put_u8(msg, NEA_ADDR_TYPE, spec.addr_type);
-                nla_put_u32(msg, NEA_CID, tmpid);
-
-                nla_nest_end(msg, nest);
-
-	        genlmsg_end(msg, hdr);
-
-		/* netlink_unicast_kernel() will free msg. */
-                genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
-
-                tmpid = tmpid + 1;
-        }
-
-        return 0;
-
-nlmsg_failure:
-        pr_err("nlmsg_failure\n");
-
-        return -ENOBUFS;
-}
-#endif
 
 static int
 genl_read_vars(struct sk_buff *skb, struct genl_info *info)
@@ -530,6 +449,9 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
         }
 
         release_sock(stats->sk);
+
+	tcp_estats_read_connection_spec(&spec, stats);
+
         tcp_estats_unuse(stats);
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
@@ -550,7 +472,6 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 		goto nla_put_failure;
 	nla_nest_end(msg, nest_time);
 
-	tcp_estats_read_connection_spec(&spec, stats);
 
 	nest_spec = nla_nest_start(msg, NLE_ATTR_4TUPLE | NLA_F_NESTED);
 
@@ -794,30 +715,6 @@ static int __init tcp_estats_nl_init(void)
 		return ret;
 	}
         
-/*
-        int i;
-
-	ret = genl_register_family(&genl_estats_family);
-	if (ret < 0)
-		goto err;
-
-	for (i = 0; i < ARRAY_SIZE(genl_estats_ops); i++) {
-		ret = genl_register_ops(&genl_estats_family,
-					&genl_estats_ops[i]);
-		if (ret < 0)
-			goto err_unregister;
-	}
-
-	ret = genl_register_mc_group(&genl_estats_family, &genl_estats_mc);
-	if (ret < 0)
-		goto err_unregister;
-
-err_unregister:
-	genl_unregister_family(&genl_estats_family);
-err:
-	return ret;
-*/
-
         printk(KERN_INFO "tcp_estats netlink module initialized.\n");
 
         return ret;
