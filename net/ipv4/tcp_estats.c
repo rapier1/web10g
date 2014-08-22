@@ -29,9 +29,13 @@
 #include <net/tcp.h>
 #include <asm/atomic.h>
 #include <asm/byteorder.h>
+#ifndef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
+#include <linux/jiffies.h>
+#endif
 
 #define ESTATS_INF32	0xffffffff
-#define ESTATS_MAX_CID	1024
+
+#define ESTATS_MAX_CID	5000000
 
 extern int sysctl_tcp_estats;
 
@@ -128,7 +132,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	struct tcp_sock *tp = tcp_sk(sk);
 	void *estats_mem;
 	int sysctl;
-        int ret;
+	int ret;
 
 	/* Read the sysctl once before calculating memory needs and initializing
 	 * tables to avoid raciness. */
@@ -175,17 +179,29 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		estats_mem += sizeof(struct tcp_estats_extras_table);
 	}
 
-        stats->tcpe_cid = -1;
-        stats->queued = 0;
+	stats->tcpe_cid = -1;
+	stats->queued = 0;
 
 	tables->connection_table->AddressType = addrtype;
 
 	sock_hold(sk);
 	stats->sk = sk;
 	atomic_set(&stats->users, 0);
+
 	stats->limstate = TCP_ESTATS_SNDLIM_STARTUP;
-	stats->start_ts = stats->limstate_ts = stats->current_ts = ktime_get();
+	stats->limstate_ts = ktime_get();
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
+	stats->start_ts = stats->current_ts = stats->limstate_ts;
+#else
+	stats->start_ts = stats->current_ts = jiffies;
+#endif
 	do_gettimeofday(&stats->start_tv);
+
+	/* order is important - 
+		must have stats hooked into tp and tcp_estats_enabled()
+		in order to have the TCP_ESTATS_VAR_<> macros work */
+	tp->tcp_stats = stats;
+	tcp_estats_enable();
 
 	TCP_ESTATS_VAR_SET(tp, stack_table, ActiveOpen, active);
 	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->snd_nxt);
@@ -197,18 +213,15 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	TCP_ESTATS_VAR_SET(tp, stack_table, MinMSS, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, stack_table, MinSsthresh, ESTATS_INF32);
 
-	tp->tcp_stats = stats;
 	tcp_estats_use(stats);
 
-        if (tcp_estats_wq_enabled) {
-                tcp_estats_use(stats);
-                stats->queued = 1;
-                stats->tcpe_cid = 0;
-                INIT_WORK(&stats->create_notify, create_notify_func);
-                ret = queue_work(tcp_estats_wq, &stats->create_notify);
-        }
-
-	tcp_estats_enable();
+	if (tcp_estats_wq_enabled) {
+		tcp_estats_use(stats);
+		stats->queued = 1;
+		stats->tcpe_cid = 0;
+		INIT_WORK(&stats->create_notify, create_notify_func);
+		ret = queue_work(tcp_estats_wq, &stats->create_notify);
+	}
 
 	return 0;
 }
@@ -224,13 +237,12 @@ void tcp_estats_destroy(struct sock *sk)
 	/* Attribute final sndlim time. */
 	tcp_estats_update_sndlim(tcp_sk(stats->sk), stats->limstate);
 
-        if (tcp_estats_wq_enabled && stats->queued) {
-                INIT_DELAYED_WORK(&stats->destroy_notify,
-                        destroy_notify_func);
-                queue_delayed_work(tcp_estats_wq, &stats->destroy_notify,
-                        persist_delay);
-
-        }
+	if (tcp_estats_wq_enabled && stats->queued) {
+		INIT_DELAYED_WORK(&stats->destroy_notify,
+			destroy_notify_func);
+		queue_delayed_work(tcp_estats_wq, &stats->destroy_notify,
+			persist_delay);
+	}
 	tcp_estats_unuse(stats);
 }
 
@@ -270,16 +282,17 @@ void tcp_estats_establish(struct sock *sk)
 
 	if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV4) {
 		memcpy(&conn_table->LocalAddress.addr, &inet->inet_rcv_saddr,
-		       sizeof(struct in_addr));
-		memcpy(&conn_table->RemAddress, &inet->inet_daddr,
-		       sizeof(struct in_addr));
+			sizeof(struct in_addr));
+		memcpy(&conn_table->RemAddress.addr, &inet->inet_daddr,
+			sizeof(struct in_addr));
 	}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
-		memcpy(&conn_table->LocalAddress, &(inet6_sk(sk)->saddr),
+		/* should this be &(sk)->sk_v6_rcv_saddr?? */
+		memcpy(&conn_table->LocalAddress.addr6, &(inet6_sk(sk)->saddr),
 		       sizeof(struct in6_addr));
 		/* ipv6 daddr now uses a different struct than saddr */
-		memcpy(&conn_table->RemAddress, &(sk)->sk_v6_daddr,
+		memcpy(&conn_table->RemAddress.addr6, &(sk)->sk_v6_daddr,
 		       sizeof(struct in6_addr));
 	}
 #endif
@@ -295,10 +308,10 @@ void tcp_estats_establish(struct sock *sk)
 
 	tcp_estats_update_sndlim(tp, TCP_ESTATS_SNDLIM_SENDER);
 
-        if (tcp_estats_wq_enabled && stats->queued) {
-                INIT_WORK(&stats->establish_notify, establish_notify_func);
-                queue_work(tcp_estats_wq, &stats->establish_notify);
-        }
+	if (tcp_estats_wq_enabled && stats->queued) {
+		INIT_WORK(&stats->establish_notify, establish_notify_func);
+		queue_work(tcp_estats_wq, &stats->establish_notify);
+	}
 }
 
 /*
@@ -389,6 +402,8 @@ void tcp_estats_update_finish_segrecv(struct tcp_sock *tp)
 
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	stats->current_ts = ktime_get();
+#else
+	stats->current_ts = jiffies;
 #endif
 
 	if (stack_table != NULL) {
@@ -512,6 +527,8 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	stats->current_ts = ktime_get();
+#else
+	stats->current_ts = jiffies;
 #endif
 
 	if (perf_table == NULL)
@@ -622,92 +639,92 @@ void tcp_estats_update_recvq(struct sock *sk)
 
 static int get_new_cid(struct tcp_estats *stats)
 {
-      int err;
-      int id_cid;
+	int err;
+	int id_cid;
 
 again:
-        if (unlikely(idr_pre_get(&tcp_estats_idr, GFP_KERNEL) == 0))
-            return -ENOMEM;
+	if (unlikely(idr_pre_get(&tcp_estats_idr, GFP_KERNEL) == 0))
+		return -ENOMEM;
 
-        spin_lock_bh(&tcp_estats_idr_lock);
-        err = idr_get_new_above(&tcp_estats_idr, stats, next_id, &id_cid);
-        if (!err) {
-                next_id = (id_cid + 1) % ESTATS_MAX_CID;
-                stats->tcpe_cid = id_cid;
-        }
-        spin_unlock_bh(&tcp_estats_idr_lock);
+	spin_lock_bh(&tcp_estats_idr_lock);
+	err = idr_get_new_above(&tcp_estats_idr, stats, next_id, &id_cid);
+	if (!err) {
+		next_id = (id_cid + 1) % ESTATS_MAX_CID;
+		stats->tcpe_cid = id_cid;
+	}
+	spin_unlock_bh(&tcp_estats_idr_lock);
 
-        if (unlikely(err == -EAGAIN))
-                goto again;
-        else if (unlikely(err))
-                return err;
+	if (unlikely(err == -EAGAIN))
+		goto again;
+	else if (unlikely(err))
+		return err;
 
-        return 0;
+	return 0;
 }
 
 static void create_func(struct work_struct *work)
 {
-        // stub for netlink notification of new connections
-        ;
+	/* stub for netlink notification of new connections */
+	;
 }
 
 static void establish_func(struct work_struct *work)
 {
-        struct tcp_estats *stats = container_of(work, struct tcp_estats,
+	struct tcp_estats *stats = container_of(work, struct tcp_estats,
 						establish_notify);
-        int err = 0;
+	int err = 0;
 
 	if ((stats->tcpe_cid) > 0) {
 		pr_err("TCP estats container established multiple times.\n");
 		return;
 	}
 
-        if ((stats->tcpe_cid) == 0) {
-                err = get_new_cid(stats);
-                if (err)
+	if ((stats->tcpe_cid) == 0) {
+		err = get_new_cid(stats);
+		if (err)
 			pr_devel("get_new_cid error %d\n", err);
-        }
+	}
 }
 
 static void destroy_func(struct work_struct *work)
 {
-        struct tcp_estats *stats = container_of(work, struct tcp_estats,
+	struct tcp_estats *stats = container_of(work, struct tcp_estats,
 						destroy_notify.work);
 
-        int id_cid = stats->tcpe_cid;
+	int id_cid = stats->tcpe_cid;
 
 	if (id_cid == 0)
 		pr_devel("TCP estats destroyed before being established.\n");
 
-        if (id_cid >= 0) {
-                if (id_cid) {
-                        spin_lock_bh(&tcp_estats_idr_lock);
-                        idr_remove(&tcp_estats_idr, id_cid);
-                        spin_unlock_bh(&tcp_estats_idr_lock);
-                }
-                stats->tcpe_cid = -1;
+	if (id_cid >= 0) {
+		if (id_cid) {
+			spin_lock_bh(&tcp_estats_idr_lock);
+			idr_remove(&tcp_estats_idr, id_cid);
+			spin_unlock_bh(&tcp_estats_idr_lock);
+		}
+		stats->tcpe_cid = -1;
 
-                tcp_estats_unuse(stats);
-        }
+		tcp_estats_unuse(stats);
+	}
 }
 
 void __init tcp_estats_init()
 {
-        idr_init(&tcp_estats_idr);
+	idr_init(&tcp_estats_idr);
 
-        create_notify_func = &create_func;
-        establish_notify_func = &establish_func;
-        destroy_notify_func = &destroy_func;
+	create_notify_func = &create_func;
+	establish_notify_func = &establish_func;
+	destroy_notify_func = &destroy_func;
 
-        persist_delay = 5 * HZ;
+	persist_delay = 5 * HZ;
 
-        tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
-        if (tcp_estats_wq == NULL) {
+	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
+	if (tcp_estats_wq == NULL) {
 		pr_err("tcp_estats_init(): alloc_workqueue failed\n");
 		goto cleanup_fail;
 	}
 
-        tcp_estats_wq_enabled = 1;
+	tcp_estats_wq_enabled = 1;
 	return;
 
 cleanup_fail:

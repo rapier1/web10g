@@ -1930,6 +1930,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
 						     (tcp_skb_is_last(sk, skb) ?
 						      nonagle : TCP_NAGLE_PUSH)))) {
+				/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 				break;
 			}
 		} else {
@@ -1962,6 +1963,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			 */
 			smp_mb__after_clear_bit();
 			if (atomic_read(&sk->sk_wmem_alloc) > limit)
+				/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 				break;
 		}
 
@@ -1975,12 +1977,14 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		if (skb->len > limit &&
 		    unlikely(tso_fragment(sk, skb, limit, mss_now, gfp))) {
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 		}
 
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp))) {
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 		}
 
@@ -1994,6 +1998,7 @@ repair:
 		sent_pkts += tcp_skb_pcount(skb);
 
 		if (push_one)
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 	}
 

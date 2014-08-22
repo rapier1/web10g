@@ -16,11 +16,11 @@
 #endif
 
 union estats_val {
-	__u64 o;
-	__u32 t;
-	__s32 s;
-	__u16 w;
-	__u8  b;
+	__u64 u_64;
+	__u32 u_32;
+	__s32 s_32;
+	__u16 u_16;
+	__u8  u_8;
 };
 
 enum MIB_TABLE {
@@ -30,7 +30,7 @@ enum MIB_TABLE {
 	APP_TABLE,
 	TUNE_TABLE,
 	EXTRAS_TABLE,
-        __MAX_TABLE
+	__MAX_TABLE
 };
 #define MAX_TABLE __MAX_TABLE
 
@@ -50,14 +50,6 @@ enum tcp_estats_states {
 	TCP_ESTATS_STATE_CLOSING,
 	TCP_ESTATS_STATE_TIMEWAIT,
 	TCP_ESTATS_STATE_DELETECB
-};
-
-struct tcp_estats_connection_spec {
-	uint8_t  rem_addr[16];
-	uint8_t  local_addr[16];
-	uint8_t addr_type;
-	uint16_t rem_port;
-	uint16_t local_port;
 };
 
 enum TCP_ESTATS_VAR_TYPE {
@@ -83,7 +75,7 @@ enum TCP_ESTATS_VAL_TYPE {
 
 struct tcp_estats_var;
 typedef void (*estats_rwfunc_t)(void *buf, struct tcp_estats *stats,
-                                struct tcp_estats_var *vp);
+				struct tcp_estats_var *vp);
 
 struct tcp_estats_var {
 	char		*name;
@@ -103,7 +95,7 @@ extern struct tcp_estats_var   path_var_array[];
 extern struct tcp_estats_var  stack_var_array[];
 extern struct tcp_estats_var    app_var_array[];
 extern struct tcp_estats_var   tune_var_array[];
-extern struct tcp_estats_var   extras_var_array[];
+extern struct tcp_estats_var extras_var_array[];
 
 extern struct tcp_estats_var *estats_var_array[];
 
@@ -121,13 +113,13 @@ static inline int single_index(int inda, int indb)
 }
 
 static inline void read_tcp_estats(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+				   struct tcp_estats_var *vp)
 {
-        vp->read(buf, stats, vp);
+	vp->read(buf, stats, vp);
 }
 
 static inline int write_tcp_estats(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+				   struct tcp_estats_var *vp)
 {
 	if (vp->write != NULL) {
 		vp->write(buf, stats, vp);
@@ -159,19 +151,19 @@ static inline int tcp_estats_var_len(struct tcp_estats_var *vp)
 void tcp_estats_find_var_by_iname(struct tcp_estats_var **, const char *);
 
 void tcp_estats_read_connection_spec(struct tcp_estats_connection_spec *,
-        struct tcp_estats *);
+				     struct tcp_estats *);
 
 typedef enum ESTATS_PERF_INDEX {
 	SEGSOUT                 = 0,
 	DATASEGSOUT,
 	DATAOCTETSOUT,
-	HCDATAOCTETSOUT, 
+	HCDATAOCTETSOUT,
 	SEGSRETRANS,
 	OCTETSRETRANS,
 	SEGSIN,
 	DATASEGSIN,
 	DATAOCTETSIN,
-	HCDATAOCTETSIN, 
+	HCDATAOCTETSIN,
 	ELAPSEDSECS,
 	ELAPSEDMICROSECS,
 	STARTTIMESTAMP,
@@ -200,38 +192,38 @@ typedef enum ESTATS_PERF_INDEX {
 	SNDLIMTIMERWIN,
 	SNDLIMTIMESTARTUP,
 	SNDLIMTIMETSODEFER,
-        __PERF_INDEX_MAX
+	__PERF_INDEX_MAX
 } ESTATS_PERF_INDEX;
 #define PERF_INDEX_MAX __PERF_INDEX_MAX
 
 typedef enum ESTATS_PATH_INDEX {
-        RETRANTHRESH,
-        NONRECOVDAEPISODES,
-        SUMOCTETSREORDERED,
-        NONRECOVDA,
-        SAMPLERTT,
-        RTTVAR,
-        MAXRTT,
-        MINRTT,
-        SUMRTT,
-        HCSUMRTT,
-        COUNTRTT,
-        MAXRTO,
-        MINRTO,
-        IPTTL,
-        IPTOSIN,
-        IPTOSOUT,
-        PRECONGSUMCWND,
-        PRECONGSUMRTT,
-        POSTCONGSUMRTT,
-        POSTCONGCOUNTRTT,
-        ECNSIGNALS,
-        DUPACKEPISODES,
-        RCVRTT,
-        DUPACKSOUT,
-        CERCVD,
-        ECESENT,
-        __PATH_INDEX_MAX
+	RETRANTHRESH,
+	NONRECOVDAEPISODES,
+	SUMOCTETSREORDERED,
+	NONRECOVDA,
+	SAMPLERTT,
+	RTTVAR,
+	MAXRTT,
+	MINRTT,
+	SUMRTT,
+	HCSUMRTT,
+	COUNTRTT,
+	MAXRTO,
+	MINRTO,
+	IPTTL,
+	IPTOSIN,
+	IPTOSOUT,
+	PRECONGSUMCWND,
+	PRECONGSUMRTT,
+	POSTCONGSUMRTT,
+	POSTCONGCOUNTRTT,
+	ECNSIGNALS,
+	DUPACKEPISODES,
+	RCVRTT,
+	DUPACKSOUT,
+	CERCVD,
+	ECESENT,
+	__PATH_INDEX_MAX
 } ESTATS_PATH_INDEX;
 #define PATH_INDEX_MAX __PATH_INDEX_MAX
 
@@ -279,33 +271,33 @@ typedef enum ESTATS_STACK_INDEX {
 	MAXREASMQUEUE,
 	EARLYRETRANS,
 	EARLYRETRANSDELAY,
-        __STACK_INDEX_MAX
+	__STACK_INDEX_MAX
 } ESTATS_STACK_INDEX;
 #define STACK_INDEX_MAX __STACK_INDEX_MAX
 
 typedef enum ESTATS_APP_INDEX {
-        SNDUNA,
-        SNDNXT,
-        SNDMAX,
-        THRUOCTETSACKED,
-        HCTHRUOCTETSACKED, 
-        RCVNXT,
-        THRUOCTETSRECEIVED,
-        HCTHRUOCTETSRECEIVED, 
-        CURAPPWQUEUE,
-        MAXAPPWQUEUE,
-        CURAPPRQUEUE,
-        MAXAPPRQUEUE,
-        __APP_INDEX_MAX
+	SNDUNA,
+	SNDNXT,
+	SNDMAX,
+	THRUOCTETSACKED,
+	HCTHRUOCTETSACKED,
+	RCVNXT,
+	THRUOCTETSRECEIVED,
+	HCTHRUOCTETSRECEIVED,
+	CURAPPWQUEUE,
+	MAXAPPWQUEUE,
+	CURAPPRQUEUE,
+	MAXAPPRQUEUE,
+	__APP_INDEX_MAX
 } ESTATS_APP_INDEX;
 #define APP_INDEX_MAX __APP_INDEX_MAX
 
-typedef enum ESTATS_TUNE_INDEX { 
-        LIMCWND,
-        LIMSSTHRESH,
-        LIMRWIN,
-        LIMMSS,
-        __TUNE_INDEX_MAX
+typedef enum ESTATS_TUNE_INDEX {
+	LIMCWND,
+	LIMSSTHRESH,
+	LIMRWIN,
+	LIMMSS,
+	__TUNE_INDEX_MAX
 } ESTATS_TUNE_INDEX;
 #define TUNE_INDEX_MAX __TUNE_INDEX_MAX
 
@@ -338,6 +330,5 @@ typedef enum ESTATS_EXTRAS_INDEX {
 #define DEFAULT_TUNE_MASK	((1ULL << TUNE_INDEX_MAX)-1)
 #define DEFAULT_EXTRAS_MASK	((1ULL << EXTRAS_INDEX_MAX)-1)
 #endif
-
 
 #endif /* _TCP_ESTATS_MIB_VAR_H_ */

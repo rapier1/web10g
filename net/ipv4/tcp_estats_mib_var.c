@@ -19,10 +19,10 @@ static char *get_stats_base(struct tcp_estats *stats,
 	else if (strcmp(vp->table, "tune_table") == 0)
 		base = (char *) stats->tables.tune_table;
 	else if (strcmp(vp->table, "extras_table") == 0)
-	       base = (char *) stats->tables.extras_table;
+		base = (char *) stats->tables.extras_table;
 
 	return base;
-};
+}
 
 static void read_stats(void *buf, struct tcp_estats *stats,
 		       struct tcp_estats_var *vp)
@@ -43,7 +43,7 @@ static void read_sk32(void *buf, struct tcp_estats *stats,
 static void read_inf32(void *buf, struct tcp_estats *stats,
 		       struct tcp_estats_var *vp)
 {
-        u64 val;
+	u64 val;
 	char *base = get_stats_base(stats, vp);
 	if (base != NULL) {
 		memcpy(&val, base + vp->read_data, 8);
@@ -57,14 +57,17 @@ static void read_inf32(void *buf, struct tcp_estats *stats,
 static void read_ElapsedSecs(void *buf, struct tcp_estats *stats,
 			     struct tcp_estats_var *vp)
 {
-	ktime_t elapsed;
 	u32 secs;
 
-#ifndef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
-	stats->current_ts = ktime_get();
-#endif
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
+	ktime_t elapsed;
 	elapsed = ktime_sub(stats->current_ts, stats->start_ts);
 	secs = ktime_to_timeval(elapsed).tv_sec;
+#else
+	long elapsed;
+	elapsed = (long)stats->current_ts - (long)stats->start_ts;
+	secs = (u32)(jiffies_to_msecs(elapsed)/1000);
+#endif
 
         memcpy(buf, &secs, 4);
 }
@@ -72,14 +75,17 @@ static void read_ElapsedSecs(void *buf, struct tcp_estats *stats,
 static void read_ElapsedMicroSecs(void *buf, struct tcp_estats *stats,
 				  struct tcp_estats_var *vp)
 {
-	ktime_t elapsed;
 	u32 usecs;
 
-#ifndef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
-	stats->current_ts = ktime_get();
-#endif
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
+	ktime_t elapsed;
 	elapsed = ktime_sub(stats->current_ts, stats->start_ts);
 	usecs = ktime_to_timeval(elapsed).tv_usec;
+#else
+	long elapsed;
+	elapsed = (long)stats->current_ts - (long)stats->start_ts;
+	usecs = (u32)(jiffies_to_usecs(elapsed)%1000000);
+#endif
 
         memcpy(buf, &usecs, 4);
 }
@@ -87,8 +93,8 @@ static void read_ElapsedMicroSecs(void *buf, struct tcp_estats *stats,
 static void read_StartTimeStamp(void *buf, struct tcp_estats *stats,
 				struct tcp_estats_var *vp)
 {
-        u8 val = 0; // currently unimplemented
-        memcpy(buf, &val, 1);
+	u8 val = 0; // currently unimplemented
+	memcpy(buf, &val, 1);
 }
 
 static void read_PipeSize(void *buf, struct tcp_estats *stats,
@@ -128,7 +134,7 @@ static void read_CurSsthresh(void *buf, struct tcp_estats *stats,
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	u32 val = tp->snd_ssthresh <= 0x7fffffff ?
-	      tp->snd_ssthresh * tp->mss_cache : 0xffffffff;
+		tp->snd_ssthresh * tp->mss_cache : 0xffffffff;
 	memcpy(buf, &val, 4);
 }
 
@@ -242,7 +248,7 @@ static void read_WillSendSACK(void *buf, struct tcp_estats *stats,
 #define read_WillUseSACK	read_WillSendSACK
 
 static void read_State(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+		       struct tcp_estats_var *vp)
 {
 	/* A mapping from Linux to MIB state. */
 	static char state_map[] = { 0,
@@ -307,7 +313,7 @@ static void read_CurReasmQueue(void *buf, struct tcp_estats *stats,
 }
 
 static void read_CurAppWQueue(void *buf, struct tcp_estats *stats,
-        struct tcp_estats_var *vp)
+			      struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	struct tcp_estats_app_table *app_table =
@@ -622,21 +628,6 @@ void tcp_estats_find_var_by_iname(struct tcp_estats_var **var, const char *name)
 	}
 }
 EXPORT_SYMBOL(tcp_estats_find_var_by_iname);
-
-void tcp_estats_read_connection_spec(struct tcp_estats_connection_spec *spec,
-        struct tcp_estats *stats)
-{
-	struct tcp_estats_connection_table *connection_table =
-		stats->tables.connection_table;
-        memcpy(&spec->rem_addr[0], &connection_table->RemAddress,
-	       sizeof(connection_table->RemAddress));
-        memcpy(&spec->local_addr[0], &connection_table->LocalAddress,
-	       sizeof(connection_table->LocalAddress));
-	spec->addr_type = connection_table->AddressType;
-        spec->rem_port = connection_table->RemPort;
-        spec->local_port = connection_table->LocalPort;
-}
-EXPORT_SYMBOL(tcp_estats_read_connection_spec);
 
 #else
 #endif /* CONFIG_TCP_ESTATS */

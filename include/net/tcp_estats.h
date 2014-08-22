@@ -58,7 +58,7 @@ enum tcp_estats_softerror_reason {
 	TCP_ESTATS_SOFTERROR_OTHER = 8,
 };
 
-#define TCP_ESTATS_INACTIVE	0
+#define TCP_ESTATS_INACTIVE	2
 #define TCP_ESTATS_ACTIVE	1
 
 #define TCP_ESTATS_TABLEMASK_INACTIVE	0x00	
@@ -108,8 +108,10 @@ extern struct static_key	tcp_estats_enabled;
 /*
  * Variables that can be read and written directly.
  *
- * Contains all variables from RFC 4898. Commented fields have
- * external handlers and do not need struct storage.
+ * Contains all variables from RFC 4898. Commented fields are
+ * either not implemented (only StartTimeStamp 
+ * remains unimplemented in this release) or have
+ * handlers and do not need struct storage.
  */
 struct tcp_estats_connection_table {
 	/* Connection table */
@@ -278,8 +280,13 @@ struct tcp_estats {
 
 	int				limstate;
 	ktime_t				limstate_ts;
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	ktime_t				start_ts;
 	ktime_t				current_ts;
+#else
+	unsigned long			start_ts;
+	unsigned long			current_ts;
+#endif
 	struct timeval			start_tv;
 
         int				queued;
@@ -308,7 +315,6 @@ extern int  tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype t,
 			      int active);
 extern void tcp_estats_destroy(struct sock *sk);
 extern void tcp_estats_establish(struct sock *sk);
-extern void tcp_estats_free(struct rcu_head *rcu);
 
 extern void tcp_estats_update_snd_nxt(struct tcp_sock *tp);
 extern void tcp_estats_update_acked(struct tcp_sock *tp, u32 ack);
@@ -330,6 +336,7 @@ extern void tcp_estats_update_writeq(struct sock *sk);
 extern void tcp_estats_update_recvq(struct sock *sk);
 
 extern void tcp_estats_init(void);
+extern void tcp_estats_free(struct rcu_head *rcu);
 
 static inline void tcp_estats_use(struct tcp_estats *stats)
 {
@@ -358,7 +365,7 @@ static inline void tcp_estats_unuse(struct tcp_estats *stats)
 #define TCP_ESTATS_VAR_DEC(tp, table, var)	do {} while (0)
 #define TCP_ESTATS_VAR_SET(tp, table, var,val)	do {} while (0)
 #define TCP_ESTATS_VAR_ADD(tp, table, var,val)	do {} while (0)
-#define TCP_ESTATS_UPDATE(tp, func)	do {} while (0)
+#define TCP_ESTATS_UPDATE(tp, func)		do {} while (0)
 
 static inline void tcp_estats_init(void) { }
 static inline void tcp_estats_establish(struct sock *sk) { }
