@@ -208,7 +208,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		sk_buff_size = nla_get_u32(info->attrs[NLE_ATTR_RCV_BUF_LEN]);
 	}	
 
-//        msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	msg = alloc_skb(sk_buff_size, GFP_KERNEL);
 	if (msg == NULL) {
 		pr_debug("failed to allocate memory for message\n");
@@ -226,7 +225,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		/* Get estats pointer from idr. */
 		rcu_read_lock();  // read lock #1
 		stats = idr_get_next(&tcp_estats_idr, &tmpid);
-		tmpid = tmpid + 1;
 		if (stats == NULL) {
 			/* Out of connections - we're done */
 			rcu_read_unlock(); // read lock #1 unlock
@@ -236,6 +234,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		if (!tcp_estats_use_if_valid(stats)) {
 			pr_debug("stats were already freed for %d\n", tmpid);
 			rcu_read_unlock(); // read lock #1 unlock
+			tmpid = tmpid + 1;
 			continue;
 		}
 		rcu_read_unlock(); //read lock #1 unlock
@@ -263,6 +262,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		/* updates nlmsg_len only - can't fail */
 		genlmsg_end(msg, hdr);
 
+		tmpid = tmpid + 1;
 	}
 	/* reached end of list, or out of room in socket buffer -
 		free message if empty, otherwise, send socket buffer.
