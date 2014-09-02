@@ -570,8 +570,9 @@ EXPORT_SYMBOL(tcp_estats_update_segrecv);
 
 void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
 {
+        /* Krishnan suggests tp->rcv_wup - seq, as opposed to seq - rcv_nxt */
 	TCP_ESTATS_VAR_ADD(tp, app_table, ThruOctetsReceived,
-			   seq - tp->rcv_nxt);
+			   tp->rcv_wup - seq);
 }
 
 void tcp_estats_update_writeq(struct sock *sk)
