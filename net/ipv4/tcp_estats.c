@@ -523,7 +523,8 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 	/* A pure ACK contains no data; everything else is data. */
 	if (len > 0) {
 		perf_table->DataSegsOut += pcount;
-		perf_table->DataOctetsOut += len;
+		/* Per Krishnan suggestion, changed len to 'end_seq - seq'. */
+		perf_table->DataOctetsOut += end_seq - seq;
 	}
 
 	/* Check for retransmission. */
