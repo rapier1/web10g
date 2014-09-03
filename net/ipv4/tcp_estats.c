@@ -377,7 +377,8 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 	/* A pure ACK contains no data; everything else is data. */
 	if (len > 0) {
 		stats->estats_vars.DataSegsOut += pcount;
-		stats->estats_vars.DataOctetsOut += len;
+		/* Krishnan suggests end_seq - seq, as opposed to len. */
+		stats->estats_vars.DataOctetsOut += end_seq - seq;
 	}
 
 	/* Check for retransmission. */
@@ -413,7 +414,8 @@ void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
 
-	stats->estats_vars.ThruOctetsReceived += seq - tp->rcv_nxt;
+	/* Krishnan suggests tp->rcv_wup - seq, as opposed to seq - rcv_nxt */
+	stats->estats_vars.ThruOctetsReceived += tp->rcv_wup - seq;
 }
 
 void tcp_estats_update_writeq(struct sock *sk)
