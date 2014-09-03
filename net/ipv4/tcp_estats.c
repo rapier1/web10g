@@ -523,7 +523,8 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 	/* A pure ACK contains no data; everything else is data. */
 	if (len > 0) {
 		perf_table->DataSegsOut += pcount;
-		perf_table->DataOctetsOut += len;
+		/* Per Krishnan suggestion, changed len to 'end_seq - seq'. */
+		perf_table->DataOctetsOut += end_seq - seq;
 	}
 
 	/* Check for retransmission. */
@@ -569,8 +570,9 @@ EXPORT_SYMBOL(tcp_estats_update_segrecv);
 
 void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
 {
+        /* Krishnan suggests tp->rcv_wup - seq, as opposed to seq - rcv_nxt */
 	TCP_ESTATS_VAR_ADD(tp, app_table, ThruOctetsReceived,
-			   seq - tp->rcv_nxt);
+			   tp->rcv_wup - seq);
 }
 
 void tcp_estats_update_writeq(struct sock *sk)
