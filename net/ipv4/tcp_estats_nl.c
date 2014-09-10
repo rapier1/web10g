@@ -562,7 +562,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 #endif
 	}
 
-        msg = alloc_skb(sk_buff_size, GFP_KERNEL);
+	msg = alloc_skb(sk_buff_size, GFP_KERNEL);
 	if (msg == NULL) {
 		pr_debug("failed to allocate memory for message\n");
 		return -ENOMEM;
@@ -581,22 +581,23 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 			break;
 
 		/* Get estats pointer from idr. */
-		rcu_read_lock();
+		rcu_read_lock();  // read lock #1
 		stats = idr_get_next(&tcp_estats_idr, &tmpid);
+		/* increment tmpid so idr_get_next won't re-get this value */
+		tmpid = tmpid + 1;
 		if (stats == NULL) {
 			/* Out of connections - we're done */
 			list_finished = true;
-			rcu_read_unlock();
+			rcu_read_unlock(); // read lock #1 unlock
 			break;
 		}
 
 		if (!tcp_estats_use_if_valid(stats)) {
 			pr_debug("stats were already freed for %d\n", tmpid);
-			rcu_read_unlock();
-			tmpid = tmpid + 1;
+			rcu_read_unlock(); // read lock #1 unlock
 			continue;
 		}
-		rcu_read_unlock();
+		rcu_read_unlock(); //read lock #1 unlock
 
 		/* skip this connection if older than timestamp filter.
 			accessing stats without locking socket may be mild
@@ -610,7 +611,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		   )
 		{
 			tcp_estats_unuse(stats);
-			tmpid += 1;
 			continue;
 		}
 
@@ -637,8 +637,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		/* updates nlmsg_len only - can't fail */
 		conn_msg_size = genlmsg_end(msg, hdr) - old_skblen;
 		old_skblen = msg->len;
-
-		tmpid = tmpid + 1;
 	}
 	/* reached end of list, or out of room in socket buffer -
 		free message if empty, otherwise, send socket buffer.
@@ -786,23 +784,24 @@ genl_read_conns_vars(struct sk_buff *skb, struct genl_info *info)
 			    we may safely leave and either free or send msg */
 			break;
 		/* get a reference to stats record for next cid */
-		rcu_read_lock();
+		rcu_read_lock();  // read lock #1
 		stats = idr_get_next(&tcp_estats_idr, &tmpid);
+		/* increment tmpid so idr_get_next won't re-get this value */
+		tmpid = tmpid + 1;
 
 		if (stats == NULL) {
 			/* Out of connections - we're done */
 			list_finished = true;
-			rcu_read_unlock();
+			rcu_read_unlock(); // read lock #1 unlock
 			break;
 		}
 
 		if (!tcp_estats_use_if_valid(stats)) {
 			pr_debug("stats were already freed for %d\n", tmpid);
-			rcu_read_unlock();
-			tmpid += 1;
+			rcu_read_unlock(); // read lock #1 unlock
 			continue;
 		}
-		rcu_read_unlock();
+		rcu_read_unlock(); // read lock #1 unlock
 
 		/* skip this connection if older than timestamp filter.
 			accessing stats without locking socket may be mild
@@ -816,25 +815,25 @@ genl_read_conns_vars(struct sk_buff *skb, struct genl_info *info)
 		   )
 		{
 			tcp_estats_unuse(stats);
-			tmpid += 1;
 			continue;
 		}
 
 		/* read connection spec while holding ref to stats */
 		tcp_estats_read_connection_spec(&spec, stats);
 
-		/* check access restrictions and read variables */
+		/* check access restrictions and read variables while ref'd */
 		ret = tcp_estats_read_conn_vals(val, &read_time,
 						sys_admin,
 						current_gid, current_uid,
 						if_mask, masks, stats);
+		/* release stats ref */
 		tcp_estats_unuse(stats);
-		/* if issue accessing vars, just skip this conn */
-		if (ret<0) {
-			tmpid += 1;
-			continue;
-		}
 
+		/* if issue accessing vars, just skip response for this conn */
+		if (ret<0)
+			continue;
+
+		/* write response for successful socket vars read */
 		hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
 		                  TCPE_CMD_READ_CONNS_VARS);
 		if (hdr == NULL) {
@@ -866,8 +865,6 @@ genl_read_conns_vars(struct sk_buff *skb, struct genl_info *info)
 
 		conn_msg_size = genlmsg_end(msg, hdr) - old_skblen;
 		old_skblen = msg->len;
-
-		tmpid += 1;
 	}
 
 	kfree(val);
@@ -1270,30 +1267,6 @@ static int __init tcp_estats_nl_init(void)
 		return ret;
 	}
         
-/*
-        int i;
-
-	ret = genl_register_family(&genl_estats_family);
-	if (ret < 0)
-		goto err;
-
-	for (i = 0; i < ARRAY_SIZE(genl_estats_ops); i++) {
-		ret = genl_register_ops(&genl_estats_family,
-					&genl_estats_ops[i]);
-		if (ret < 0)
-			goto err_unregister;
-	}
-
-	ret = genl_register_mc_group(&genl_estats_family, &genl_estats_mc);
-	if (ret < 0)
-		goto err_unregister;
-
-err_unregister:
-	genl_unregister_family(&genl_estats_family);
-err:
-	return ret;
-*/
-
         printk(KERN_INFO "tcp_estats netlink module initialized.\n");
 
         return ret;

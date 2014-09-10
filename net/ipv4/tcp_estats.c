@@ -288,8 +288,7 @@ void tcp_estats_establish(struct sock *sk)
 	}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
-		/* should this be &(sk)->sk_v6_rcv_saddr?? */
-		memcpy(&conn_table->LocalAddress.addr6, &(inet6_sk(sk)->saddr),
+		memcpy(&conn_table->LocalAddress, &(sk)->sk_v6_rcv_saddr,
 		       sizeof(struct in6_addr));
 		/* ipv6 daddr now uses a different struct than saddr */
 		memcpy(&conn_table->RemAddress.addr6, &(sk)->sk_v6_daddr,
@@ -518,12 +517,14 @@ void tcp_estats_update_post_congestion(struct tcp_sock *tp)
 	}
 }
 
-void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
+void tcp_estats_update_segsend(struct sock *sk, int pcount,
 			       u32 seq, u32 end_seq, int flags)
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
 	struct tcp_estats_perf_table *perf_table = stats->tables.perf_table;
 	struct tcp_estats_app_table *app_table = stats->tables.app_table;
+
+	int data_len = end_seq - seq;
 
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	stats->current_ts = ktime_get();
@@ -538,9 +539,9 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 	perf_table->SegsOut += pcount;
 
 	/* A pure ACK contains no data; everything else is data. */
-	if (len > 0) {
+	if (data_len > 0) {
 		perf_table->DataSegsOut += pcount;
-		perf_table->DataOctetsOut += len;
+		perf_table->DataOctetsOut += data_len;
 	}
 
 	/* Check for retransmission. */
@@ -550,7 +551,7 @@ void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
 	} else if (app_table != NULL &&
 		   before(seq, app_table->SndMax)) {
 		perf_table->SegsRetrans += pcount;
-		perf_table->OctetsRetrans += end_seq - seq;
+		perf_table->OctetsRetrans += data_len;
 	}
 }
 

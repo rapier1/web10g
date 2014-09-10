@@ -864,7 +864,6 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	struct tcphdr *th;
 	int err;
 #ifdef CONFIG_TCP_ESTATS
-	int len;
 	__u32 seq;
 	__u32 end_seq;
 	int tcp_flags;
@@ -982,7 +981,6 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 #ifdef CONFIG_TCP_ESTATS
 	/* If the skb isn't cloned, we can't reference it after
 	 * calling queue_xmit, so copy everything we need here. */
-	len = skb->len;
 	pcount = tcp_skb_pcount(skb);
 	seq = TCP_SKB_CB(skb)->seq;
 	end_seq = TCP_SKB_CB(skb)->end_seq;
@@ -992,7 +990,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
 	
 	if (likely(!err)) {
-		TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, len, pcount,
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, pcount,
 								seq, end_seq,
 								tcp_flags));
 	}

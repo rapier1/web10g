@@ -1102,6 +1102,7 @@ static bool tcp_check_dsack(struct sock *sk, const struct sk_buff *ack_skb,
 		dup_sack = true;
 		tcp_dsack_seen(tp);
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDSACKRECV);
+		TCP_ESTATS_VAR_INC(tp, stack_table, DSACKDups);
 	} else if (num_sacks > 1) {
 		u32 end_seq_1 = get_unaligned_be32(&sp[1].end_seq);
 		u32 start_seq_1 = get_unaligned_be32(&sp[1].start_seq);
@@ -1112,6 +1113,7 @@ static bool tcp_check_dsack(struct sock *sk, const struct sk_buff *ack_skb,
 			tcp_dsack_seen(tp);
 			NET_INC_STATS_BH(sock_net(sk),
 					LINUX_MIB_TCPDSACKOFORECV);
+			TCP_ESTATS_VAR_INC(tp, stack_table, DSACKDups);
 		}
 	}
 

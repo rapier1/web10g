@@ -328,7 +328,7 @@ extern void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq);
 extern void tcp_estats_update_rwin_sent(struct tcp_sock *tp);
 extern void tcp_estats_update_congestion(struct tcp_sock *tp);
 extern void tcp_estats_update_post_congestion(struct tcp_sock *tp);
-extern void tcp_estats_update_segsend(struct sock *sk, int len, int pcount,
+extern void tcp_estats_update_segsend(struct sock *sk, int pcount,
                                       u32 seq, u32 end_seq, int flags);
 extern void tcp_estats_update_segrecv(struct tcp_sock *tp, struct sk_buff *skb);
 extern void tcp_estats_update_finish_segrecv(struct tcp_sock *tp);
