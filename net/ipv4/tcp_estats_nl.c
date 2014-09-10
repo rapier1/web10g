@@ -655,7 +655,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 }
 
 /*
- Command: TCPE_CMD_READ_CONNS_VARS
+ Command: TCPE_CMD_READ_ALL
   Posts connection variables for all connections,
                                  up to what will fit in reply skb.
  Request args:
@@ -680,7 +680,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
    <Fragment: [NLE_ATTR_<table>_VALS]>
 */
 static int
-genl_read_conns_vars(struct sk_buff *skb, struct genl_info *info)
+genl_read_all(struct sk_buff *skb, struct genl_info *info)
 {
 	struct sk_buff *msg = NULL;
 	void *hdr = NULL;
@@ -749,9 +749,6 @@ genl_read_conns_vars(struct sk_buff *skb, struct genl_info *info)
 	/* optional - user can specify desired sk_buff size */ 
 	if (info->attrs[NLE_ATTR_RCV_BUF_LEN]) {
 		sk_buff_size = nla_get_u32(info->attrs[NLE_ATTR_RCV_BUF_LEN]);
-		if (debug && tmpid==0) /* REMOVE THIS! */
-			printk(KERN_DEBUG "conns_vars request skb_sz=%u\n",
-				sk_buff_size);
 	}
 	/* optional - user can filter by connection ts >= timestamp */ 
 	if (info->attrs[NLE_ATTR_TIMESTAMP]) {
@@ -835,7 +832,7 @@ genl_read_conns_vars(struct sk_buff *skb, struct genl_info *info)
 
 		/* write response for successful socket vars read */
 		hdr = genlmsg_put(msg, 0, 0, &genl_estats_family, 0,
-		                  TCPE_CMD_READ_CONNS_VARS);
+		                  TCPE_CMD_READ_ALL);
 		if (hdr == NULL) {
 			/* msg is full - no message was added, therefore
 			    we may safely leave and either free or send msg */
@@ -1239,8 +1236,8 @@ static const struct genl_ops genl_estats_ops[] = {
                 .doit = genl_list_conns,
         },
         {
-                .cmd  = TCPE_CMD_READ_CONNS_VARS,
-                .doit = genl_read_conns_vars,
+                .cmd  = TCPE_CMD_READ_ALL,
+                .doit = genl_read_all,
         },
         {
                 .cmd  = TCPE_CMD_READ_VARS,

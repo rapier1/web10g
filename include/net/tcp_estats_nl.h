@@ -4,11 +4,10 @@
 /* The netlink commands that we expect to receive. */
 enum nl_estats_msg_types {
 	TCPE_CMD_LIST_CONNS,
+	TCPE_CMD_READ_ALL, /* read vars from all connections */
 	TCPE_CMD_READ_VARS, /* read vars from a single connection */
-	TCPE_CMD_READ_ALL, /* not supported right now */
 	TCPE_CMD_WRITE_VAR,
 	TCPE_CMD_INIT,
-	TCPE_CMD_READ_CONNS_VARS, /* read vars from all connections */
 	TCPE_CMD_TIMESTAMP, /* get "now - delta" timestamp (jiffies) */
 	NLE_MSG_MAX
 };
