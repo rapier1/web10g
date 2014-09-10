@@ -1211,7 +1211,7 @@ genl_get_timestamp(struct sk_buff *skb, struct genl_info *info)
 
 	genlmsg_end(msg, hdr);
 
-	genlmsg_unicast(sock_net(skb->sk), msg, info->snd_pid);
+	genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 
 	return 0;
 
