@@ -864,7 +864,6 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	struct tcphdr *th;
 	int err;
 #ifdef CONFIG_TCP_ESTATS
-	int len;
 	__u32 seq;
 	__u32 end_seq;
 	int tcp_flags;
@@ -982,7 +981,6 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 #ifdef CONFIG_TCP_ESTATS
 	/* If the skb isn't cloned, we can't reference it after
 	 * calling queue_xmit, so copy everything we need here. */
-	len = skb->len;
 	pcount = tcp_skb_pcount(skb);
 	seq = TCP_SKB_CB(skb)->seq;
 	end_seq = TCP_SKB_CB(skb)->end_seq;
@@ -992,7 +990,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
 	
 	if (likely(!err)) {
-		TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, len, pcount,
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, pcount,
 								seq, end_seq,
 								tcp_flags));
 	}
@@ -1930,6 +1928,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
 						     (tcp_skb_is_last(sk, skb) ?
 						      nonagle : TCP_NAGLE_PUSH)))) {
+				/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 				break;
 			}
 		} else {
@@ -1962,6 +1961,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			 */
 			smp_mb__after_clear_bit();
 			if (atomic_read(&sk->sk_wmem_alloc) > limit)
+				/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 				break;
 		}
 
@@ -1975,12 +1975,14 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		if (skb->len > limit &&
 		    unlikely(tso_fragment(sk, skb, limit, mss_now, gfp))) {
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 		}
 
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp))) {
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 		}
 
@@ -1994,6 +1996,7 @@ repair:
 		sent_pkts += tcp_skb_pcount(skb);
 
 		if (push_one)
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 	}
 
