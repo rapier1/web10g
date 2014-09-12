@@ -22,6 +22,9 @@
  */
 
 #include <linux/export.h>
+#ifndef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
+#include <linux/jiffies.h>
+#endif
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/string.h>
@@ -29,9 +32,6 @@
 #include <net/tcp.h>
 #include <asm/atomic.h>
 #include <asm/byteorder.h>
-#ifndef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
-#include <linux/jiffies.h>
-#endif
 
 #define ESTATS_INF32	0xffffffff
 
@@ -58,9 +58,14 @@ EXPORT_SYMBOL(destroy_notify_func);
 unsigned long persist_delay = 0;
 EXPORT_SYMBOL(persist_delay);
 
-struct static_key tcp_estats_enabled = STATIC_KEY_INIT_FALSE;
+struct static_key tcp_estats_enabled __read_mostly = STATIC_KEY_INIT_FALSE;
 EXPORT_SYMBOL(tcp_estats_enabled);
 
+/* if HAVE_JUMP_LABEL is defined, then static_key_slow_inc/dec uses a
+ *   mutex in its implementation, and hence can't be called if in_interrupt().
+ * if HAVE_JUMP_LABEL is NOT defined, then no mutex is used, hence no need
+ *   for deferring enable/disable */
+#ifdef HAVE_JUMP_LABEL
 static atomic_t tcp_estats_enabled_deferred;
 
 static void tcp_estats_handle_deferred_enable_disable(void)
@@ -77,24 +82,29 @@ static void tcp_estats_handle_deferred_enable_disable(void)
 		++count;
 	}
 }
+#endif
 
 static inline void tcp_estats_enable(void)
 {
+#ifdef <HAVE_JUMP_LABEL
 	if (in_interrupt()) {
 		atomic_inc(&tcp_estats_enabled_deferred);
 		return;
 	}
 	tcp_estats_handle_deferred_enable_disable();
+#endif
 	static_key_slow_inc(&tcp_estats_enabled);
 }
 
 static inline void tcp_estats_disable(void)
 {
+#ifdef HAVE_JUMP_LABEL
 	if (in_interrupt()) {
 		atomic_dec(&tcp_estats_enabled_deferred);
 		return;
 	}
 	tcp_estats_handle_deferred_enable_disable();
+#endif
 	static_key_slow_dec(&tcp_estats_enabled);
 }
 
@@ -112,8 +122,10 @@ int tcp_estats_get_allocation_size(int sysctl)
 		size += sizeof(struct tcp_estats_stack_table);
 	if (sysctl & TCP_ESTATS_TABLEMASK_APP)
 		size += sizeof(struct tcp_estats_app_table);
+	/*
 	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE)
 		size += sizeof(struct tcp_estats_tune_table);
+	*/
 	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS)
 		size += sizeof(struct tcp_estats_extras_table);
 	return size;
@@ -145,7 +157,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	if (!estats_mem)
 		return -ENOMEM;
 
-
 	stats = estats_mem;
 	estats_mem += sizeof(struct tcp_estats);
 
@@ -170,10 +181,12 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		tables->app_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_app_table);
 	}
+	/*
 	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE) {
 		tables->tune_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_tune_table);
 	}
+	*/
 	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS) {
 		tables->extras_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_extras_table);
@@ -197,17 +210,17 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 #endif
 	do_gettimeofday(&stats->start_tv);
 
-	/* order is important - 
-		must have stats hooked into tp and tcp_estats_enabled()
-		in order to have the TCP_ESTATS_VAR_<> macros work */
+	/* order is important -
+	 * must have stats hooked into tp and tcp_estats_enabled()
+	 * in order to have the TCP_ESTATS_VAR_<> macros work */
 	tp->tcp_stats = stats;
 	tcp_estats_enable();
 
 	TCP_ESTATS_VAR_SET(tp, stack_table, ActiveOpen, active);
+
 	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->snd_nxt);
 	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->snd_nxt);
-	/*TCP_ESTATS_VAR_SET(tp, tune_table, LimSsthresh,
-			   sysctl_tcp_max_ssthresh); */
+
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTT, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, path_table, MinRTO, ESTATS_INF32);
 	TCP_ESTATS_VAR_SET(tp, stack_table, MinMSS, ESTATS_INF32);
@@ -282,16 +295,16 @@ void tcp_estats_establish(struct sock *sk)
 
 	if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV4) {
 		memcpy(&conn_table->LocalAddress.addr, &inet->inet_rcv_saddr,
-		       sizeof(struct in_addr));
+			sizeof(struct in_addr));
 		memcpy(&conn_table->RemAddress.addr, &inet->inet_daddr,
-		       sizeof(struct in_addr));
+			sizeof(struct in_addr));
 	}
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	else if (conn_table->AddressType == TCP_ESTATS_ADDRTYPE_IPV6) {
-                memcpy(&conn_table->LocalAddress.addr6, &(sk)->sk_v6_rcv_saddr,
+		memcpy(&conn_table->LocalAddress.addr6, &(sk)->sk_v6_rcv_saddr,
 		       sizeof(struct in6_addr));
-                /* ipv6 daddr now uses a different struct than saddr */
-                memcpy(&conn_table->RemAddress.addr6, &(sk)->sk_v6_daddr,
+		/* ipv6 daddr now uses a different struct than saddr */
+		memcpy(&conn_table->RemAddress.addr6, &(sk)->sk_v6_daddr,
 		       sizeof(struct in6_addr));
 	}
 #endif
@@ -510,7 +523,7 @@ void tcp_estats_update_post_congestion(struct tcp_sock *tp)
 {
 	struct tcp_estats *stats = tp->tcp_stats;
 	struct tcp_estats_path_table *path_table = stats->tables.path_table;
-	
+
 	if (path_table != NULL) {
 		path_table->PostCongCountRTT++;
 		path_table->PostCongSumRTT += path_table->SampleRTT;
@@ -603,7 +616,9 @@ void tcp_estats_update_writeq(struct sock *sk)
 
 	if (app_table == NULL)
 		return;
+
 	len = tp->write_seq - app_table->SndMax;
+
 	if (len > app_table->MaxAppWQueue)
 		app_table->MaxAppWQueue = len;
 }
@@ -720,7 +735,7 @@ void __init tcp_estats_init()
 	establish_notify_func = &establish_func;
 	destroy_notify_func = &destroy_func;
 
-	persist_delay = 5 * HZ;
+	persist_delay = TCP_ESTATS_PERSIST_DELAY_SECS * HZ;
 
 	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
 	if (tcp_estats_wq == NULL) {

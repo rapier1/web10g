@@ -186,6 +186,11 @@ struct tcp_info {
 	__u32	tcpi_rcv_space;
 
 	__u32	tcpi_total_retrans;
+
+#ifdef CONFIG_TCP_ESTATS
+	/* RFC 4898 extended stats Info */
+	__u32	tcpi_estats_cid;
+#endif
 };
 
 /* for TCP_MD5SIG socket option */
