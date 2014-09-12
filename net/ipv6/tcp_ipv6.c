@@ -1188,7 +1188,7 @@ static struct sock *tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	if (newsk == NULL)
 		goto out_nonewsk;
 
-	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_ACTIVE);
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_INACTIVE);
 
 	/*
 	 * No need to charge this sock to the relevant IPv6 refcnt debug socks
@@ -1735,7 +1735,7 @@ static int tcp_v6_init_sock(struct sock *sk)
 #ifdef CONFIG_TCP_MD5SIG
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv6_specific;
 #endif
-	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_INACTIVE);
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_ACTIVE);
 
 	return 0;
 }
