@@ -150,9 +150,6 @@ static inline int tcp_estats_var_len(struct tcp_estats_var *vp)
 
 void tcp_estats_find_var_by_iname(struct tcp_estats_var **, const char *);
 
-void tcp_estats_read_connection_spec(struct tcp_estats_connection_spec *,
-				     struct tcp_estats *);
-
 typedef enum ESTATS_PERF_INDEX {
 	SEGSOUT                 = 0,
 	DATASEGSOUT,
