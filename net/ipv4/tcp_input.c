@@ -2411,7 +2411,6 @@ static bool tcp_try_undo_recovery(struct sock *sk)
 			TCP_ESTATS_VAR_INC(tp, stack_table,
 					   SpuriousFrDetected);
 		}
-
 		NET_INC_STATS_BH(sock_net(sk), mib_idx);
 	}
 	if (tp->snd_una == tp->high_seq && tcp_is_reno(tp)) {
@@ -3431,6 +3430,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		TCP_ESTATS_VAR_INC(tp, stack_table, SoftErrors);
 		TCP_ESTATS_VAR_SET(tp, stack_table, SoftErrorReason,
 				   TCP_ESTATS_SOFTERROR_BELOW_ACK_WINDOW);
+
 		/* RFC 5961 5.2 [Blind Data Injection Attack].[Mitigation] */
 		if (before(ack, prior_snd_una - tp->max_window)) {
 			tcp_send_challenge_ack(sk);
@@ -5122,16 +5122,18 @@ static bool tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 		 * an acknowledgment should be sent in reply (unless the RST
 		 * bit is set, if so drop the segment and return)".
 		 */
-		TCP_ESTATS_VAR_INC(tp, stack_table, SoftErrors);
-		TCP_ESTATS_VAR_SET(tp, stack_table, SoftErrorReason,
-			before(TCP_SKB_CB(skb)->end_seq, tp->rcv_wup) ?
-				TCP_ESTATS_SOFTERROR_BELOW_DATA_WINDOW :
-				TCP_ESTATS_SOFTERROR_ABOVE_DATA_WINDOW);
 		if (!th->rst) {
 			if (th->syn)
 				goto syn_challenge;
 			tcp_send_dupack(sk, skb);
 		}
+
+		TCP_ESTATS_VAR_INC(tp, stack_table, SoftErrors);
+		TCP_ESTATS_VAR_SET(tp, stack_table, SoftErrorReason,
+			before(TCP_SKB_CB(skb)->end_seq, tp->rcv_wup) ?
+				TCP_ESTATS_SOFTERROR_BELOW_DATA_WINDOW :
+				TCP_ESTATS_SOFTERROR_ABOVE_DATA_WINDOW);
+
 		goto discard;
 	}
 
@@ -5607,8 +5609,6 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 
 		smp_mb();
 
-		/* TODO - verify order here - tcp_set_state is redundant
-			with tcp_finish_connect */
 		tcp_set_state(sk, TCP_ESTABLISHED);
 		tcp_estats_establish(sk);
 

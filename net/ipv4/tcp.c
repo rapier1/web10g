@@ -2807,10 +2807,6 @@ void tcp_get_info(const struct sock *sk, struct tcp_info *info)
 	info->tcpi_rcv_space = tp->rcvq_space.space;
 
 	info->tcpi_total_retrans = tp->total_retrans;
-#ifdef CONFIG_TCP_ESTATS
-	info->tcpi_estats_cid = (tp->tcp_stats && tp->tcp_stats->tcpe_cid > 0)
-					? tp->tcp_stats->tcpe_cid : 0;
-#endif
 }
 EXPORT_SYMBOL_GPL(tcp_get_info);
 
@@ -3241,7 +3237,6 @@ void __init tcp_init(void)
 	tcp_metrics_init();
 
 	tcp_register_congestion_control(&tcp_reno);
-
 	tcp_estats_init();
 
 	tcp_tasklet_init();
