@@ -32,6 +32,9 @@
 #include <linux/tcp.h>
 #include <linux/workqueue.h>
 
+/* defines number of seconds that stats persist after connection ends */
+#define TCP_ESTATS_PERSIST_DELAY_SECS 5
+
 enum tcp_estats_sndlim_states {
 	TCP_ESTATS_SNDLIM_NONE = -1,
 	TCP_ESTATS_SNDLIM_SENDER,
@@ -39,6 +42,7 @@ enum tcp_estats_sndlim_states {
 	TCP_ESTATS_SNDLIM_RWIN,
 	TCP_ESTATS_SNDLIM_STARTUP,
 	TCP_ESTATS_SNDLIM_TSODEFER,
+	TCP_ESTATS_SNDLIM_PACE,
 	TCP_ESTATS_SNDLIM_NSTATES	/* Keep at end */
 };
 
@@ -61,18 +65,19 @@ enum tcp_estats_softerror_reason {
 #define TCP_ESTATS_INACTIVE	2
 #define TCP_ESTATS_ACTIVE	1
 
-#define TCP_ESTATS_TABLEMASK_INACTIVE	0x00	
+#define TCP_ESTATS_TABLEMASK_INACTIVE	0x00
 #define TCP_ESTATS_TABLEMASK_ACTIVE	0x01
 #define TCP_ESTATS_TABLEMASK_PERF	0x02
 #define TCP_ESTATS_TABLEMASK_PATH	0x04
 #define TCP_ESTATS_TABLEMASK_STACK	0x08
 #define TCP_ESTATS_TABLEMASK_APP	0x10
-#define TCP_ESTATS_TABLEMASK_TUNE	0x20
+/* #define TCP_ESTATS_TABLEMASK_TUNE	0x20 */
 #define TCP_ESTATS_TABLEMASK_EXTRAS	0x40
 
 #ifdef CONFIG_TCP_ESTATS
 
-extern struct static_key	tcp_estats_enabled;
+extern struct static_key tcp_estats_enabled;
+
 #define TCP_ESTATS_CHECK(tp, table, expr)				\
 	do {								\
 		if (static_key_false(&tcp_estats_enabled)) {		\
@@ -83,38 +88,34 @@ extern struct static_key	tcp_estats_enabled;
 		}							\
 	} while (0)
 
-#define TCP_ESTATS_VAR_INC(tp, table, var) \
+#define TCP_ESTATS_VAR_INC(tp, table, var)				\
 	TCP_ESTATS_CHECK(tp, table, ++((tp)->tcp_stats->tables.table->var))
-#define TCP_ESTATS_VAR_DEC(tp, table, var) \
+#define TCP_ESTATS_VAR_DEC(tp, table, var)				\
 	TCP_ESTATS_CHECK(tp, table, --((tp)->tcp_stats->tables.table->var))
-#define TCP_ESTATS_VAR_ADD(tp, table, var, val) \
-	TCP_ESTATS_CHECK(tp, table,		\
+#define TCP_ESTATS_VAR_ADD(tp, table, var, val)				\
+	TCP_ESTATS_CHECK(tp, table,					\
 			 ((tp)->tcp_stats->tables.table->var) += (val))
-#define TCP_ESTATS_VAR_SUB(tp, table, var, val) \
-	TCP_ESTATS_CHECK(tp, table,		\
-			 ((tp)->tcp_stats->tables.table->var) -= (val))
-#define TCP_ESTATS_VAR_SET(tp, table, var, val) \
-	TCP_ESTATS_CHECK(tp, table,		\
+#define TCP_ESTATS_VAR_SET(tp, table, var, val)				\
+	TCP_ESTATS_CHECK(tp, table,					\
 			 ((tp)->tcp_stats->tables.table->var) = (val))
-#define TCP_ESTATS_UPDATE(tp, func)				\
-	do {							\
-		if (static_key_false(&tcp_estats_enabled)) {	\
-			if (likely((tp)->tcp_stats)) {		\
-				(func);				\
-			}					\
-		}						\
+#define TCP_ESTATS_UPDATE(tp, func)					\
+	do {								\
+		if (static_key_false(&tcp_estats_enabled)) {		\
+			if (likely((tp)->tcp_stats)) {			\
+				(func);					\
+			}						\
+		}							\
 	} while (0)
 
 /*
  * Variables that can be read and written directly.
  *
  * Contains all variables from RFC 4898. Commented fields are
- * either not implemented (only StartTimeStamp 
+ * either not implemented (only StartTimeStamp
  * remains unimplemented in this release) or have
  * handlers and do not need struct storage.
  */
 struct tcp_estats_connection_table {
-	/* Connection table */
 	u32			AddressType;
 	union { struct in_addr addr; struct in6_addr addr6; }	LocalAddress;
 	union { struct in_addr addr; struct in6_addr addr6; }	RemAddress;
@@ -190,7 +191,7 @@ struct tcp_estats_path_table {
 struct tcp_estats_stack_table {
 	u32		ActiveOpen;
 	/*		MSSSent */
-	/* 		MSSRcvd */
+	/*		MSSRcvd */
 	/*		WinScaleSent */
 	/*		WinScaleRcvd */
 	/*		TimeStamps */
@@ -246,16 +247,23 @@ struct tcp_estats_app_table {
 	u32		MaxAppRQueue;
 };
 
+/*
+    currently, no backing store is needed for tuning elements in
+     web10g - they are all read or written to directly in other
+     data structures (such as the socket)
+*/
+/*
 struct tcp_estats_tune_table {
-	/*		LimCwnd */
-	u32		LimSsthresh;
-	/*		LimRwin */
-	/*		LimMSS */
+	LimCwnd
+	LimRwin
+	LimMSS
 };
+*/
 
 struct tcp_estats_extras_table {
 	u32		OtherReductionsCV;
 	u32		OtherReductionsCM;
+	u32		Priority;
 };
 
 struct tcp_estats_tables {
@@ -264,12 +272,12 @@ struct tcp_estats_tables {
 	struct tcp_estats_path_table		*path_table;
 	struct tcp_estats_stack_table		*stack_table;
 	struct tcp_estats_app_table		*app_table;
-	struct tcp_estats_tune_table		*tune_table;
+	/*struct tcp_estats_tune_table		*tune_table; */
 	struct tcp_estats_extras_table		*extras_table;
 };
 
 struct tcp_estats {
-        int                             tcpe_cid; // idr map id
+	int				tcpe_cid; /* idr map id */
 
 	struct sock			*sk;
 	kuid_t				uid;
@@ -278,7 +286,7 @@ struct tcp_estats {
 
 	atomic_t			users;
 
-	int				limstate;
+	enum tcp_estats_sndlim_states	limstate;
 	ktime_t				limstate_ts;
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 	ktime_t				start_ts;
@@ -353,8 +361,8 @@ static inline void tcp_estats_unuse(struct tcp_estats *stats)
 
 #define TCP_ESTATS_VAR_INC(tp, table, var)	do {} while (0)
 #define TCP_ESTATS_VAR_DEC(tp, table, var)	do {} while (0)
-#define TCP_ESTATS_VAR_SET(tp, table, var,val)	do {} while (0)
-#define TCP_ESTATS_VAR_ADD(tp, table, var,val)	do {} while (0)
+#define TCP_ESTATS_VAR_ADD(tp, table, var, val)	do {} while (0)
+#define TCP_ESTATS_VAR_SET(tp, table, var, val)	do {} while (0)
 #define TCP_ESTATS_UPDATE(tp, func)		do {} while (0)
 
 static inline void tcp_estats_init(void) { }
