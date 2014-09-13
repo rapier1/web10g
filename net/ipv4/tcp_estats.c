@@ -86,7 +86,7 @@ static void tcp_estats_handle_deferred_enable_disable(void)
 
 static inline void tcp_estats_enable(void)
 {
-#ifdef <HAVE_JUMP_LABEL
+#ifdef HAVE_JUMP_LABEL
 	if (in_interrupt()) {
 		atomic_inc(&tcp_estats_enabled_deferred);
 		return;
