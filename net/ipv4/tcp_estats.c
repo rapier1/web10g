@@ -587,6 +587,9 @@ EXPORT_SYMBOL(tcp_estats_update_segrecv);
 
 void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
 {
+        /* After much debate, it was decided that "seq - rcv_nxt" is 
+           indeed what we want, as opposed to what Krishnan suggested 
+           to better match the RFC: "seq - tp->rcv_wup" */
 	TCP_ESTATS_VAR_ADD(tp, app_table, ThruOctetsReceived,
 			   seq - tp->rcv_nxt);
 }

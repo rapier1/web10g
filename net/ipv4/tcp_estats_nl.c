@@ -876,7 +876,7 @@ genl_read_all(struct sk_buff *skb, struct genl_info *info)
 	} else {
 		/* msg is attached to receiving socket
 		   and freed during rcvfrom() */
-		genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
+		ret = genlmsg_unicast(sock_net(skb->sk), msg, info->snd_portid);
 	}
 	return 0;
 }
