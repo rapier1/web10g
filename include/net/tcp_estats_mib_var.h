@@ -52,7 +52,7 @@ enum tcp_estats_states {
 	TCP_ESTATS_STATE_DELETECB
 };
 
-enum TCP_ESTATS_VAR_TYPE {
+typedef enum TCP_ESTATS_VAR_TYPE {
 	TCP_ESTATS_VAR_INTEGER,
 	TCP_ESTATS_VAR_INTEGER32,
 	TCP_ESTATS_VAR_COUNTER32,
@@ -63,31 +63,31 @@ enum TCP_ESTATS_VAR_TYPE {
 	TCP_ESTATS_VAR_TIMESTAMP,
 	TCP_ESTATS_VAR_TRUTHVALUE,
 	TCP_ESTATS_VAR_OCTET,
-};
+} tcp_estats_vartype_t;
 
-enum TCP_ESTATS_VAL_TYPE {
+typedef enum TCP_ESTATS_VAL_TYPE {
         TCP_ESTATS_VAL_UNSIGNED64,
         TCP_ESTATS_VAL_UNSIGNED32,
         TCP_ESTATS_VAL_SIGNED32,
         TCP_ESTATS_VAL_UNSIGNED16,
         TCP_ESTATS_VAL_UNSIGNED8,
-};
+} tcp_estats_valtype_t;
 
 struct tcp_estats_var;
 typedef void (*estats_rwfunc_t)(void *buf, struct tcp_estats *stats,
 				struct tcp_estats_var *vp);
 
 struct tcp_estats_var {
-	char		*name;
-	u32		vartype;
-	u32		valtype;
-	char		*table;
+	char			*name;
+	tcp_estats_vartype_t	vartype;
+	tcp_estats_valtype_t	valtype;
+	char			*table;
 
-	estats_rwfunc_t	read;
-	unsigned long	read_data;
+	estats_rwfunc_t		read;
+	unsigned long		read_data;
 
-	estats_rwfunc_t	write;
-	unsigned long	write_data;
+	estats_rwfunc_t		write;
+	unsigned long		write_data;
 };
 
 extern struct tcp_estats_var   perf_var_array[];
@@ -99,13 +99,13 @@ extern struct tcp_estats_var extras_var_array[];
 
 extern struct tcp_estats_var *estats_var_array[];
 
-static inline int single_index(int inda, int indb)
+static inline int single_index(int index_a, int index_b)
 {
-	int ret = indb;
+	int ret = index_b;
 	int i;
 
-	if (inda > 0) {
-		for (i = 0; i < inda; i++) {
+	if (index_a > 0) {
+		for (i = 0; i < index_a; i++) {
 			ret += estats_max_index[i];
 		}
 	}
@@ -131,27 +131,25 @@ static inline int write_tcp_estats(void *buf, struct tcp_estats *stats,
 static inline int tcp_estats_var_len(struct tcp_estats_var *vp)
 {
 	switch (vp->valtype) {
-        case TCP_ESTATS_VAL_UNSIGNED64:
-                return 8;
-        case TCP_ESTATS_VAL_UNSIGNED32:
-                return 4;
-        case TCP_ESTATS_VAL_SIGNED32:
-                return 4;
-        case TCP_ESTATS_VAL_UNSIGNED16:
-                return 2;
-        case TCP_ESTATS_VAL_UNSIGNED8:
-                return 1;
+	case TCP_ESTATS_VAL_UNSIGNED64:
+		return sizeof(u64);
+	case TCP_ESTATS_VAL_UNSIGNED32:
+ 		return sizeof(u32);
+	case TCP_ESTATS_VAL_SIGNED32:
+		return sizeof(s32);
+	case TCP_ESTATS_VAL_UNSIGNED16:
+		return sizeof(u16);
+	case TCP_ESTATS_VAL_UNSIGNED8:
+		return sizeof(u8);
 	}
-	
+
 	printk(KERN_WARNING
 	       "TCP ESTATS: Adding variable of unknown type %d.\n", vp->valtype);
 	return 0;
 }
 
-void tcp_estats_find_var_by_iname(struct tcp_estats_var **, const char *);
-
 typedef enum ESTATS_PERF_INDEX {
-	SEGSOUT                 = 0,
+	SEGSOUT			= 0,
 	DATASEGSOUT,
 	DATAOCTETSOUT,
 	HCDATAOCTETSOUT,
@@ -184,11 +182,13 @@ typedef enum ESTATS_PERF_INDEX {
 	SNDLIMTRANSRWIN,
 	SNDLIMTRANSSTARTUP,
 	SNDLIMTRANSTSODEFER,
+	SNDLIMTRANSPACE,
 	SNDLIMTIMESND,
 	SNDLIMTIMECWND,
 	SNDLIMTIMERWIN,
 	SNDLIMTIMESTARTUP,
 	SNDLIMTIMETSODEFER,
+	SNDLIMTIMEPACE,
 	__PERF_INDEX_MAX
 } ESTATS_PERF_INDEX;
 #define PERF_INDEX_MAX __PERF_INDEX_MAX
@@ -291,7 +291,6 @@ typedef enum ESTATS_APP_INDEX {
 
 typedef enum ESTATS_TUNE_INDEX {
 	LIMCWND,
-	LIMSSTHRESH,
 	LIMRWIN,
 	LIMMSS,
 	__TUNE_INDEX_MAX
@@ -301,31 +300,32 @@ typedef enum ESTATS_TUNE_INDEX {
 typedef enum ESTATS_EXTRAS_INDEX {
 	OTHERREDUCTIONSCV,
 	OTHERREDUCTIONSCM,
+	PRIORITY,
 	__EXTRAS_INDEX_MAX
 } ESTATS_EXTRAS_INDEX;
 #define EXTRAS_INDEX_MAX __EXTRAS_INDEX_MAX
 
-#define TOTAL_NUM_VARS (PERF_INDEX_MAX + \
-			PATH_INDEX_MAX + \
-			STACK_INDEX_MAX + \
-			APP_INDEX_MAX + \
-			TUNE_INDEX_MAX + \
-			EXTRAS_INDEX_MAX)
+#define TOTAL_NUM_VARS ((PERF_INDEX_MAX) + \
+			(PATH_INDEX_MAX) + \
+			(STACK_INDEX_MAX) + \
+			(APP_INDEX_MAX) + \
+			(TUNE_INDEX_MAX) + \
+			(EXTRAS_INDEX_MAX))
 
 #if BITS_PER_LONG == 64
-#define DEFAULT_PERF_MASK	((1UL << PERF_INDEX_MAX)-1)
-#define DEFAULT_PATH_MASK	((1UL << PATH_INDEX_MAX)-1)
-#define DEFAULT_STACK_MASK	((1UL << STACK_INDEX_MAX)-1)
-#define DEFAULT_APP_MASK	((1UL << APP_INDEX_MAX)-1)
-#define DEFAULT_TUNE_MASK	((1UL << TUNE_INDEX_MAX)-1)
-#define DEFAULT_EXTRAS_MASK	((1UL << EXTRAS_INDEX_MAX)-1)
+#define DEFAULT_PERF_MASK	((1UL << (PERF_INDEX_MAX))-1)
+#define DEFAULT_PATH_MASK	((1UL << (PATH_INDEX_MAX))-1)
+#define DEFAULT_STACK_MASK	((1UL << (STACK_INDEX_MAX))-1)
+#define DEFAULT_APP_MASK	((1UL << (APP_INDEX_MAX))-1)
+#define DEFAULT_TUNE_MASK	((1UL << (TUNE_INDEX_MAX))-1)
+#define DEFAULT_EXTRAS_MASK	((1UL << (EXTRAS_INDEX_MAX))-1)
 #else
-#define DEFAULT_PERF_MASK	((1ULL << PERF_INDEX_MAX)-1)
-#define DEFAULT_PATH_MASK	((1ULL << PATH_INDEX_MAX)-1)
-#define DEFAULT_STACK_MASK	((1ULL << STACK_INDEX_MAX)-1)
-#define DEFAULT_APP_MASK	((1ULL << APP_INDEX_MAX)-1)
-#define DEFAULT_TUNE_MASK	((1ULL << TUNE_INDEX_MAX)-1)
-#define DEFAULT_EXTRAS_MASK	((1ULL << EXTRAS_INDEX_MAX)-1)
+#define DEFAULT_PERF_MASK	((1ULL << (PERF_INDEX_MAX))-1)
+#define DEFAULT_PATH_MASK	((1ULL << (PATH_INDEX_MAX))-1)
+#define DEFAULT_STACK_MASK	((1ULL << (STACK_INDEX_MAX))-1)
+#define DEFAULT_APP_MASK	((1ULL << (APP_INDEX_MAX))-1)
+#define DEFAULT_TUNE_MASK	((1ULL << (TUNE_INDEX_MAX))-1)
+#define DEFAULT_EXTRAS_MASK	((1ULL << (EXTRAS_INDEX_MAX))-1)
 #endif
 
 #endif /* _TCP_ESTATS_MIB_VAR_H_ */

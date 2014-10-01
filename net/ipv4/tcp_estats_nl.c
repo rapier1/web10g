@@ -3,7 +3,9 @@
 #include <linux/skbuff.h>
 #include <linux/genetlink.h>
 #include <linux/jiffies.h>
+#ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 #include <linux/time.h>
+#endif
 #include <net/genetlink.h>
 #include <net/inet_hashtables.h>
 #include <net/tcp.h>
@@ -146,6 +148,23 @@ static void tcp_estats_read_connection_spec(struct tcp_estats_connection_spec *s
 	       sizeof(connection_table->LocalAddress));
         spec->local_port = connection_table->LocalPort;
 	spec->addr_type = connection_table->AddressType;
+}
+
+static void
+tcp_estats_find_var_by_iname(struct tcp_estats_var **var, const char *name)
+{
+	int i, j;
+
+	*var = NULL;
+	for (i = 0; i < MAX_TABLE; i++) {
+		for (j = 0; j < estats_max_index[i]; j++) {
+			if (strnicmp(estats_var_array[i][j].name,
+				     name, 21) == 0) {
+				*var = &estats_var_array[i][j];
+				return;
+			}
+		}
+	}
 }
 
 static int
@@ -366,8 +385,6 @@ tcp_estats_put_conn_vals(struct sk_buff *msg, union estats_val *val,
                                 if (nla_put_u8(msg, i, val[k].u_8))
 					return -EMSGSIZE;
                                 break;
-                        default:
-                                break;
                         }
 
                         mask = mask >> 1;
@@ -498,7 +515,6 @@ nla_put_failure:
    [NLE_ATTR_4TUPLE (optional)
      [NEA_CID] - (required) return only connections with id <cid> or higher
    ]
-   [NLE_ATTR_RCV_BUF_LEN] - (optional) size of the receiver's buffer (bytes)
    [NLE_ATTR_TIMESTAMP] - (optional) absolute timestamp (in jiffies),
                                        for filtering active conns
 
@@ -518,9 +534,9 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 	/* variables for filtering inactive connections */
 	bool filter_new = false;
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
-	ktime_t timestamp;
+	ktime_t timestamp = { .tv64 = 0 };
 #else
-	unsigned long timestamp;
+	unsigned long timestamp = 0;
 #endif
 	uint64_t timestamp_token = 0;
 	/* initial estimate of connection message size */
@@ -546,11 +562,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 			return -EINVAL;
 		}
 	}
-	
-	/* optional - user can specify desired sk_buff size */ 
-	if (info->attrs[NLE_ATTR_RCV_BUF_LEN]) {
-		sk_buff_size = nla_get_u32(info->attrs[NLE_ATTR_RCV_BUF_LEN]);
-	}	
 	/* optional - user can filter by connection ts >= timestamp */
 	if (info->attrs[NLE_ATTR_TIMESTAMP]) {
 		filter_new = true;
@@ -670,7 +681,6 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
       [NEA_TUNE_MASK] (optional)
       [NEA_EXTRAS_MASK] (optional)
    ]
-   [NLE_ATTR_RCV_BUF_LEN] - (optional) size of the receiver's buffer (bytes)
    [NLE_ATTR_TIMESTAMP] - (optional) absolute timestamp (in jiffies),
                                        for filtering active conns
  REPEATED RESPONSE
@@ -745,12 +755,7 @@ genl_read_all(struct sk_buff *skb, struct genl_info *info)
 						 info->attrs[NLE_ATTR_MASK])<0)
 			return -EINVAL;
 	}
-
-	/* optional - user can specify desired sk_buff size */ 
-	if (info->attrs[NLE_ATTR_RCV_BUF_LEN]) {
-		sk_buff_size = nla_get_u32(info->attrs[NLE_ATTR_RCV_BUF_LEN]);
-	}
-	/* optional - user can filter by connection ts >= timestamp */ 
+	/* optional - user can filter by connection ts >= timestamp */
 	if (info->attrs[NLE_ATTR_TIMESTAMP]) {
 		filter_new = true;
 		timestamp_token = nla_get_u64(info->attrs[NLE_ATTR_TIMESTAMP]);
@@ -964,7 +969,7 @@ genl_read_vars(struct sk_buff *skb, struct genl_info *info)
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	
+
 	if (!tcp_estats_use_if_valid(stats)) {
 		rcu_read_unlock();
 		return -EINVAL;
@@ -1109,7 +1114,7 @@ genl_write_var(struct sk_buff *skb, struct genl_info *info)
 
 	if (!tb_write[NEA_WRITE_VAL])
 		goto nla_parse_failure;
-	
+
 	val = nla_get_u32(tb_write[NEA_WRITE_VAL]);
 
         rcu_read_lock();
