@@ -545,6 +545,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 
 	struct tcp_estats *stats;
 	int tmpid = 0;
+	int cid;
 
 	if (skb == NULL) {
 		pr_debug("invalid netlink socket\n");
@@ -594,6 +595,8 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
 		/* Get estats pointer from idr. */
 		rcu_read_lock();  // read lock #1
 		stats = idr_get_next(&tcp_estats_idr, &tmpid);
+		/* preserve tmpid for put_connection_spec */
+		cid = tmpid;
 		/* increment tmpid so idr_get_next won't re-get this value */
 		tmpid = tmpid + 1;
 		if (stats == NULL) {
@@ -638,7 +641,7 @@ genl_list_conns(struct sk_buff *skb, struct genl_info *info)
                         break;
 		}
 
-		if (tcp_estats_put_connection_spec(msg, &spec, tmpid) < 0) {
+		if (tcp_estats_put_connection_spec(msg, &spec, cid) < 0) {
 			/* msg is full - cancel this last hdr, then
 			    we are safe to leave and either free or send msg */
 			genlmsg_cancel(msg, hdr);

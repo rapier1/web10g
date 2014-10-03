@@ -735,7 +735,7 @@ void __init tcp_estats_init()
 	establish_notify_func = &establish_func;
 	destroy_notify_func = &destroy_func;
 
-	persist_delay = PERSIST_DELAY_SECS * HZ;
+	persist_delay = TCP_ESTATS_PERSIST_DELAY_SECS * HZ;
 
 	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
 	if (tcp_estats_wq == NULL) {
