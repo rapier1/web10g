@@ -42,13 +42,13 @@ enum nl_estats_attr {
 	NLE_ATTR_TUNE_VARS,
 	NLE_ATTR_EXTRAS_VARS,
 	NLE_ATTR_VAR,
-	NLE_ATTR_RCV_BUF_LEN, /* for limiting long messages */
 	NLE_ATTR_TIMESTAMP_DELTA, /* u32 timestamp delta - for timestamp cmd */
 	NLE_ATTR_TIMESTAMP, /* u64 timestamp, for filtering active conns. */
 	__NLE_ATTR_MAX
 };
 #define NLE_ATTR_MAX (__NLE_ATTR_MAX - 1)
 
+/* fields of a variable specification returned from TCPE_CMD_INIT */
 enum neattr_vars {
 	NEA_UNSPEC_VAR,
 	NEA_VAR_NAME,

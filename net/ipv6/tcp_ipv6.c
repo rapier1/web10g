@@ -1528,7 +1528,8 @@ process:
 	skb->dev = NULL;
 
 	bh_lock_sock_nested(sk);
-	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 #ifdef CONFIG_NET_DMA
@@ -1549,7 +1550,8 @@ process:
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 		goto discard_and_relse;
 	}
-	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
 	bh_unlock_sock(sk);
 
 	sock_put(sk);
