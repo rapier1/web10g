@@ -600,6 +600,7 @@ struct tcp_estats_var tune_var_array[] = {
 struct tcp_estats_var extras_var_array[] = {
 	ESTATSVAR(OtherReductionsCV, COUNTER32, UNSIGNED32, extras_table),
 	ESTATSVAR(OtherReductionsCM, COUNTER32, UNSIGNED32, extras_table),
+	READFUNC(Priority, UNSIGNED32, UNSIGNED32),
 };
 
 struct tcp_estats_var *estats_var_array[] = {
