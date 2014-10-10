@@ -297,12 +297,14 @@ struct tcp_estats {
 #endif
 	struct timeval			start_tv;
 
-        int                             queued;
-        struct work_struct              create_notify;
-        struct work_struct              establish_notify;
-        struct delayed_work             destroy_notify;
+        int				queued;
+        struct work_struct		create_notify;
+        struct work_struct		establish_notify;
+        struct delayed_work		destroy_notify;
 
 	struct tcp_estats_tables	tables;
+
+	struct rcu_head			rcu;
 };
 
 extern struct idr tcp_estats_idr;
@@ -321,6 +323,7 @@ extern int  tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype t,
 			      int active);
 extern void tcp_estats_destroy(struct sock *sk);
 extern void tcp_estats_establish(struct sock *sk);
+extern void tcp_estats_free(struct rcu_head *rcu);
 
 extern void tcp_estats_update_snd_nxt(struct tcp_sock *tp);
 extern void tcp_estats_update_acked(struct tcp_sock *tp, u32 ack);
@@ -342,17 +345,24 @@ extern void tcp_estats_update_writeq(struct sock *sk);
 extern void tcp_estats_update_recvq(struct sock *sk);
 
 extern void tcp_estats_init(void);
-extern void tcp_estats_free(struct rcu_head *rcu);
 
 static inline void tcp_estats_use(struct tcp_estats *stats)
 {
 	atomic_inc(&stats->users);
 }
 
+static inline int tcp_estats_use_if_valid(struct tcp_estats *stats)
+{
+	return atomic_inc_not_zero(&stats->users);
+}
+
 static inline void tcp_estats_unuse(struct tcp_estats *stats)
 {
-	if (atomic_dec_and_test(&stats->users))
-		tcp_estats_free(stats);
+	if (atomic_dec_and_test(&stats->users)) {
+		sock_put(stats->sk);
+		stats->sk = NULL;
+		call_rcu(&stats->rcu, tcp_estats_free);
+	}
 }
 
 #else /* !CONFIG_TCP_ESTATS */
