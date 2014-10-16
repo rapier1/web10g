@@ -297,10 +297,10 @@ struct tcp_estats {
 #endif
 	struct timeval			start_tv;
 
-	int				queued;
-	struct work_struct		create_notify;
-	struct work_struct		establish_notify;
-	struct delayed_work		destroy_notify;
+        int				queued;
+        struct work_struct		create_notify;
+        struct work_struct		establish_notify;
+        struct delayed_work		destroy_notify;
 
 	struct tcp_estats_tables	tables;
 
@@ -323,6 +323,7 @@ extern int  tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype t,
 			      int active);
 extern void tcp_estats_destroy(struct sock *sk);
 extern void tcp_estats_establish(struct sock *sk);
+extern void tcp_estats_free(struct rcu_head *rcu);
 
 extern void tcp_estats_update_snd_nxt(struct tcp_sock *tp);
 extern void tcp_estats_update_acked(struct tcp_sock *tp, u32 ack);
