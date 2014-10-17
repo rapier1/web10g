@@ -1999,7 +1999,6 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			    tcp_tso_should_defer(sk, skb, &is_cwnd_limited)) {
 				why = TCP_ESTATS_SNDLIM_TSODEFER;
 				break;
-			       }
 			}
 		}
 
