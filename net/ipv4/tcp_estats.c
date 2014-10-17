@@ -658,7 +658,6 @@ void tcp_estats_update_recvq(struct sock *sk)
 
 static int get_new_cid(struct tcp_estats *stats)
 {
-	int err;
 	int id_cid;
 
 again:
@@ -668,14 +667,14 @@ again:
 		spin_unlock_bh(&tcp_estats_idr_lock);
 		goto again;
 	}
-	else if (unlikely(id_cid == -ENOMEM)) {
+	if (unlikely(id_cid == -ENOMEM)) {
 		spin_unlock_bh(&tcp_estats_idr_lock);
 		return -ENOMEM;
 	}
-	if (id_cid >= 0) {
-		next_id = (id_cid + 1) % ESTATS_MAX_CID;
-		stats->tcpe_cid = id_cid;
-	}
+
+	next_id = (id_cid + 1) % ESTATS_MAX_CID;
+	stats->tcpe_cid = id_cid;
+
 	spin_unlock_bh(&tcp_estats_idr_lock);
 	return 0;
 }
