@@ -27,11 +27,9 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/thermal.h>
 #include <linux/acpi.h>
-
-#define PREFIX "ACPI: "
 
 #define ACPI_FAN_CLASS			"fan"
 #define ACPI_FAN_FILE_STATE		"state"
@@ -55,11 +53,16 @@ MODULE_DEVICE_TABLE(acpi, fan_device_ids);
 #ifdef CONFIG_PM_SLEEP
 static int acpi_fan_suspend(struct device *dev);
 static int acpi_fan_resume(struct device *dev);
+static struct dev_pm_ops acpi_fan_pm = {
+	.resume = acpi_fan_resume,
+	.freeze = acpi_fan_suspend,
+	.thaw = acpi_fan_resume,
+	.restore = acpi_fan_resume,
+};
+#define FAN_PM_OPS_PTR (&acpi_fan_pm)
 #else
-#define acpi_fan_suspend NULL
-#define acpi_fan_resume NULL
+#define FAN_PM_OPS_PTR NULL
 #endif
-static SIMPLE_DEV_PM_OPS(acpi_fan_pm, acpi_fan_suspend, acpi_fan_resume);
 
 static struct acpi_driver acpi_fan_driver = {
 	.name = "fan",
@@ -69,7 +72,7 @@ static struct acpi_driver acpi_fan_driver = {
 		.add = acpi_fan_add,
 		.remove = acpi_fan_remove,
 		},
-	.drv.pm = &acpi_fan_pm,
+	.drv.pm = FAN_PM_OPS_PTR,
 };
 
 /* thermal cooling device callbacks */
@@ -122,8 +125,9 @@ static const struct thermal_cooling_device_ops fan_cooling_ops = {
 };
 
 /* --------------------------------------------------------------------------
-                                 Driver Interface
-   -------------------------------------------------------------------------- */
+ *                               Driver Interface
+ * --------------------------------------------------------------------------
+*/
 
 static int acpi_fan_add(struct acpi_device *device)
 {
@@ -138,7 +142,7 @@ static int acpi_fan_add(struct acpi_device *device)
 
 	result = acpi_bus_update_power(device->handle, NULL);
 	if (result) {
-		printk(KERN_ERR PREFIX "Setting initial power state\n");
+		dev_err(&device->dev, "Setting initial power state\n");
 		goto end;
 	}
 
@@ -163,10 +167,9 @@ static int acpi_fan_add(struct acpi_device *device)
 				   &device->dev.kobj,
 				   "device");
 	if (result)
-		dev_err(&device->dev, "Failed to create sysfs link "
-			"'device'\n");
+		dev_err(&device->dev, "Failed to create sysfs link 'device'\n");
 
-	printk(KERN_INFO PREFIX "%s [%s] (%s)\n",
+	dev_info(&device->dev, "ACPI: %s [%s] (%s)\n",
 	       acpi_device_name(device), acpi_device_bid(device),
 	       !device->power.state ? "on" : "off");
 
@@ -212,7 +215,7 @@ static int acpi_fan_resume(struct device *dev)
 
 	result = acpi_bus_update_power(to_acpi_device(dev)->handle, NULL);
 	if (result)
-		printk(KERN_ERR PREFIX "Error updating fan power state\n");
+		dev_err(dev, "Error updating fan power state\n");
 
 	return result;
 }

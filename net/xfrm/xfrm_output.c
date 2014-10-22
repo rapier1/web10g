@@ -166,11 +166,7 @@ static int xfrm_output_gso(struct sk_buff *skb)
 		err = xfrm_output2(segs);
 
 		if (unlikely(err)) {
-			while ((segs = nskb)) {
-				nskb = segs->next;
-				segs->next = NULL;
-				kfree_skb(segs);
-			}
+			kfree_skb_list(nskb);
 			return err;
 		}
 
@@ -199,6 +195,7 @@ int xfrm_output(struct sk_buff *skb)
 
 	return xfrm_output2(skb);
 }
+EXPORT_SYMBOL_GPL(xfrm_output);
 
 int xfrm_inner_extract_output(struct xfrm_state *x, struct sk_buff *skb)
 {
@@ -213,6 +210,7 @@ int xfrm_inner_extract_output(struct xfrm_state *x, struct sk_buff *skb)
 		return -EAFNOSUPPORT;
 	return inner_mode->afinfo->extract_output(x, skb);
 }
+EXPORT_SYMBOL_GPL(xfrm_inner_extract_output);
 
 void xfrm_local_error(struct sk_buff *skb, int mtu)
 {
@@ -233,7 +231,4 @@ void xfrm_local_error(struct sk_buff *skb, int mtu)
 	afinfo->local_error(skb, mtu);
 	xfrm_state_put_afinfo(afinfo);
 }
-
-EXPORT_SYMBOL_GPL(xfrm_output);
-EXPORT_SYMBOL_GPL(xfrm_inner_extract_output);
 EXPORT_SYMBOL_GPL(xfrm_local_error);

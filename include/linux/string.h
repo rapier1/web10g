@@ -41,7 +41,7 @@ extern int strcmp(const char *,const char *);
 extern int strncmp(const char *,const char *,__kernel_size_t);
 #endif
 #ifndef __HAVE_ARCH_STRNICMP
-extern int strnicmp(const char *, const char *, __kernel_size_t);
+#define strnicmp strncasecmp
 #endif
 #ifndef __HAVE_ARCH_STRCASECMP
 extern int strcasecmp(const char *s1, const char *s2);
@@ -51,6 +51,9 @@ extern int strncasecmp(const char *s1, const char *s2, size_t n);
 #endif
 #ifndef __HAVE_ARCH_STRCHR
 extern char * strchr(const char *,int);
+#endif
+#ifndef __HAVE_ARCH_STRCHRNUL
+extern char * strchrnul(const char *,int);
 #endif
 #ifndef __HAVE_ARCH_STRNCHR
 extern char * strnchr(const char *, size_t, int);

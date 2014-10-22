@@ -87,11 +87,18 @@
 void
 i915_gem_detect_bit_6_swizzle(struct drm_device *dev)
 {
-	drm_i915_private_t *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = dev->dev_private;
 	uint32_t swizzle_x = I915_BIT_6_SWIZZLE_UNKNOWN;
 	uint32_t swizzle_y = I915_BIT_6_SWIZZLE_UNKNOWN;
 
-	if (IS_VALLEYVIEW(dev)) {
+	if (INTEL_INFO(dev)->gen >= 8 || IS_VALLEYVIEW(dev)) {
+		/*
+		 * On BDW+, swizzling is not used. We leave the CPU memory
+		 * controller in charge of optimizing memory accesses without
+		 * the extra address manipulation GPU side.
+		 *
+		 * VLV and CHV don't have GPU swizzling.
+		 */
 		swizzle_x = I915_BIT_6_SWIZZLE_NONE;
 		swizzle_y = I915_BIT_6_SWIZZLE_NONE;
 	} else if (INTEL_INFO(dev)->gen >= 6) {
@@ -294,7 +301,7 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		   struct drm_file *file)
 {
 	struct drm_i915_gem_set_tiling *args = data;
-	drm_i915_private_t *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_i915_gem_object *obj;
 	int ret = 0;
 
@@ -308,7 +315,7 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
-	if (obj->pin_count || obj->framebuffer_references) {
+	if (i915_gem_obj_is_pinned(obj) || obj->framebuffer_references) {
 		drm_gem_object_unreference_unlocked(&obj->base);
 		return -EBUSY;
 	}
@@ -376,7 +383,7 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 
 		if (ret == 0) {
 			obj->fence_dirty =
-				obj->fenced_gpu_access ||
+				obj->last_fenced_seqno ||
 				obj->fence_reg != I915_FENCE_REG_NONE;
 
 			obj->tiling_mode = args->tiling_mode;
@@ -415,7 +422,7 @@ i915_gem_get_tiling(struct drm_device *dev, void *data,
 		   struct drm_file *file)
 {
 	struct drm_i915_gem_get_tiling *args = data;
-	drm_i915_private_t *dev_priv = dev->dev_private;
+	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_i915_gem_object *obj;
 
 	obj = to_intel_bo(drm_gem_object_lookup(dev, file, args->handle));

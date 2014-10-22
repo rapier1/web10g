@@ -819,13 +819,14 @@ int core_tpg_add_lun(
 {
 	int ret;
 
-	ret = percpu_ref_init(&lun->lun_ref, core_tpg_lun_ref_release);
+	ret = percpu_ref_init(&lun->lun_ref, core_tpg_lun_ref_release, 0,
+			      GFP_KERNEL);
 	if (ret < 0)
 		return ret;
 
 	ret = core_dev_export(dev, tpg, lun);
 	if (ret < 0) {
-		percpu_ref_cancel_init(&lun->lun_ref);
+		percpu_ref_exit(&lun->lun_ref);
 		return ret;
 	}
 
@@ -879,6 +880,8 @@ int core_tpg_post_dellun(
 	spin_lock(&tpg->tpg_lun_lock);
 	lun->lun_status = TRANSPORT_LUN_STATUS_FREE;
 	spin_unlock(&tpg->tpg_lun_lock);
+
+	percpu_ref_exit(&lun->lun_ref);
 
 	return 0;
 }

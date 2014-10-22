@@ -232,6 +232,7 @@ int __node_distance(int a, int b)
 
 	return distance;
 }
+EXPORT_SYMBOL(__node_distance);
 
 static void initialize_distance_lookup_table(int nid,
 		const __be32 *associativity)
@@ -537,7 +538,7 @@ static int of_drconf_to_nid_single(struct of_drconf_cell *drmem,
  */
 static int numa_setup_cpu(unsigned long lcpu)
 {
-	int nid;
+	int nid = -1;
 	struct device_node *cpu;
 
 	/*
@@ -554,19 +555,21 @@ static int numa_setup_cpu(unsigned long lcpu)
 
 	if (!cpu) {
 		WARN_ON(1);
-		nid = 0;
-		goto out;
+		if (cpu_present(lcpu))
+			goto out_present;
+		else
+			goto out;
 	}
 
 	nid = of_node_to_nid_single(cpu);
 
+out_present:
 	if (nid < 0 || !node_online(nid))
 		nid = first_online_node;
-out:
+
 	map_cpu_to_node(lcpu, nid);
-
 	of_node_put(cpu);
-
+out:
 	return nid;
 }
 
@@ -610,8 +613,8 @@ static int cpu_numa_callback(struct notifier_block *nfb, unsigned long action,
 	case CPU_UP_CANCELED:
 	case CPU_UP_CANCELED_FROZEN:
 		unmap_cpu_from_node(lcpu);
-		break;
 		ret = NOTIFY_OK;
+		break;
 #endif
 	}
 	return ret;
@@ -1048,7 +1051,7 @@ static void __init mark_reserved_regions_for_nid(int nid)
 
 void __init do_init_bootmem(void)
 {
-	int nid;
+	int nid, cpu;
 
 	min_low_pfn = 0;
 	max_low_pfn = memblock_end_of_DRAM() >> PAGE_SHIFT;
@@ -1121,16 +1124,14 @@ void __init do_init_bootmem(void)
 
 	reset_numa_cpu_lookup_table();
 	register_cpu_notifier(&ppc64_numa_nb);
-	cpu_numa_callback(&ppc64_numa_nb, CPU_UP_PREPARE,
-			  (void *)(unsigned long)boot_cpuid);
-}
-
-void __init paging_init(void)
-{
-	unsigned long max_zone_pfns[MAX_NR_ZONES];
-	memset(max_zone_pfns, 0, sizeof(max_zone_pfns));
-	max_zone_pfns[ZONE_DMA] = memblock_end_of_DRAM() >> PAGE_SHIFT;
-	free_area_init_nodes(max_zone_pfns);
+	/*
+	 * We need the numa_cpu_lookup_table to be accurate for all CPUs,
+	 * even before we online them, so that we can use cpu_to_{node,mem}
+	 * early in boot, cf. smp_prepare_cpus().
+	 */
+	for_each_present_cpu(cpu) {
+		numa_setup_cpu((unsigned long)cpu);
+	}
 }
 
 static int __init early_numa(char *p)
@@ -1591,6 +1592,20 @@ int arch_update_cpu_topology(void)
 		cpu = cpu_last_thread_sibling(cpu);
 	}
 
+	/*
+	 * In cases where we have nothing to update (because the updates list
+	 * is too short or because the new topology is same as the old one),
+	 * skip invoking update_cpu_topology() via stop-machine(). This is
+	 * necessary (and not just a fast-path optimization) since stop-machine
+	 * can end up electing a random CPU to run update_cpu_topology(), and
+	 * thus trick us into setting up incorrect cpu-node mappings (since
+	 * 'updates' is kzalloc()'ed).
+	 *
+	 * And for the similar reason, we will skip all the following updating.
+	 */
+	if (!cpumask_weight(&updated_cpus))
+		goto out;
+
 	stop_machine(update_cpu_topology, &updates[0], &updated_cpus);
 
 	/*
@@ -1612,6 +1627,7 @@ int arch_update_cpu_topology(void)
 		changed = 1;
 	}
 
+out:
 	kfree(updates);
 	return changed;
 }

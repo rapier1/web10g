@@ -75,11 +75,11 @@ static int _usbctrl_vendorreq_async_write(struct usb_device *udev, u8 request,
 	pipe = usb_sndctrlpipe(udev, 0); /* write_out */
 	reqtype =  REALTEK_USB_VENQT_WRITE;
 
-	dr = kmalloc(sizeof(*dr), GFP_ATOMIC);
+	dr = kzalloc(sizeof(*dr), GFP_ATOMIC);
 	if (!dr)
 		return -ENOMEM;
 
-	databuf = kmalloc(databuf_maxlen, GFP_ATOMIC);
+	databuf = kzalloc(databuf_maxlen, GFP_ATOMIC);
 	if (!databuf) {
 		kfree(dr);
 		return -ENOMEM;
@@ -410,7 +410,7 @@ static void rtl_usb_init_sw(struct ieee80211_hw *hw)
 	mac->current_ampdu_factor = 3;
 
 	/* QOS */
-	rtlusb->acm_method = eAcmWay2_SW;
+	rtlusb->acm_method = EACMWAY2_SW;
 
 	/* IRQ */
 	/* HIMR - turn all on */
@@ -994,7 +994,7 @@ static void _rtl_usb_tx_preprocess(struct ieee80211_hw *hw,
 		seq_number += 1;
 		seq_number <<= 4;
 	}
-	rtlpriv->cfg->ops->fill_tx_desc(hw, hdr, (u8 *)pdesc, info, sta, skb,
+	rtlpriv->cfg->ops->fill_tx_desc(hw, hdr, (u8 *)pdesc, NULL, info, sta, skb,
 					hw_queue, &tcb_desc);
 	if (!ieee80211_has_morefrags(hdr->frame_control)) {
 		if (qc)

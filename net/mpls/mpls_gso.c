@@ -33,6 +33,7 @@ static struct sk_buff *mpls_gso_segment(struct sk_buff *skb,
 				  SKB_GSO_DODGY |
 				  SKB_GSO_TCP_ECN |
 				  SKB_GSO_GRE |
+				  SKB_GSO_GRE_CSUM |
 				  SKB_GSO_IPIP |
 				  SKB_GSO_MPLS)))
 		goto out;
@@ -64,15 +65,9 @@ out:
 	return segs;
 }
 
-static int mpls_gso_send_check(struct sk_buff *skb)
-{
-	return 0;
-}
-
 static struct packet_offload mpls_mc_offload = {
 	.type = cpu_to_be16(ETH_P_MPLS_MC),
 	.callbacks = {
-		.gso_send_check =	mpls_gso_send_check,
 		.gso_segment    =	mpls_gso_segment,
 	},
 };
@@ -80,7 +75,6 @@ static struct packet_offload mpls_mc_offload = {
 static struct packet_offload mpls_uc_offload = {
 	.type = cpu_to_be16(ETH_P_MPLS_UC),
 	.callbacks = {
-		.gso_send_check =	mpls_gso_send_check,
 		.gso_segment    =	mpls_gso_segment,
 	},
 };

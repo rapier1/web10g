@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2013, Intel Corp.
+ * Copyright (C) 2000 - 2014, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -396,11 +396,11 @@ acpi_hw_enable_wakeup_gpe_block(struct acpi_gpe_xrupt_info *gpe_xrupt_info,
 	/* Examine each GPE Register within the block */
 
 	for (i = 0; i < gpe_block->register_count; i++) {
-		if (!gpe_block->register_info[i].enable_for_wake) {
-			continue;
-		}
 
-		/* Enable all "wake" GPEs in this register */
+		/*
+		 * Enable all "wake" GPEs in this register and disable the
+		 * remaining ones.
+		 */
 
 		status =
 		    acpi_hw_write(gpe_block->register_info[i].enable_for_wake,
