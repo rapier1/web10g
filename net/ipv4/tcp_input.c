@@ -232,7 +232,7 @@ static void __tcp_ecn_check_ce(struct tcp_sock *tp, const struct sk_buff *skb)
 	case INET_ECN_CE:
 		TCP_ESTATS_VAR_INC(tp, path_table, CERcvd);
 		/* possibly need to move above ESTATS counter into following if block */
-		if (tcp_ca_needs_ecn((struct sock *)tp)) {
+		if (tcp_ca_needs_ecn((struct sock *)tp))
 			tcp_ca_event((struct sock *)tp, CA_EVENT_ECN_IS_CE);
 		if (!(tp->ecn_flags & TCP_ECN_DEMAND_CWR)) {
 			/* Better not delay acks, sender can have a very low cwnd */
@@ -2316,11 +2316,13 @@ static inline void tcp_moderate_cwnd(struct tcp_sock *tp)
 
 	if (pkts < tp->snd_cwnd) {
 		tp->snd_cwnd = pkts;
-		tp->snd_cwnd_stamp = tcp_time_stamp;
 
 		TCP_ESTATS_VAR_INC(tp, stack_table, OtherReductions);
 		TCP_ESTATS_VAR_INC(tp, extras_table, OtherReductionsCM);
 	}
+	/* originally this line was in the above if block. That doesn't
+	   follow the logic found in mainline -cjr */
+	tp->snd_cwnd_stamp = tcp_time_stamp;
 }
 
 /* Nothing was retransmitted or returned timestamp is less
