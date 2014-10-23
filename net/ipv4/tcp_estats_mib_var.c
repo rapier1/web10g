@@ -116,7 +116,7 @@ static void read_SmoothedRTT(void *buf, struct tcp_estats *stats,
 			     struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
-	u32 val = jiffies_to_msecs(tp->srtt) >> 3;
+	u32 val = tp->srtt_us >> 6;
 	memcpy(buf, &val, 4);
 }
 
@@ -158,7 +158,7 @@ static void read_RTTVar(void *buf, struct tcp_estats *stats,
 			struct tcp_estats_var *vp)
 {
 	struct tcp_sock *tp = tcp_sk(stats->sk);
-	u32 val = jiffies_to_msecs(tp->rttvar) >> 2;
+	u32 val = tp->rttvar_us >> 5;
 	memcpy(buf, &val, 4);
 }
 
