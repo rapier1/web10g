@@ -658,27 +658,23 @@ void tcp_estats_update_recvq(struct sock *sk)
 
 static int get_new_cid(struct tcp_estats *stats)
 {
-	int err;
-	int id_cid;
+         int id_cid;
 
 again:
-	if (unlikely(idr_pre_get(&tcp_estats_idr, GFP_KERNEL) == 0))
-		return -ENOMEM;
-
-	spin_lock_bh(&tcp_estats_idr_lock);
-	err = idr_get_new_above(&tcp_estats_idr, stats, next_id, &id_cid);
-	if (!err) {
-		next_id = (id_cid + 1) % ESTATS_MAX_CID;
-		stats->tcpe_cid = id_cid;
-	}
-	spin_unlock_bh(&tcp_estats_idr_lock);
-
-	if (unlikely(err == -EAGAIN))
-		goto again;
-	else if (unlikely(err))
-		return err;
-
-	return 0;
+         spin_lock_bh(&tcp_estats_idr_lock);
+         id_cid = idr_alloc(&tcp_estats_idr, stats, next_id, 0, GFP_KERNEL);
+         if (unlikely(id_cid == -ENOSPC)) {
+                 spin_unlock_bh(&tcp_estats_idr_lock);
+                 goto again;
+         }
+         if (unlikely(id_cid == -ENOMEM)) {
+                 spin_unlock_bh(&tcp_estats_idr_lock);
+                 return -ENOMEM;
+         }
+         next_id = (id_cid + 1) % ESTATS_MAX_CID;
+         stats->tcpe_cid = id_cid;
+         spin_unlock_bh(&tcp_estats_idr_lock);
+         return 0;
 }
 
 static void create_func(struct work_struct *work)
