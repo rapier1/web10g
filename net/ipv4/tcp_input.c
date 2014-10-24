@@ -2961,7 +2961,7 @@ static inline bool tcp_ack_update_rtt(struct sock *sk, const int flag,
 
 	tcp_rtt_estimator(sk, seq_rtt_us);
 	tcp_set_rto(sk);
-	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_rtt(sk, seq_rtt));
+	TCP_ESTATS_UPDATE(tcp_sk(sk), tcp_estats_update_rtt(sk, seq_rtt_us));
 
 	/* RFC6298: only reset backoff on valid RTT measurement. */
 	inet_csk(sk)->icsk_backoff = 0;

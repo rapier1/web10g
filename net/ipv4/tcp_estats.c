@@ -352,7 +352,7 @@ void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 {
 	struct tcp_estats *stats = tcp_sk(sk)->tcp_stats;
 	struct tcp_estats_path_table *path_table = stats->tables.path_table;
-	unsigned long rtt_sample_msec = jiffies_to_msecs(rtt_sample);
+	unsigned long rtt_sample_msec = rtt_sample/1000;
 	u32 rto;
 
 	if (path_table == NULL)
