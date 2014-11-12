@@ -122,10 +122,6 @@ int tcp_estats_get_allocation_size(int sysctl)
 		size += sizeof(struct tcp_estats_stack_table);
 	if (sysctl & TCP_ESTATS_TABLEMASK_APP)
 		size += sizeof(struct tcp_estats_app_table);
-	/*
-	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE)
-		size += sizeof(struct tcp_estats_tune_table);
-	*/
 	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS)
 		size += sizeof(struct tcp_estats_extras_table);
 	return size;
@@ -181,12 +177,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		tables->app_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_app_table);
 	}
-	/*
-	if (sysctl & TCP_ESTATS_TABLEMASK_TUNE) {
-		tables->tune_table = estats_mem;
-		estats_mem += sizeof(struct tcp_estats_tune_table);
-	}
-	*/
 	if (sysctl & TCP_ESTATS_TABLEMASK_EXTRAS) {
 		tables->extras_table = estats_mem;
 		estats_mem += sizeof(struct tcp_estats_extras_table);

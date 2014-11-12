@@ -71,7 +71,6 @@ enum tcp_estats_softerror_reason {
 #define TCP_ESTATS_TABLEMASK_PATH	0x04
 #define TCP_ESTATS_TABLEMASK_STACK	0x08
 #define TCP_ESTATS_TABLEMASK_APP	0x10
-/* #define TCP_ESTATS_TABLEMASK_TUNE	0x20 */
 #define TCP_ESTATS_TABLEMASK_EXTRAS	0x40
 
 #ifdef CONFIG_TCP_ESTATS
@@ -226,8 +225,8 @@ struct tcp_estats_stack_table {
 	u32		MinMSS;
 	u32		SndInitial;
 	u32		RecInitial;
-	u32		CurRetxQueue;
-	u32		MaxRetxQueue;
+	/*		CurRetxQueue */
+	/*		MaxRetxQueue */
 	/*		CurReasmQueue */
 	u32		MaxReasmQueue;
 	u32		EarlyRetrans;
@@ -252,16 +251,9 @@ struct tcp_estats_app_table {
      web10g - they are all read or written to directly in other
      data structures (such as the socket)
 */
-/*
-struct tcp_estats_tune_table {
-	LimCwnd
-	LimRwin
-	LimMSS
-};
-*/
 
 struct tcp_estats_extras_table {
-	u32		OtherReductionsCV;
+	/*		OtherReductionsCV */
 	u32		OtherReductionsCM;
 	u32		Priority;
 };
@@ -272,7 +264,6 @@ struct tcp_estats_tables {
 	struct tcp_estats_path_table		*path_table;
 	struct tcp_estats_stack_table		*stack_table;
 	struct tcp_estats_app_table		*app_table;
-	/*struct tcp_estats_tune_table		*tune_table; */
 	struct tcp_estats_extras_table		*extras_table;
 };
 
