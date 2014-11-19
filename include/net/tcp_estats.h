@@ -1,24 +1,22 @@
 /*
  * include/net/tcp_estats.h
  *
- * Implementation of TCP ESTATS MIB (RFC 4898)
+ * Implementation of TCP Extended Statistics MIB (RFC 4898)
  *
  * Authors:
- *   John Estabrook <jestabro@illinois.edu>
+ *   John Estabrook <jsestabrook@gmail.com>
  *   Andrew K. Adams <akadams@psc.edu>
- *   John Heffner <jheffner@psc.edu>
- *   Matt Mathis <mathis@psc.edu>
- *   Jeff Semke <semke@psc.edu>
+ *   Kevin Hogan <kwabena@google.com>
+ *   Dominin Hamon <dma@stripysock.com>
+ *   John Heffner <johnwheffner@gmail.com>
  *
  * The Web10Gig project.  See http://www.web10gig.org
  *
- * Copyright © 2011, Pittsburgh Supercomputing Center (PSC) and
- * National Center for Supercomputing Applications (NCSA).
+ * Copyright © 2011, Pittsburgh Supercomputing Center (PSC).
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version
  * 2 of the License, or (at your option) any later version.
- *
  */
 
 #ifndef _TCP_ESTATS_H
