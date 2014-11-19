@@ -2069,11 +2069,10 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			break;
 		}
 
+		/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
-			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
-		}
-
+		
 repair:
 		/* Advance the send_head.  This one is sent out.
 		 * This call will increment packets_out.
@@ -2083,8 +2082,8 @@ repair:
 		tcp_minshall_update(tp, mss_now, skb);
 		sent_pkts += tcp_skb_pcount(skb);
 
+		/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 		if (push_one)
-			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 	}
 
