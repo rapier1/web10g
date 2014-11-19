@@ -2072,7 +2072,6 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
 			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
-		}
 
 repair:
 		/* Advance the send_head.  This one is sent out.

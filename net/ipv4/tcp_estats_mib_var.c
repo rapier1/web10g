@@ -566,8 +566,8 @@ struct tcp_estats_var stack_var_array[] = {
 	ESTATSVAR(MinMSS, GAUGE32, UNSIGNED32, stack_table),
 	ESTATSVAR(SndInitial, UNSIGNED32, UNSIGNED32, stack_table),
 	ESTATSVAR(RecInitial, UNSIGNED32, UNSIGNED32, stack_table),
-	ESTATSVAR(CurRetxQueue, GAUGE32, UNSIGNED32, stack_table),
-	ESTATSVAR(MaxRetxQueue, GAUGE32, UNSIGNED32, stack_table),
+/*	ESTATSVAR(CurRetxQueue, GAUGE32, UNSIGNED32, stack_table),
+	ESTATSVAR(MaxRetxQueue, GAUGE32, UNSIGNED32, stack_table),*/
 	READFUNC(CurReasmQueue, GAUGE32, UNSIGNED32),
 	ESTATSVAR(MaxReasmQueue, GAUGE32, UNSIGNED32, stack_table),
 	ESTATSVAR(EarlyRetrans, UNSIGNED32, UNSIGNED32, stack_table),
@@ -598,7 +598,7 @@ struct tcp_estats_var tune_var_array[] = {
 };
 
 struct tcp_estats_var extras_var_array[] = {
-	ESTATSVAR(OtherReductionsCV, COUNTER32, UNSIGNED32, extras_table),
+  /*	ESTATSVAR(OtherReductionsCV, COUNTER32, UNSIGNED32, extras_table),*/
 	ESTATSVAR(OtherReductionsCM, COUNTER32, UNSIGNED32, extras_table),
 	READFUNC(Priority, UNSIGNED32, UNSIGNED32),
 };
