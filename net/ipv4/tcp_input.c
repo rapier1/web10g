@@ -4235,12 +4235,11 @@ static void tcp_ofo_queue(struct sock *sk)
 
 		tail = skb_peek_tail(&sk->sk_receive_queue);
 		eaten = tail && tcp_try_coalesce(sk, tail, skb, &fragstolen);
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, tp->rcv_nxt));
 		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 
-		if (!eaten) {
+		if (!eaten)
 			__skb_queue_tail(&sk->sk_receive_queue, skb);
-			TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, tp->rcv_nxt));
-		}
 		if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
 			tcp_fin(sk);
 		if (eaten)
