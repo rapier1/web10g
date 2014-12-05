@@ -5546,12 +5546,8 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 
 		smp_mb();
 
-		/* TODO - verify order here - tcp_set_state is redundant
-			with tcp_finish_connect */
-		tcp_set_state(sk, TCP_ESTABLISHED);
-		tcp_estats_establish(sk);
-
 		tcp_finish_connect(sk, skb);
+		tcp_estats_establish(sk);
 
 		if ((tp->syn_fastopen || tp->syn_data) &&
 		    tcp_rcv_fastopen_synack(sk, skb, &foc))
@@ -6036,9 +6032,6 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = af_ops->mss_clamp;
 	tmp_opt.user_mss  = tp->rx_opt.user_mss;
-#ifdef CONFIG_TCP_ESTATS
-        tmp_opt.rec_mss = 0;
-#endif
 	tcp_parse_options(skb, &tmp_opt, 0, want_cookie ? NULL : &foc);
 
 	if (want_cookie && !tmp_opt.saw_tstamp)

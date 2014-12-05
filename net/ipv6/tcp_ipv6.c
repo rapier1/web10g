@@ -287,9 +287,6 @@ static int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 					  np->opt->opt_nflen);
 
 	tp->rx_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) - sizeof(struct ipv6hdr);
-#ifdef CONFIG_TCP_ESTATS
-	tp->rx_opt.rec_mss = 0;
-#endif
 
 	inet->inet_dport = usin->sin6_port;
 
