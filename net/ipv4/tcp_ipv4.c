@@ -212,10 +212,6 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 
 	tp->rx_opt.mss_clamp = TCP_MSS_DEFAULT;
 
-#ifdef CONFIG_TCP_ESTATS
-	tp->rx_opt.rec_mss = 0;
-#endif
-	
 	/* Socket identity is still unknown (sport may be zero).
 	 * However we set state to SYN-SENT and not releasing socket
 	 * lock select source port, enter ourselves into the hash tables and
