@@ -192,9 +192,10 @@ static void read_MSSSent(void *buf, struct tcp_estats *stats,
 static void read_MSSRcvd(void *buf, struct tcp_estats *stats,
 			 struct tcp_estats_var *vp)
 {
-	struct tcp_sock *tp = tcp_sk(stats->sk);
-	u32 val = tp->rx_opt.rec_mss;
-	memcpy(buf, &val, 4);
+/*	struct tcp_sock *tp = tcp_sk(stats->sk);
+ *	u32 val = tp->rx_opt.rec_mss;
+ *	memcpy(buf, &val, 4);
+ */
 }
 
 /* Note: WinScaleSent and WinScaleRcvd are incorrectly
