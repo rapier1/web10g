@@ -252,7 +252,6 @@ static void read_WillSendSACK(void *buf, struct tcp_estats *stats,
 
 	if (!tp->rx_opt.sack_ok)
 		val = sysctl_tcp_sack ? 3 : 2;
-
 	memcpy(buf, &val, 4);
 }
 
