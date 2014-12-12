@@ -11,7 +11,6 @@
 #include <net/tcp.h>
 #include <net/sock.h>
 
-#ifdef CONFIG_TCP_ESTATS
 #include <net/tcp_estats_mib_var.h>
 #include <net/tcp_estats_nl.h>
 
@@ -1288,6 +1287,5 @@ module_init(tcp_estats_nl_init);
 module_exit(tcp_estats_nl_exit);
 
 MODULE_LICENSE("GPL");
-
-#else
-#endif /* CONFIG_TCP_ESTATS */
+MODULE_AUTHOR("Web10g Dev Team");
+MODULE_DESCRIPTION("Netlink Module for Extended TCP Instruments");

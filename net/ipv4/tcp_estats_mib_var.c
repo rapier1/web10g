@@ -1,4 +1,3 @@
-#ifdef CONFIG_TCP_ESTATS
 #include <linux/export.h>
 #ifdef CONFIG_TCP_ESTATS_STRICT_ELAPSEDTIME
 #include <linux/ktime.h>
@@ -192,10 +191,11 @@ static void read_MSSSent(void *buf, struct tcp_estats *stats,
 static void read_MSSRcvd(void *buf, struct tcp_estats *stats,
 			 struct tcp_estats_var *vp)
 {
+	u32 val = 1500;
 /*	struct tcp_sock *tp = tcp_sk(stats->sk);
  *	u32 val = tp->rx_opt.rec_mss;
- *	memcpy(buf, &val, 4);
  */
+	memcpy(buf, &val, 4);
 }
 
 /* Note: WinScaleSent and WinScaleRcvd are incorrectly
@@ -227,8 +227,8 @@ static void read_TimeStamps(void *buf, struct tcp_estats *stats,
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	s32 val = 1;
 
-	if (!tp->rx_opt.tstamp_ok)
-		val = sysctl_tcp_timestamps ? 3 : 2;
+/*	if (!tp->rx_opt.tstamp_ok) */
+/*		val = sysctl_tcp_timestamps ? 3 : 2; */
 	memcpy(buf, &val, 4);
 }
 
@@ -242,6 +242,7 @@ static void read_ECN(void *buf, struct tcp_estats *stats,
 	if ((tp->ecn_flags & TCP_ECN_OK) == 0)
 		val = sock_net(sk)->ipv4.sysctl_tcp_ecn ? 3 : 2;
 	memcpy(buf, &val, 4);
+
 }
 
 static void read_WillSendSACK(void *buf, struct tcp_estats *stats,
@@ -250,8 +251,8 @@ static void read_WillSendSACK(void *buf, struct tcp_estats *stats,
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	s32 val = 1;
 
-	if (!tp->rx_opt.sack_ok)
-		val = sysctl_tcp_sack ? 3 : 2;
+/*	if (!tp->rx_opt.sack_ok) */
+/*		val = sysctl_tcp_sack ? 3 : 2;*/
 	memcpy(buf, &val, 4);
 }
 
@@ -531,13 +532,13 @@ struct tcp_estats_var path_var_array[] = {
 struct tcp_estats_var stack_var_array[] = {
 	ESTATSVAR(ActiveOpen, INTEGER, SIGNED32, stack_table),
 	READFUNC(MSSSent, UNSIGNED32, UNSIGNED32),
-	READFUNC(MSSRcvd, UNSIGNED32, UNSIGNED32),
+/*	READFUNC(MSSRcvd, UNSIGNED32, UNSIGNED32), */
 	READFUNC(WinScaleSent, INTEGER32, SIGNED32),
 	READFUNC(WinScaleRcvd, INTEGER32, SIGNED32),
-	READFUNC(TimeStamps, INTEGER, SIGNED32),
+/*	READFUNC(TimeStamps, INTEGER, SIGNED32), */
 	READFUNC(ECN, INTEGER, SIGNED32),
-	READFUNC(WillSendSACK, INTEGER, SIGNED32),
-	READFUNC(WillUseSACK, INTEGER, SIGNED32),
+/*	READFUNC(WillSendSACK, INTEGER, SIGNED32), */
+/*	READFUNC(WillUseSACK, INTEGER, SIGNED32), */
 	READFUNC(State, INTEGER, SIGNED32),
 	READFUNC(Nagle, INTEGER, SIGNED32),
 	ESTATSVAR(MaxSsCwnd, GAUGE32, UNSIGNED32, stack_table),
@@ -566,8 +567,8 @@ struct tcp_estats_var stack_var_array[] = {
 	ESTATSVAR(MinMSS, GAUGE32, UNSIGNED32, stack_table),
 	ESTATSVAR(SndInitial, UNSIGNED32, UNSIGNED32, stack_table),
 	ESTATSVAR(RecInitial, UNSIGNED32, UNSIGNED32, stack_table),
-/*	ESTATSVAR(CurRetxQueue, GAUGE32, UNSIGNED32, stack_table),
-	ESTATSVAR(MaxRetxQueue, GAUGE32, UNSIGNED32, stack_table),*/
+/*	ESTATSVAR(CurRetxQueue, GAUGE32, UNSIGNED32, stack_table),*/
+/*	ESTATSVAR(MaxRetxQueue, GAUGE32, UNSIGNED32, stack_table),*/
 	READFUNC(CurReasmQueue, GAUGE32, UNSIGNED32),
 	ESTATSVAR(MaxReasmQueue, GAUGE32, UNSIGNED32, stack_table),
 	ESTATSVAR(EarlyRetrans, UNSIGNED32, UNSIGNED32, stack_table),
@@ -612,6 +613,3 @@ struct tcp_estats_var *estats_var_array[] = {
 	extras_var_array
 };
 EXPORT_SYMBOL(estats_var_array);
-
-#else
-#endif /* CONFIG_TCP_ESTATS */
