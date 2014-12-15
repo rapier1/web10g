@@ -295,6 +295,8 @@ void tcp_slow_start(struct tcp_sock *tp, u32 acked)
 {
 	u32 cwnd = tp->snd_cwnd + acked;
 
+	TCP_ESTATS_VAR_INC(tp, stack_table, SlowStart);
+
 	if (cwnd > tp->snd_ssthresh)
 		cwnd = tp->snd_ssthresh + 1;
 	tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
@@ -304,6 +306,7 @@ EXPORT_SYMBOL_GPL(tcp_slow_start);
 /* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd (or alternative w) */
 void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w)
 {
+	TCP_ESTATS_VAR_INC(tp, stack_table, CongAvoid);
 	if (tp->snd_cwnd_cnt >= w) {
 		if (tp->snd_cwnd < tp->snd_cwnd_clamp)
 			tp->snd_cwnd++;
