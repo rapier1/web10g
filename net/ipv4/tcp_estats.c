@@ -42,20 +42,20 @@ struct idr tcp_estats_idr;
 EXPORT_SYMBOL(tcp_estats_idr);
 static int next_id = 1;
 DEFINE_SPINLOCK(tcp_estats_idr_lock);
-EXPORT_SYMBOL(tcp_estats_idr_lock);
+/* EXPORT_SYMBOL(tcp_estats_idr_lock); */
 
 int tcp_estats_wq_enabled __read_mostly = 0;
-EXPORT_SYMBOL(tcp_estats_wq_enabled);
+/* EXPORT_SYMBOL(tcp_estats_wq_enabled); */
 struct workqueue_struct *tcp_estats_wq = NULL;
-EXPORT_SYMBOL(tcp_estats_wq);
+/* EXPORT_SYMBOL(tcp_estats_wq); */
 void (*create_notify_func)(struct work_struct *work);
-EXPORT_SYMBOL(create_notify_func);
+/* EXPORT_SYMBOL(create_notify_func); */
 void (*establish_notify_func)(struct work_struct *work);
-EXPORT_SYMBOL(establish_notify_func);
+/* EXPORT_SYMBOL(establish_notify_func); */
 void (*destroy_notify_func)(struct work_struct *work);
-EXPORT_SYMBOL(destroy_notify_func);
+/* EXPORT_SYMBOL(destroy_notify_func); */
 unsigned long persist_delay = 0;
-EXPORT_SYMBOL(persist_delay);
+/* EXPORT_SYMBOL(persist_delay); */
 
 struct static_key tcp_estats_enabled __read_mostly = STATIC_KEY_INIT_FALSE;
 EXPORT_SYMBOL(tcp_estats_enabled);
@@ -227,7 +227,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 
 	return 0;
 }
-EXPORT_SYMBOL(tcp_estats_create);
+/* EXPORT_SYMBOL(tcp_estats_create); */
 
 void tcp_estats_destroy(struct sock *sk)
 {
