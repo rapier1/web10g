@@ -7,7 +7,7 @@
  *   John Estabrook <jsestabrook@gmail.com>
  *   Andrew K. Adams <akadams@psc.edu>
  *   Kevin Hogan <kwabena@google.com>
- *   Dominin Hamon <dma@stripysock.com>
+ *   Dominic Hamon <dma@stripysock.com>
  *   John Heffner <johnwheffner@gmail.com>
  *
  * The Web10Gig project.  See http://www.web10gig.org
