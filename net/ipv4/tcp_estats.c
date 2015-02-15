@@ -37,6 +37,7 @@
 #define ESTATS_MAX_CID	5000000
 
 extern int sysctl_tcp_estats;
+extern int sysctl_estats_delay;
 
 struct idr tcp_estats_idr;
 EXPORT_SYMBOL(tcp_estats_idr);
@@ -148,6 +149,9 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		return 0;
 	}
 
+	/* update the peristence delay if necessary */
+	persist_delay = ACCESS_ONCE(sysctl_estats_delay)/1000 * HZ;
+	
 	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
 	if (!estats_mem)
 		return -ENOMEM;
@@ -719,9 +723,7 @@ void __init tcp_estats_init()
 	create_notify_func = &create_func;
 	establish_notify_func = &establish_func;
 	destroy_notify_func = &destroy_func;
-
-	persist_delay = TCP_ESTATS_PERSIST_DELAY_SECS * HZ;
-
+	
 	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
 	if (tcp_estats_wq == NULL) {
 		pr_err("tcp_estats_init(): alloc_workqueue failed\n");
