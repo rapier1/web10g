@@ -37,25 +37,26 @@
 #define ESTATS_MAX_CID	5000000
 
 extern int sysctl_tcp_estats;
+extern int sysctl_estats_delay;
 
 struct idr tcp_estats_idr;
 EXPORT_SYMBOL(tcp_estats_idr);
 static int next_id = 1;
 DEFINE_SPINLOCK(tcp_estats_idr_lock);
-EXPORT_SYMBOL(tcp_estats_idr_lock);
+/* EXPORT_SYMBOL(tcp_estats_idr_lock); */
 
 int tcp_estats_wq_enabled __read_mostly = 0;
-EXPORT_SYMBOL(tcp_estats_wq_enabled);
+/* EXPORT_SYMBOL(tcp_estats_wq_enabled); */
 struct workqueue_struct *tcp_estats_wq = NULL;
-EXPORT_SYMBOL(tcp_estats_wq);
+/* EXPORT_SYMBOL(tcp_estats_wq); */
 void (*create_notify_func)(struct work_struct *work);
-EXPORT_SYMBOL(create_notify_func);
+/* EXPORT_SYMBOL(create_notify_func); */
 void (*establish_notify_func)(struct work_struct *work);
-EXPORT_SYMBOL(establish_notify_func);
+/* EXPORT_SYMBOL(establish_notify_func); */
 void (*destroy_notify_func)(struct work_struct *work);
-EXPORT_SYMBOL(destroy_notify_func);
+/* EXPORT_SYMBOL(destroy_notify_func); */
 unsigned long persist_delay = 0;
-EXPORT_SYMBOL(persist_delay);
+/* EXPORT_SYMBOL(persist_delay); */
 
 struct static_key tcp_estats_enabled __read_mostly = STATIC_KEY_INIT_FALSE;
 EXPORT_SYMBOL(tcp_estats_enabled);
@@ -148,6 +149,9 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		return 0;
 	}
 
+	/* update the peristence delay if necessary */
+	persist_delay = ACCESS_ONCE(sysctl_estats_delay)/1000 * HZ;
+	
 	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
 	if (!estats_mem)
 		return -ENOMEM;
@@ -227,7 +231,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 
 	return 0;
 }
-EXPORT_SYMBOL(tcp_estats_create);
+/* EXPORT_SYMBOL(tcp_estats_create); */
 
 void tcp_estats_destroy(struct sock *sk)
 {
@@ -719,9 +723,7 @@ void __init tcp_estats_init()
 	create_notify_func = &create_func;
 	establish_notify_func = &establish_func;
 	destroy_notify_func = &destroy_func;
-
-	persist_delay = TCP_ESTATS_PERSIST_DELAY_SECS * HZ;
-
+	
 	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
 	if (tcp_estats_wq == NULL) {
 		pr_err("tcp_estats_init(): alloc_workqueue failed\n");
