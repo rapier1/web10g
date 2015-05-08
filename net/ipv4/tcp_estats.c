@@ -141,7 +141,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	}
 
 	/* update the peristence delay if necessary */
-	persist_delay = ACCESS_ONCE(sysctl_estats_delay)/1000 * HZ;
+	persist_delay = msecs_to_jiffies(ACCESS_ONCE(sysctl_estats_delay));
 	
 	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
 	if (!estats_mem)
@@ -230,10 +230,30 @@ void tcp_estats_destroy(struct sock *sk)
 	 * allows us to get data on short lived flows and more accurate
 	 * stats
 	 */ 
-	INIT_DELAYED_WORK(&stats->destroy_notify,
-			  destroy_notify_func);
-	queue_delayed_work(tcp_estats_wq, &stats->destroy_notify,
-			   persist_delay);
+	
+	if (likely(sysctl_estats_delay == 0)) {
+		int id_cid;
+		id_cid = stats->tcpe_cid;
+		
+		if (id_cid == 0)
+			pr_devel("TCP estats destroyed before being established.\n");
+		
+		if (id_cid >= 0) {
+			if (id_cid) {
+				spin_lock_bh(&tcp_estats_idr_lock);
+				idr_remove(&tcp_estats_idr, id_cid);
+				spin_unlock_bh(&tcp_estats_idr_lock);
+			}
+			stats->tcpe_cid = -1;
+			
+			tcp_estats_unuse(stats);
+		}
+	} else {
+		INIT_DELAYED_WORK(&stats->destroy_notify,
+				  destroy_notify_func);
+		queue_delayed_work(tcp_estats_wq, &stats->destroy_notify,
+				   persist_delay);
+	}
 }
 
 /* Do not call directly.  Called from tcp_estats_unuse() through call_rcu. */
@@ -690,7 +710,7 @@ void __init tcp_estats_init()
 
 	destroy_notify_func = &destroy_func;
 
-	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
+	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 0);
 	if (tcp_estats_wq == NULL) {
 		pr_err("tcp_estats_init(): alloc_workqueue failed\n");
 		goto cleanup_fail;
@@ -700,4 +720,5 @@ void __init tcp_estats_init()
 
 cleanup_fail:
 	pr_err("TCP ESTATS: initialization failed.\n");
+
 }

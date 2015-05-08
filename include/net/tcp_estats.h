@@ -32,7 +32,7 @@
 
 /* defines number of seconds that stats persist after connection ends */
 /* dfeault is 0 seconds. Can be reset via sysctl */
-#define TCP_ESTATS_PERSIST_DELAY_SECS 0
+#define TCP_ESTATS_PERSIST_DELAY_MSECS 0
 
 enum tcp_estats_sndlim_states {
 	TCP_ESTATS_SNDLIM_NONE = -1,
