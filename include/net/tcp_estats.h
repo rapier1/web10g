@@ -7,7 +7,7 @@
  *   John Estabrook <jsestabrook@gmail.com>
  *   Andrew K. Adams <akadams@psc.edu>
  *   Kevin Hogan <kwabena@google.com>
- *   Dominin Hamon <dma@stripysock.com>
+ *   Dominic Hamon <dma@stripysock.com>
  *   John Heffner <johnwheffner@gmail.com>
  *
  * The Web10Gig project.  See http://www.web10gig.org
@@ -32,7 +32,7 @@
 
 /* defines number of seconds that stats persist after connection ends */
 /* dfeault is 0 seconds. Can be reset via sysctl */
-#define TCP_ESTATS_PERSIST_DELAY_SECS 0
+#define TCP_ESTATS_PERSIST_DELAY_MSECS 0
 
 enum tcp_estats_sndlim_states {
 	TCP_ESTATS_SNDLIM_NONE = -1,
@@ -288,8 +288,6 @@ struct tcp_estats {
 	struct timeval			start_tv;
 
         int				queued;
-        struct work_struct		create_notify;
-        struct work_struct		establish_notify;
         struct delayed_work		destroy_notify;
 
 	struct tcp_estats_tables	tables;
@@ -301,8 +299,6 @@ extern struct idr tcp_estats_idr;
 
 extern int tcp_estats_wq_enabled;
 extern struct workqueue_struct *tcp_estats_wq;
-extern void (*create_notify_func)(struct work_struct *work);
-extern void (*establish_notify_func)(struct work_struct *work);
 extern void (*destroy_notify_func)(struct work_struct *work);
 
 extern unsigned long persist_delay;

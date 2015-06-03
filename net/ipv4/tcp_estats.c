@@ -9,6 +9,7 @@
  *   Kevin Hogan <kwabena@google.com>
  *   Dominin Hamon <dma@stripysock.com>
  *   John Heffner <johnwheffner@gmail.com>
+ *   Chris Rapier <rapier@psc.edu>
  *
  * The Web10Gig project.  See http://www.web10gig.org
  *
@@ -43,20 +44,11 @@ struct idr tcp_estats_idr;
 EXPORT_SYMBOL(tcp_estats_idr);
 static int next_id = 1;
 DEFINE_SPINLOCK(tcp_estats_idr_lock);
-/* EXPORT_SYMBOL(tcp_estats_idr_lock); */
 
-int tcp_estats_wq_enabled __read_mostly = 0;
-/* EXPORT_SYMBOL(tcp_estats_wq_enabled); */
+static int get_new_cid(struct tcp_estats *stats);
 struct workqueue_struct *tcp_estats_wq = NULL;
-/* EXPORT_SYMBOL(tcp_estats_wq); */
-void (*create_notify_func)(struct work_struct *work);
-/* EXPORT_SYMBOL(create_notify_func); */
-void (*establish_notify_func)(struct work_struct *work);
-/* EXPORT_SYMBOL(establish_notify_func); */
 void (*destroy_notify_func)(struct work_struct *work);
-/* EXPORT_SYMBOL(destroy_notify_func); */
 unsigned long persist_delay = 0;
-/* EXPORT_SYMBOL(persist_delay); */
 
 struct static_key tcp_estats_enabled __read_mostly = STATIC_KEY_INIT_FALSE;
 EXPORT_SYMBOL(tcp_estats_enabled);
@@ -140,7 +132,6 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	struct tcp_sock *tp = tcp_sk(sk);
 	void *estats_mem;
 	int sysctl;
-	int ret;
 
 	/* Read the sysctl once before calculating memory needs and initializing
 	 * tables to avoid raciness. */
@@ -150,7 +141,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 	}
 
 	/* update the peristence delay if necessary */
-	persist_delay = ACCESS_ONCE(sysctl_estats_delay)/1000 * HZ;
+	persist_delay = msecs_to_jiffies(ACCESS_ONCE(sysctl_estats_delay));
 	
 	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
 	if (!estats_mem)
@@ -185,7 +176,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 		estats_mem += sizeof(struct tcp_estats_extras_table);
 	}
 
-	stats->tcpe_cid = -1;
+	stats->tcpe_cid = 0;
 	stats->queued = 0;
 
 	tables->connection_table->AddressType = addrtype;
@@ -221,17 +212,8 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 
 	tcp_estats_use(stats);
 
-	if (tcp_estats_wq_enabled) {
-		tcp_estats_use(stats);
-		stats->queued = 1;
-		stats->tcpe_cid = 0;
-		INIT_WORK(&stats->create_notify, create_notify_func);
-		ret = queue_work(tcp_estats_wq, &stats->create_notify);
-	}
-
 	return 0;
 }
-/* EXPORT_SYMBOL(tcp_estats_create); */
 
 void tcp_estats_destroy(struct sock *sk)
 {
@@ -243,13 +225,35 @@ void tcp_estats_destroy(struct sock *sk)
 	/* Attribute final sndlim time. */
 	tcp_estats_update_sndlim(tcp_sk(stats->sk), stats->limstate);
 
-	if (tcp_estats_wq_enabled && stats->queued) {
+	/* we use a work queue so that we can get the stat struct
+	 * to persist for some period of time after the socket closes
+	 * allows us to get data on short lived flows and more accurate
+	 * stats
+	 */ 
+	
+	if (likely(sysctl_estats_delay == 0)) {
+		int id_cid;
+		id_cid = stats->tcpe_cid;
+		
+		if (id_cid == 0)
+			pr_devel("TCP estats destroyed before being established.\n");
+		
+		if (id_cid >= 0) {
+			if (id_cid) {
+				spin_lock_bh(&tcp_estats_idr_lock);
+				idr_remove(&tcp_estats_idr, id_cid);
+				spin_unlock_bh(&tcp_estats_idr_lock);
+			}
+			stats->tcpe_cid = -1;
+			
+			tcp_estats_unuse(stats);
+		}
+	} else {
 		INIT_DELAYED_WORK(&stats->destroy_notify,
-			destroy_notify_func);
+				  destroy_notify_func);
 		queue_delayed_work(tcp_estats_wq, &stats->destroy_notify,
-			persist_delay);
+				   persist_delay);
 	}
-	tcp_estats_unuse(stats);
 }
 
 /* Do not call directly.  Called from tcp_estats_unuse() through call_rcu. */
@@ -274,7 +278,9 @@ void tcp_estats_establish(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct tcp_estats *stats = tp->tcp_stats;
 	struct tcp_estats_connection_table *conn_table;
-
+	int err;
+	err =  0;
+	
 	if (stats == NULL)
 		return;
 
@@ -313,9 +319,15 @@ void tcp_estats_establish(struct sock *sk)
 
 	tcp_estats_update_sndlim(tp, TCP_ESTATS_SNDLIM_SENDER);
 
-	if (tcp_estats_wq_enabled && stats->queued) {
-		INIT_WORK(&stats->establish_notify, establish_notify_func);
-		queue_work(tcp_estats_wq, &stats->establish_notify);
+	if ((stats->tcpe_cid) > 0) {
+		pr_err("TCP estats container established multiple times.\n");
+		return;
+	}
+	
+	if ((stats->tcpe_cid) == 0) {
+		err = get_new_cid(stats);
+		if (err)
+			pr_devel("get_new_cid error %d\n", err);
 	}
 }
 
@@ -440,7 +452,7 @@ void tcp_estats_update_finish_segrecv(struct tcp_sock *tp)
 			stack_table->MinSsthresh = ssthresh;
 	}
 }
-EXPORT_SYMBOL(tcp_estats_update_finish_segrecv);
+/* EXPORT_SYMBOL(tcp_estats_update_finish_segrecv);*/
 
 void tcp_estats_update_rwin_rcvd(struct tcp_sock *tp)
 {
@@ -589,7 +601,7 @@ void tcp_estats_update_segrecv(struct tcp_sock *tp, struct sk_buff *skb)
 		path_table->IpTosIn = iph->tos;
 	}
 }
-EXPORT_SYMBOL(tcp_estats_update_segrecv);
+/*EXPORT_SYMBOL(tcp_estats_update_segrecv);*/
 
 void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
 {
@@ -670,30 +682,6 @@ again:
          return 0;
 }
 
-static void create_func(struct work_struct *work)
-{
-	/* stub for netlink notification of new connections */
-	;
-}
-
-static void establish_func(struct work_struct *work)
-{
-	struct tcp_estats *stats = container_of(work, struct tcp_estats,
-						establish_notify);
-	int err = 0;
-
-	if ((stats->tcpe_cid) > 0) {
-		pr_err("TCP estats container established multiple times.\n");
-		return;
-	}
-
-	if ((stats->tcpe_cid) == 0) {
-		err = get_new_cid(stats);
-		if (err)
-			pr_devel("get_new_cid error %d\n", err);
-	}
-}
-
 static void destroy_func(struct work_struct *work)
 {
 	struct tcp_estats *stats = container_of(work, struct tcp_estats,
@@ -720,19 +708,16 @@ void __init tcp_estats_init()
 {
 	idr_init(&tcp_estats_idr);
 
-	create_notify_func = &create_func;
-	establish_notify_func = &establish_func;
 	destroy_notify_func = &destroy_func;
-	
-	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 256);
+	tcp_estats_wq = alloc_workqueue("tcp_estats", WQ_MEM_RECLAIM, 0);
 	if (tcp_estats_wq == NULL) {
 		pr_err("tcp_estats_init(): alloc_workqueue failed\n");
 		goto cleanup_fail;
 	}
 
-	tcp_estats_wq_enabled = 1;
 	return;
 
 cleanup_fail:
 	pr_err("TCP ESTATS: initialization failed.\n");
+
 }
