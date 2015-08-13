@@ -3,7 +3,7 @@
 #include <linux/ktime.h>
 #endif
 #include <linux/jiffies.h>
-#include <net/tcp_estats_mib_var.h>
+#include "tcp_estats_mib_var.h"
 
 #define OFFSET_TP(field)  ((unsigned long)(&(((struct tcp_sock *)NULL)->field)))
 
@@ -228,8 +228,8 @@ static void read_TimeStamps(void *buf, struct tcp_estats *stats,
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	s32 val = 1;
 
-/*	if (!tp->rx_opt.tstamp_ok) */
-/*		val = sysctl_tcp_timestamps ? 3 : 2; */
+	if (!tp->rx_opt.tstamp_ok) 
+		val = sysctl_tcp_timestamps ? 3 : 2; 
 	memcpy(buf, &val, 4);
 }
 
@@ -252,8 +252,8 @@ static void read_WillSendSACK(void *buf, struct tcp_estats *stats,
 	struct tcp_sock *tp = tcp_sk(stats->sk);
 	s32 val = 1;
 
-/*	if (!tp->rx_opt.sack_ok) */
-/*		val = sysctl_tcp_sack ? 3 : 2;*/
+	if (!tp->rx_opt.sack_ok) 
+		val = sysctl_tcp_sack ? 3 : 2;
 	memcpy(buf, &val, 4);
 }
 
@@ -459,7 +459,7 @@ struct tcp_estats_var perf_var_array[] = {
 		   perf_table),
 	READFUNC(ElapsedSecs, COUNTER32, UNSIGNED32),
 	READFUNC(ElapsedMicroSecs, COUNTER32, UNSIGNED32),
-	READFUNC(StartTimeStamp, DATEANDTIME, UNSIGNED8),
+	READFUNC(StartTimeStamp, DATEANDTIME, UNSIGNED64),
 	TPVAR32(CurMSS, GAUGE32, UNSIGNED32, mss_cache),
 	READFUNC(PipeSize, GAUGE32, UNSIGNED32),
 	ESTATSVAR(MaxPipeSize, GAUGE32, UNSIGNED32, perf_table),
@@ -533,13 +533,13 @@ struct tcp_estats_var path_var_array[] = {
 struct tcp_estats_var stack_var_array[] = {
 	ESTATSVAR(ActiveOpen, INTEGER, SIGNED32, stack_table),
 	READFUNC(MSSSent, UNSIGNED32, UNSIGNED32),
-/*	READFUNC(MSSRcvd, UNSIGNED32, UNSIGNED32), */
+	READFUNC(MSSRcvd, UNSIGNED32, UNSIGNED32), 
 	READFUNC(WinScaleSent, INTEGER32, SIGNED32),
 	READFUNC(WinScaleRcvd, INTEGER32, SIGNED32),
-/*	READFUNC(TimeStamps, INTEGER, SIGNED32), */
+	READFUNC(TimeStamps, INTEGER, SIGNED32), 
 	READFUNC(ECN, INTEGER, SIGNED32),
-/*	READFUNC(WillSendSACK, INTEGER, SIGNED32), */
-/*	READFUNC(WillUseSACK, INTEGER, SIGNED32), */
+	READFUNC(WillSendSACK, INTEGER, SIGNED32), 
+	READFUNC(WillUseSACK, INTEGER, SIGNED32), 
 	READFUNC(State, INTEGER, SIGNED32),
 	READFUNC(Nagle, INTEGER, SIGNED32),
 	ESTATSVAR(MaxSsCwnd, GAUGE32, UNSIGNED32, stack_table),
