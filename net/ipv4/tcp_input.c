@@ -3578,12 +3578,10 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		 * Note, we use the fact that SND.UNA>=SND.WL2.
 		 */
 		tcp_update_wl(tp, ack_seq);
-<<<<<<< HEAD
+
 		TCP_ESTATS_UPDATE(tp, tcp_estats_update_acked(tp, ack));
-		tp->snd_una = ack;
-=======
 		tcp_snd_una_update(tp, ack);
->>>>>>> v4.1
+
 		flag |= FLAG_WIN_UPDATE;
 
 		tcp_in_ack_event(sk, CA_ACK_WIN_UPDATE);
@@ -4326,13 +4324,10 @@ static void tcp_ofo_queue(struct sock *sk)
 
 		tail = skb_peek_tail(&sk->sk_receive_queue);
 		eaten = tail && tcp_try_coalesce(sk, tail, skb, &fragstolen);
-<<<<<<< HEAD
-		TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, tp->rcv_nxt));
-		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 
-=======
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, tp->rcv_nxt));
 		tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
->>>>>>> v4.1
+
 		if (!eaten)
 			__skb_queue_tail(&sk->sk_receive_queue, skb);
 		if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
@@ -4597,14 +4592,11 @@ queue_and_out:
 
 			eaten = tcp_queue_rcv(sk, skb, 0, &fragstolen);
 		}
-<<<<<<< HEAD
-		TCP_ESTATS_UPDATE(
-			tp,
+
+		TCP_ESTATS_UPDATE(tp,
 			tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));
-		tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
-=======
 		tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
->>>>>>> v4.1
+
 		if (skb->len)
 			tcp_event_data_recv(sk, skb);
 		if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
@@ -5369,12 +5361,10 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 					tcp_rcv_rtt_measure_ts(sk, skb);
 
 					__skb_pull(skb, tcp_header_len);
-<<<<<<< HEAD
+
 					TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));
-					tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
-=======
 					tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
->>>>>>> v4.1
+
 					NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITSTOUSER);
 					eaten = 1;
 				}
