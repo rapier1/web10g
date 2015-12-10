@@ -52,7 +52,13 @@ int sysctl_estats_delay __read_mostly = TCP_ESTATS_PERSIST_DELAY_MSECS;
 /* Update system visible IP port range */
 static void set_local_port_range(struct net *net, int range[2])
 {
+	bool same_parity = !((range[0] ^ range[1]) & 1);
+
 	write_seqlock(&net->ipv4.ip_local_ports.lock);
+	if (same_parity && !net->ipv4.ip_local_ports.warned) {
+		net->ipv4.ip_local_ports.warned = true;
+		pr_err_ratelimited("ip_local_port_range: prefer different parity for start/end values.\n");
+	}
 	net->ipv4.ip_local_ports.range[0] = range[0];
 	net->ipv4.ip_local_ports.range[1] = range[1];
 	write_sequnlock(&net->ipv4.ip_local_ports.lock);
@@ -709,7 +715,7 @@ static struct ctl_table ipv4_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
-		.extra1		= &zero,
+		.extra1		= &one,
 		.extra2		= &gso_max_segs,
 	},
 	{
@@ -839,6 +845,13 @@ static struct ctl_table ipv4_net_table[] = {
 	{
 		.procname	= "tcp_ecn",
 		.data		= &init_net.ipv4.sysctl_tcp_ecn,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec
+	},
+	{
+		.procname	= "tcp_ecn_fallback",
+		.data		= &init_net.ipv4.sysctl_tcp_ecn_fallback,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec
