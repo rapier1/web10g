@@ -1278,6 +1278,8 @@ struct sock *tcp_v4_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 	if (!newsk)
 		goto exit_nonewsk;
 
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV4, TCP_ESTATS_INACTIVE);
+
 	newsk->sk_gso_type = SKB_GSO_TCPV4;
 	inet_sk_rx_dst_set(newsk, skb);
 
@@ -1652,6 +1654,12 @@ process:
 
 	bh_lock_sock_nested(sk);
 	tcp_segs_in(tcp_sk(sk), skb);
+
+	/* should be able to remove this now. Might be interesting to see
+	   if the numbers align */
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
+
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 		if (!tcp_prequeue(sk, skb))
@@ -1662,6 +1670,8 @@ process:
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 		goto discard_and_relse;
 	}
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
 	bh_unlock_sock(sk);
 
 put_and_return:
@@ -1789,6 +1799,8 @@ static int tcp_v4_init_sock(struct sock *sk)
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
 #endif
 
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4, TCP_ESTATS_ACTIVE);
+
 	return 0;
 }
 
@@ -1821,6 +1833,8 @@ void tcp_v4_destroy_sock(struct sock *sk)
 	/* Clean up a referenced TCP bind bucket. */
 	if (inet_csk(sk)->icsk_bind_hash)
 		inet_put_port(sk);
+
+	tcp_estats_destroy(sk);
 
 	BUG_ON(tp->fastopen_rsk);
 

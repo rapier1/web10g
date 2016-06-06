@@ -189,9 +189,14 @@ struct tcp_info {
 	__u32	tcpi_rcv_space;
 
 	__u32	tcpi_total_retrans;
-
 	__u64	tcpi_pacing_rate;
 	__u64	tcpi_max_pacing_rate;
+
+#ifdef CONFIG_TCP_ESTATS
+	/* RFC 4898 extended stats Info */
+	__u32	tcpi_estats_cid;
+#endif
+
 	__u64	tcpi_bytes_acked;    /* RFC4898 tcpEStatsAppHCThruOctetsAcked */
 	__u64	tcpi_bytes_received; /* RFC4898 tcpEStatsAppHCThruOctetsReceived */
 	__u32	tcpi_segs_out;	     /* RFC4898 tcpEStatsPerfSegsOut */
