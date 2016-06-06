@@ -700,3 +700,28 @@ config TCP_MD5SIG
 	  on the Internet.
 
 	  If unsure, say N.
+
+config TCP_ESTATS
+	bool "TCP: Extended TCP statistics (RFC4898) MIB"
+	---help---
+	  RFC 4898 specifies a number of extended statistics for TCP. This
+	  data can be accessed using netlink. See http://www.web10g.org for
+	  more details.
+
+if TCP_ESTATS
+
+config TCP_ESTATS_STRICT_ELAPSEDTIME
+	bool "TCP: ESTATS strict ElapsedSecs/Msecs counters"
+	depends on TCP_ESTATS
+	default n
+	---help---
+	  Elapsed time since beginning of connection.
+	  RFC4898 defines ElapsedSecs/Msecs as being updated via ktime_get
+	  at each protocol event (sending or receiving of a segment);
+	  as this can be a performance hit, leaving this config option off
+	  will update elapsed based on on the jiffies counter instead.
+	  Set to Y for strict conformance with the MIB.
+
+	  If unsure, say N.
+
+endif
