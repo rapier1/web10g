@@ -251,6 +251,7 @@ static void htcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 			tp->snd_cwnd_cnt += ca->pkts_acked;
 
 		ca->pkts_acked = 1;
+		TCP_ESTATS_VAR_INC(tp, stack_table, CongAvoid);
 	}
 }
 

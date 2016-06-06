@@ -1052,6 +1052,8 @@ static struct sock *tcp_v6_syn_recv_sock(const struct sock *sk, struct sk_buff *
 	if (!newsk)
 		goto out_nonewsk;
 
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_INACTIVE);
+
 	/*
 	 * No need to charge this sock to the relevant IPv6 refcnt debug socks
 	 * count here, tcp_create_openreq_child now does this for us, see the
@@ -1440,7 +1442,12 @@ process:
 	sk_incoming_cpu_update(sk);
 
 	bh_lock_sock_nested(sk);
+
+	/* this is now a duplicate - remove (same with segs_out) -cjr */
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
 	tcp_sk(sk)->segs_in += max_t(u16, 1, skb_shinfo(skb)->gso_segs);
+
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 		if (!tcp_prequeue(sk, skb))
@@ -1451,6 +1458,8 @@ process:
 		NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 		goto discard_and_relse;
 	}
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
 	bh_unlock_sock(sk);
 
 put_and_return:
@@ -1641,6 +1650,7 @@ static int tcp_v6_init_sock(struct sock *sk)
 #ifdef CONFIG_TCP_MD5SIG
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv6_specific;
 #endif
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV6, TCP_ESTATS_ACTIVE);
 
 	return 0;
 }
