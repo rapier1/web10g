@@ -554,11 +554,11 @@ void tcp_estats_update_segsend(struct sock *sk, int pcount,
 		return;
 
 	/* We know we're sending a segment. */
-	perf_table->SegsOut += pcount;
+	perf_table->SegsOut += (u64)pcount;
 
 	/* A pure ACK contains no data; everything else is data. */
 	if (data_len > 0) {
-		perf_table->DataSegsOut += pcount;
+		perf_table->DataSegsOut += (u64)pcount;
 		perf_table->DataOctetsOut += data_len;
 	}
 

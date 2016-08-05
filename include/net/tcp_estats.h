@@ -9,8 +9,9 @@
  *   Kevin Hogan <kwabena@google.com>
  *   Dominic Hamon <dma@stripysock.com>
  *   John Heffner <johnwheffner@gmail.com>
+ *   Chris Rapier <rapier@psc.edu>
  *
- * The Web10Gig project.  See http://www.web10gig.org
+ * The Web10Gig project.  See http://www.web10g.org
  *
  * Copyright © 2011, Pittsburgh Supercomputing Center (PSC).
  * This program is free software; you can redistribute it and/or
@@ -122,13 +123,13 @@ struct tcp_estats_connection_table {
 };
 
 struct tcp_estats_perf_table {
-	u32		SegsOut;
-	u32		DataSegsOut;
+	u64		SegsOut;
+	u64		DataSegsOut;
 	u64		DataOctetsOut;
 	u32		SegsRetrans;
 	u32		OctetsRetrans;
-	u32		SegsIn;
-	u32		DataSegsIn;
+	u64		SegsIn;
+	u64		DataSegsIn;
 	u64		DataOctetsIn;
 	/*		ElapsedSecs */
 	/*		ElapsedMicroSecs */
