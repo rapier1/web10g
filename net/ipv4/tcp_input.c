@@ -3464,7 +3464,7 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 		}
 	}
 
-	TCP_ESTATS_UPDATE(tp, tcp_estats_update_acked(tp, ack));
+	/*TCP_ESTATS_UPDATE(tp, tcp_estats_update_acked(tp, ack));*/
 	tcp_snd_una_update(tp, ack);
 
 	return flag;
@@ -3683,7 +3683,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 		 */
 		tcp_update_wl(tp, ack_seq);
 
-		TCP_ESTATS_UPDATE(tp, tcp_estats_update_acked(tp, ack));
+		/*TCP_ESTATS_UPDATE(tp, tcp_estats_update_acked(tp, ack));*/
 		tcp_snd_una_update(tp, ack);
 
 		flag |= FLAG_WIN_UPDATE;
@@ -4419,7 +4419,7 @@ static void tcp_ofo_queue(struct sock *sk)
 		tail = skb_peek_tail(&sk->sk_receive_queue);
 		eaten = tail && tcp_try_coalesce(sk, tail, skb, &fragstolen);
 
-		TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, tp->rcv_nxt));
+		/*TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, tp->rcv_nxt));*/
 		tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
 
 		if (!eaten)
@@ -4705,8 +4705,8 @@ queue_and_out:
 			eaten = tcp_queue_rcv(sk, skb, 0, &fragstolen);
 		}
 
-		TCP_ESTATS_UPDATE(tp,
-			tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));
+		/*TCP_ESTATS_UPDATE(tp,
+		  tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));*/
 		tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
 
 		if (skb->len)
@@ -5474,7 +5474,7 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 
 					__skb_pull(skb, tcp_header_len);
 
-					TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));
+					/*TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));*/
 					tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
 
 					NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITSTOUSER);
@@ -5502,7 +5502,7 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPHPHITS);
 
 				/* Bulk data transfer: receiver */
-				TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));
+				/*(TCP_ESTATS_UPDATE(tp, tcp_estats_update_rcvd(tp, TCP_SKB_CB(skb)->end_seq));*/
 				eaten = tcp_queue_rcv(sk, skb, tcp_header_len,
 						      &fragstolen);
 			}
