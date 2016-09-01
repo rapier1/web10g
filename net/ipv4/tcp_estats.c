@@ -667,7 +667,7 @@ static int get_new_cid(struct tcp_estats *stats)
 
 again:
          spin_lock_bh(&tcp_estats_idr_lock);
-         id_cid = idr_alloc(&tcp_estats_idr, stats, next_id, 0, GFP_KERNEL);
+         id_cid = idr_alloc(&tcp_estats_idr, stats, next_id, 0, GFP_NOWAIT);
          if (unlikely(id_cid == -ENOSPC)) {
                  spin_unlock_bh(&tcp_estats_idr_lock);
                  goto again;
