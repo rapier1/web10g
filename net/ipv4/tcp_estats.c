@@ -51,7 +51,7 @@ void (*destroy_notify_func)(struct work_struct *work);
 unsigned long persist_delay = 0;
 
 struct static_key tcp_estats_enabled __read_mostly = STATIC_KEY_INIT_FALSE;
-/*EXPORT_SYMBOL(tcp_estats_enabled);*/
+EXPORT_SYMBOL(tcp_estats_enabled);
 
 /* if HAVE_JUMP_LABEL is defined, then static_key_slow_inc/dec uses a
  *   mutex in its implementation, and hence can't be called if in_interrupt().
@@ -263,7 +263,7 @@ void tcp_estats_free(struct rcu_head *rcu)
 	tcp_estats_disable();
 	kfree(stats);
 }
-/*EXPORT_SYMBOL(tcp_estats_free);*/
+EXPORT_SYMBOL(tcp_estats_free);
 
 /* Called when a connection enters the ESTABLISHED state, and has all its
  * state initialized.
