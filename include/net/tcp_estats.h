@@ -123,13 +123,13 @@ struct tcp_estats_connection_table {
 };
 
 struct tcp_estats_perf_table {
-	/*u32		SegsOut; */
-	/*u32		DataSegsOut;*/
+	u32		SegsOut; 
+	u32		DataSegsOut;
 	u64		DataOctetsOut;
 	u32		SegsRetrans;
 	u32		OctetsRetrans;
-	/*u64		SegsIn;*/
-	/*u64		DataSegsIn;*/
+	u64		SegsIn;
+	u64		DataSegsIn;
 	u64		DataOctetsIn;
 	/*		ElapsedSecs */
 	/*		ElapsedMicroSecs */
