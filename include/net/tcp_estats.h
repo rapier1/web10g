@@ -211,7 +211,7 @@ struct tcp_estats_stack_table {
 	u32		SoftErrorReason;
 	u32		SlowStart;
 	u32		CongAvoid;
-	u32		OtherReductions;
+	/*u32		OtherReductions;*/
 	u32		CongOverCount;
 	u32		FastRetran;
 	u32		SubsequentTimeouts;
@@ -254,7 +254,7 @@ struct tcp_estats_app_table {
 
 struct tcp_estats_extras_table {
 	/*		OtherReductionsCV */
-	u32		OtherReductionsCM;
+	/*u32		OtherReductionsCM;*/
 	u32		Priority;
 };
 
