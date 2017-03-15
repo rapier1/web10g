@@ -345,13 +345,15 @@ void tcp_estats_update_snd_nxt(struct tcp_sock *tp)
 	}
 }
 
-void tcp_estats_update_acked(struct tcp_sock *tp, u32 ack)
-{
-	struct tcp_estats *stats = tp->tcp_stats;
 
-	if (stats->tables.app_table)
-		stats->tables.app_table->ThruOctetsAcked += ack - tp->snd_una;
-}
+/* void tcp_estats_update_acked(struct tcp_sock *tp, u32 ack) */
+/* { */
+/* 	struct tcp_estats *stats = tp->tcp_stats; */
+
+/* 	if (stats->tables.app_table) */
+/* 		stats->tables.app_table->ThruOctetsAcked += ack - tp->snd_una; */
+/* } */
+
 
 void tcp_estats_update_rtt(struct sock *sk, unsigned long rtt_sample)
 {
@@ -554,11 +556,11 @@ void tcp_estats_update_segsend(struct sock *sk, int pcount,
 		return;
 
 	/* We know we're sending a segment. */
-	perf_table->SegsOut += pcount;
+	/*perf_table->SegsOut += pcount;*/
 
 	/* A pure ACK contains no data; everything else is data. */
 	if (data_len > 0) { 
-		perf_table->DataSegsOut += pcount;
+		/*perf_table->DataSegsOut += pcount;*/
 		perf_table->DataOctetsOut += data_len;
 		}
 
@@ -582,8 +584,8 @@ void tcp_estats_update_segrecv(struct tcp_sock *tp, struct sk_buff *skb)
 	struct tcphdr *th = tcp_hdr(skb);
 	struct iphdr *iph = ip_hdr(skb);
 
-	if (perf_table != NULL)
-		perf_table->SegsIn++; 
+	/*if (perf_table != NULL)
+	  perf_table->SegsIn++;*/ 
 
 	if (skb->len == th->doff * 4) {
 		if (stack_table != NULL &&
@@ -591,7 +593,7 @@ void tcp_estats_update_segrecv(struct tcp_sock *tp, struct sk_buff *skb)
 			stack_table->DupAcksIn++;
 	} else {
 		if (perf_table != NULL) {
-			perf_table->DataSegsIn++;
+			/*perf_table->DataSegsIn++;*/
 			perf_table->DataOctetsIn += skb->len - th->doff * 4;
 		}
 	}
@@ -603,14 +605,16 @@ void tcp_estats_update_segrecv(struct tcp_sock *tp, struct sk_buff *skb)
 }
 /*EXPORT_SYMBOL(tcp_estats_update_segrecv);*/
 
-void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq)
-{
-        /* After much debate, it was decided that "seq - rcv_nxt" is
-           indeed what we want, as opposed to what Krishnan suggested
-           to better match the RFC: "seq - tp->rcv_wup" */
-	TCP_ESTATS_VAR_ADD(tp, app_table, ThruOctetsReceived,
-			   seq - tp->rcv_nxt);
-}
+
+/* void tcp_estats_update_rcvd(struct tcp_sock *tp, u32 seq) */
+/* { */
+/*         /\* After much debate, it was decided that "seq - rcv_nxt" is */
+/*            indeed what we want, as opposed to what Krishnan suggested */
+/*            to better match the RFC: "seq - tp->rcv_wup" *\/ */
+/* 	TCP_ESTATS_VAR_ADD(tp, app_table, ThruOctetsReceived, */
+/* 			   seq - tp->rcv_nxt); */
+/* } */
+
 
 void tcp_estats_update_writeq(struct sock *sk)
 {

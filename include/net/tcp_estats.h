@@ -123,13 +123,13 @@ struct tcp_estats_connection_table {
 };
 
 struct tcp_estats_perf_table {
-	u32		SegsOut; 
-	u32		DataSegsOut;
+	/*u32		SegsOut; */
+	/*u32		DataSegsOut;*/
 	u64		DataOctetsOut;
 	u32		SegsRetrans;
 	u32		OctetsRetrans;
-	u64		SegsIn;
-	u64		DataSegsIn;
+	/*u32		SegsIn;*/
+	/*u32		DataSegsIn;*/
 	u64		DataOctetsIn;
 	/*		ElapsedSecs */
 	/*		ElapsedMicroSecs */
@@ -237,9 +237,9 @@ struct tcp_estats_app_table {
 	/*		SndUna */
 	/*		SndNxt */
 	u32		SndMax;
-	u64		ThruOctetsAcked;
+	/*u64		ThruOctetsAcked;*/
 	/*		RcvNxt */
-	u64		ThruOctetsReceived;
+	/*u64		ThruOctetsReceived;*/
 	/*		CurAppWQueue */
 	u32		MaxAppWQueue;
 	/*		CurAppRQueue */
