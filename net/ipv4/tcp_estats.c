@@ -634,11 +634,31 @@ void tcp_estats_update_writeq(struct sock *sk)
 
 static inline u32 ofo_qlen(struct tcp_sock *tp)
 {
-	if (!skb_peek(&tp->out_of_order_queue))
+	/* if (!skb_peek(&tp->out_of_order_queue)) */
+	/* 	return 0; */
+	/* else */
+	/* 	return TCP_SKB_CB(tp->out_of_order_queue.prev)->end_seq - */
+	/* 	    TCP_SKB_CB(tp->out_of_order_queue.next)->seq; */
+
+
+	/* there was a change to the out_of_order_queue struct to
+	 * a red/black tree. The following may or may not work. The idea is to get
+	 * the first and last node and then subtract the sequence numbers to
+	 * get the total size of the OOO queue in terms of the difference
+	 * between the sequence numbers. However, I've a feeling this is
+	 * not necessarily the right way to do this -cjr
+	 */
+
+	struct sk_buff *f_skb, *l_skb;
+
+	if (RB_EMPTY_ROOT(&tp->out_of_order_queue))
 		return 0;
-	else
-		return TCP_SKB_CB(tp->out_of_order_queue.prev)->end_seq -
-		    TCP_SKB_CB(tp->out_of_order_queue.next)->seq;
+
+	/* get the first and last skbs for the first and last nodes in the rbtree*/
+	f_skb = rb_entry(rb_first(&tp->out_of_order_queue), struct sk_buff, rbnode);
+	l_skb = rb_entry(rb_last(&tp->out_of_order_queue), struct sk_buff, rbnode);
+
+	return TCP_SKB_CB(f_skb)->seq - TCP_SKB_CB(l_skb)->end_seq;
 }
 
 void tcp_estats_update_recvq(struct sock *sk)
