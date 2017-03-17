@@ -2207,7 +2207,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	int cwnd_quota;
 	int result;
 	int why = TCP_ESTATS_SNDLIM_SENDER;
-	bool is_cwnd_limited = false;
+	bool is_rwnd_limited = false, is_cwnd_limited = false;
 	u32 max_segs;
 
 	sent_pkts = 0;
