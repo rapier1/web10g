@@ -81,6 +81,8 @@ int sysctl_tcp_max_reordering __read_mostly = 300;
 int sysctl_tcp_dsack __read_mostly = 1;
 int sysctl_tcp_app_win __read_mostly = 31;
 int sysctl_tcp_adv_win_scale __read_mostly = 1;
+int sysctl_tcp_timestamps __read_mostly = 1;
+int sysctl_tcp_sack __read_mostly = 1;
 EXPORT_SYMBOL(sysctl_tcp_adv_win_scale);
 EXPORT_SYMBOL(sysctl_tcp_timestamps); /*used by dlkm - need to figure out a way around this export -cjr)*/
 EXPORT_SYMBOL(sysctl_tcp_sack); /* tcp_estats used by dlkm -cjr*/
