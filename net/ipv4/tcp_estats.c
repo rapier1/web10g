@@ -135,13 +135,13 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 
 	/* Read the sysctl once before calculating memory needs and initializing
 	 * tables to avoid raciness. */
-	sysctl = ACCESS_ONCE(sysctl_tcp_estats);
+	sysctl = READ_ONCE(sysctl_tcp_estats);
 	if (likely(sysctl == TCP_ESTATS_TABLEMASK_INACTIVE)) {
 		return 0;
 	}
 
 	/* update the peristence delay if necessary */
-	persist_delay = msecs_to_jiffies(ACCESS_ONCE(sysctl_estats_delay));
+	persist_delay = msecs_to_jiffies(READ_ONCE(sysctl_estats_delay));
 	
 	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
 	if (!estats_mem)
