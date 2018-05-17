@@ -37,8 +37,8 @@
 
 #define ESTATS_MAX_CID	5000000
 
-extern int sysctl_tcp_estats;
-extern int sysctl_estats_delay;
+//extern int sysctl_tcp_estats;
+//extern int sysctl_estats_delay;
 
 struct idr tcp_estats_idr;
 EXPORT_SYMBOL(tcp_estats_idr);
@@ -135,13 +135,13 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 
 	/* Read the sysctl once before calculating memory needs and initializing
 	 * tables to avoid raciness. */
-	sysctl = READ_ONCE(sysctl_tcp_estats);
+	sysctl = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_estats);
 	if (likely(sysctl == TCP_ESTATS_TABLEMASK_INACTIVE)) {
 		return 0;
 	}
 
 	/* update the peristence delay if necessary */
-	persist_delay = msecs_to_jiffies(READ_ONCE(sysctl_estats_delay));
+	persist_delay = msecs_to_jiffies(READ_ONCE(sock_net(sk)->ipv4.sysctl_estats_delay));
 	
 	estats_mem = kzalloc(tcp_estats_get_allocation_size(sysctl), gfp_any());
 	if (!estats_mem)
@@ -231,7 +231,7 @@ void tcp_estats_destroy(struct sock *sk)
 	 * stats
 	 */ 
 	
-	if (likely(sysctl_estats_delay == 0)) {
+	if (likely(persist_delay == 0)) {
 		int id_cid;
 		id_cid = stats->tcpe_cid;
 		
