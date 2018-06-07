@@ -211,5 +211,9 @@ struct netns_ipv4 {
 	unsigned int	ipmr_seq;	/* protected by rtnl_mutex */
 
 	atomic_t	rt_genid;
+#ifdef CONFIG_TCP_ESTATS
+	int             sysctl_tcp_estats;
+	int             sysctl_estats_delay;
+#endif
 };
 #endif

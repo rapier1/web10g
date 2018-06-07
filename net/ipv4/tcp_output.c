@@ -56,6 +56,7 @@ static void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 	unsigned int prior_packets = tp->packets_out;
 
 	tp->snd_nxt = TCP_SKB_CB(skb)->end_seq;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_snd_nxt(tp));
 
 	__skb_unlink(skb, &sk->sk_write_queue);
 	tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
@@ -268,6 +269,7 @@ static u16 tcp_select_window(struct sock *sk)
 	}
 	tp->rcv_wnd = new_win;
 	tp->rcv_wup = tp->rcv_nxt;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_rwin_sent(tp));
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
@@ -1044,6 +1046,12 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	struct tcp_md5sig_key *md5;
 	struct tcphdr *th;
 	int err;
+#ifdef CONFIG_TCP_ESTATS
+	__u32 seq;
+	__u32 end_seq;
+	int tcp_flags;
+	int pcount;
+#endif
 
 	BUG_ON(!skb || !tcp_skb_pcount(skb));
 	tp = tcp_sk(sk);
@@ -1161,8 +1169,19 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		TCP_ADD_STATS(sock_net(sk), TCP_MIB_OUTSEGS,
 			      tcp_skb_pcount(skb));
 
+
+#ifdef CONFIG_TCP_ESTATS
+	/* If the skb isn't cloned, we can't reference it after
+	 * calling queue_xmit, so copy everything we need here. */
+	pcount = tcp_skb_pcount(skb);
+	seq = TCP_SKB_CB(skb)->seq;
+	end_seq = TCP_SKB_CB(skb)->end_seq;
+	tcp_flags = TCP_SKB_CB(skb)->tcp_flags;
+#endif
+
 	tp->segs_out += tcp_skb_pcount(skb);
 	/* OK, its time to fill skb_shinfo(skb)->gso_{segs|size} */
+
 	skb_shinfo(skb)->gso_segs = tcp_skb_pcount(skb);
 	skb_shinfo(skb)->gso_size = tcp_skb_mss(skb);
 
@@ -1177,10 +1196,15 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 
 	if (unlikely(err > 0)) {
 		tcp_enter_cwr(sk);
+		TCP_ESTATS_VAR_INC(tp, stack_table, SendStall);
 		err = net_xmit_eval(err);
 	}
 	if (!err && oskb) {
 		tcp_update_skb_after_send(tp, oskb);
+		/* this instrument handler is likely no longer necessary -cjr */
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_segsend(sk, pcount,
+								seq, end_seq,
+								tcp_flags));	
 		tcp_rate_skb_sent(sk, oskb);
 	}
 	return err;
@@ -1559,6 +1583,7 @@ unsigned int tcp_sync_mss(struct sock *sk, u32 pmtu)
 	if (icsk->icsk_mtup.enabled)
 		mss_now = min(mss_now, tcp_mtu_to_mss(sk, icsk->icsk_mtup.search_low));
 	tp->mss_cache = mss_now;
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_mss(tp));
 
 	return mss_now;
 }
@@ -2294,7 +2319,8 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	unsigned int tso_segs, sent_pkts;
 	int cwnd_quota;
 	int result;
-	bool is_cwnd_limited = false, is_rwnd_limited = false;
+	int why = TCP_ESTATS_SNDLIM_SENDER;
+	bool is_rwnd_limited = false, is_cwnd_limited = false;
 	u32 max_segs;
 
 	sent_pkts = 0;
@@ -2328,6 +2354,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		cwnd_quota = tcp_cwnd_test(tp, skb);
 		if (!cwnd_quota) {
+			why = TCP_ESTATS_SNDLIM_CWND;
 			if (push_one == 2)
 				/* Force out a loss probe pkt. */
 				cwnd_quota = 1;
@@ -2336,6 +2363,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		}
 
 		if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
+			why = TCP_ESTATS_SNDLIM_RWIN;
 			is_rwnd_limited = true;
 			break;
 		}
@@ -2343,13 +2371,17 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		if (tso_segs == 1) {
 			if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
 						     (tcp_skb_is_last(sk, skb) ?
-						      nonagle : TCP_NAGLE_PUSH))))
+						      nonagle : TCP_NAGLE_PUSH)))) {
+				/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 				break;
+			}
 		} else {
 			if (!push_one &&
-			    tcp_tso_should_defer(sk, skb, &is_cwnd_limited,
-						 max_segs))
+			    tcp_tso_should_defer(sk, skb, &is_cwnd_limited, 
+						 max_segs)) {
+				why = TCP_ESTATS_SNDLIM_TSODEFER;
 				break;
+			}
 		}
 
 		limit = mss_now;
@@ -2371,6 +2403,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			break;
 
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 
 repair:
@@ -2383,8 +2416,11 @@ repair:
 		sent_pkts += tcp_skb_pcount(skb);
 
 		if (push_one)
+			/* set above: why = TCP_ESTATS_SNDLIM_SENDER; */
 			break;
 	}
+
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_sndlim(tp, why));
 
 	if (is_rwnd_limited)
 		tcp_chrono_start(sk, TCP_CHRONO_RWND_LIMITED);
@@ -3509,6 +3545,7 @@ int tcp_connect(struct sock *sk)
 	 */
 	tp->snd_nxt = tp->write_seq;
 	tp->pushed_seq = tp->write_seq;
+
 	buff = tcp_send_head(sk);
 	if (unlikely(buff)) {
 		tp->snd_nxt	= TCP_SKB_CB(buff)->seq;
@@ -3519,6 +3556,12 @@ int tcp_connect(struct sock *sk)
 	/* Timer for repeating the SYN until an answer. */
 	inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 				  inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
+
+	TCP_ESTATS_VAR_SET(tp, stack_table, SndInitial, tp->write_seq);
+	TCP_ESTATS_VAR_SET(tp, app_table, SndMax, tp->write_seq);
+	TCP_ESTATS_UPDATE(tp, tcp_estats_update_snd_nxt(tp));
+	TCP_INC_STATS(sock_net(sk), TCP_MIB_ACTIVEOPENS);
+
 	return 0;
 }
 EXPORT_SYMBOL(tcp_connect);

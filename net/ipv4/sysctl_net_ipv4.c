@@ -50,6 +50,12 @@ static int ip_ping_group_range_max[] = { GID_T_MAX, GID_T_MAX };
 /* obsolete */
 static int sysctl_tcp_low_latency __read_mostly;
 
+/* Extended statistics (RFC4898). */
+#ifdef CONFIG_TCP_ESTATS /* should be able to remove */
+//int sysctl_tcp_estats __read_mostly;
+//int sysctl_estats_delay __read_mostly = TCP_ESTATS_PERSIST_DELAY_MSECS; 
+#endif  /* CONFIG_TCP_ESTATS */
+
 /* Update system visible IP port range */
 static void set_local_port_range(struct net *net, int range[2])
 {
@@ -1167,6 +1173,22 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &one
 	},
+#ifdef CONFIG_TCP_ESTATS
+	{
+		.procname	= "tcp_estats",
+		.data		= &init_net.ipv4.sysctl_tcp_estats,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec
+	},
+	{
+		.procname       = "estats_delay",
+		.data           = &init_net.ipv4.sysctl_estats_delay,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec
+	},
+#endif /* CONFIG TCP ESTATS */
 	{ }
 };
 

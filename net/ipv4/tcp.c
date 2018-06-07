@@ -452,6 +452,9 @@ void tcp_init_sock(struct sock *sk)
 	sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
 	sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
 
+#ifdef CONFIG_TCP_ESTATS
+	tp->tcp_stats = NULL;
+#endif
 	sk_sockets_allocated_inc(sk);
 	sk->sk_route_forced_caps = NETIF_F_GSO;
 }
@@ -1041,6 +1044,9 @@ wait_for_memory:
 		tcp_push(sk, flags & ~MSG_MORE, mss_now,
 			 TCP_NAGLE_PUSH, size_goal);
 
+		if (copied)
+                        TCP_ESTATS_UPDATE(tp, tcp_estats_update_writeq(sk));
+		
 		err = sk_stream_wait_memory(sk, &timeo);
 		if (err != 0)
 			goto do_error;
@@ -1393,9 +1399,11 @@ new_segment:
 wait_for_sndbuf:
 		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
-		if (copied)
+		if (copied) {
 			tcp_push(sk, flags & ~MSG_MORE, mss_now,
 				 TCP_NAGLE_PUSH, size_goal);
+			TCP_ESTATS_UPDATE(tp, tcp_estats_update_writeq(sk));
+		}
 
 		err = sk_stream_wait_memory(sk, &timeo);
 		if (err != 0)
@@ -1863,6 +1871,8 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 			     "recvmsg bug 2: copied %X seq %X rcvnxt %X fl %X\n",
 			     *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt, flags);
 		}
+
+		TCP_ESTATS_UPDATE(tp, tcp_estats_update_recvq(sk));
 
 		/* Well, if we have backlog, try to process it now yet. */
 
@@ -3015,6 +3025,10 @@ void tcp_get_info(struct sock *sk, struct tcp_info *info)
 
 	info->tcpi_total_retrans = tp->total_retrans;
 
+#ifdef CONFIG_TCP_ESTATS
+	info->tcpi_estats_cid = (tp->tcp_stats && tp->tcp_stats->tcpe_cid > 0)
+					? tp->tcp_stats->tcpe_cid : 0;
+#endif
 	info->tcpi_bytes_acked = tp->bytes_acked;
 	info->tcpi_bytes_received = tp->bytes_received;
 	info->tcpi_notsent_bytes = max_t(int, 0, tp->write_seq - tp->snd_nxt);
@@ -3669,6 +3683,9 @@ void __init tcp_init(void)
 
 	tcp_v4_init();
 	tcp_metrics_init();
+
 	BUG_ON(tcp_register_congestion_control(&tcp_reno) != 0);
+	tcp_estats_init();
+
 	tcp_tasklet_init();
 }
