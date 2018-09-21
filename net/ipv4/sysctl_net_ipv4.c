@@ -52,19 +52,6 @@ static int comp_sack_nr_max = 255;
 /* obsolete */
 static int sysctl_tcp_low_latency __read_mostly;
 
-/* Extended statistics (RFC4898). */
-#ifdef CONFIG_TCP_ESTATS /* should be able to remove */
-//int sysctl_tcp_estats __read_mostly;
-//int sysctl_estats_delay __read_mostly = TCP_ESTATS_PERSIST_DELAY_MSECS; 
-#endif  /* CONFIG_TCP_ESTATS */
-
-/* Extended statistics (RFC4898). */
-#ifdef CONFIG_TCP_ESTATS
-int sysctl_tcp_estats __read_mostly;
-int sysctl_estats_delay __read_mostly = TCP_ESTATS_PERSIST_DELAY_MSECS; 
-
-#endif  /* CONFIG_TCP_ESTATS */
-
 /* Update system visible IP port range */
 static void set_local_port_range(struct net *net, int range[2])
 {
@@ -835,26 +822,6 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra2		= &tcp_retr1_max
 	},
-#ifdef CONFIG_TCP_ESTATS
-	{
-		.procname	= "tcp_estats",
-		.data		= &sysctl_tcp_estats,
-		.maxlen		= sizeof(int),
-		.mode		= 0644,
-		.proc_handler	= proc_dointvec
-	},
-	{
-		.procname       = "estats_delay",
-		.data           = &sysctl_estats_delay,
-		.maxlen         = sizeof(int),
-		.mode           = 0644,
-		.proc_handler   = proc_dointvec
-	},
-#endif /* CONFIG TCP ESTATS */
-	{ }
-};
-
-static struct ctl_table ipv4_net_table[] = {
 	{
 		.procname	= "tcp_retries2",
 		.data		= &init_net.ipv4.sysctl_tcp_retries2,

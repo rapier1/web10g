@@ -1987,8 +1987,6 @@ void tcp_enter_loss(struct sock *sk)
 
 	TCP_ESTATS_UPDATE(tp, tcp_estats_update_congestion(tp));
 
-	TCP_ESTATS_UPDATE(tp, tcp_estats_update_congestion(tp));
-
 	/* Reduce ssthresh if it has not yet been made inside this window. */
 	if (icsk->icsk_ca_state <= TCP_CA_Disorder ||
 	    !after(tp->high_seq, tp->snd_una) ||
@@ -2889,10 +2887,6 @@ static void tcp_fastretrans_alert(struct sock *sk, const u32 prior_snd_una,
 		}
 
 		tcp_identify_packet_loss(sk, ack_flag);
-
-
-		if (icsk->icsk_ca_state == TCP_CA_Disorder)
-			TCP_ESTATS_VAR_INC(tp, path_table, NonRecovDA);
 
 		if (!tcp_time_to_recover(sk, flag)) {
 			tcp_try_to_open(sk, flag);
