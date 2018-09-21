@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Written for linux by Johan Myreen as a translation from
  * the assembly version by Linus (with diacriticals added)
@@ -26,7 +27,8 @@
 
 #include <linux/consolemap.h>
 #include <linux/module.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/debug.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/mm.h>
@@ -242,14 +244,14 @@ static int kd_sound_helper(struct input_handle *handle, void *data)
 	return 0;
 }
 
-static void kd_nosound(unsigned long ignored)
+static void kd_nosound(struct timer_list *unused)
 {
 	static unsigned int zero;
 
 	input_handler_for_each_handle(&kbd_handler, &zero, kd_sound_helper);
 }
 
-static DEFINE_TIMER(kd_mksound_timer, kd_nosound, 0, 0);
+static DEFINE_TIMER(kd_mksound_timer, kd_nosound);
 
 void kd_mksound(unsigned int hz, unsigned int ticks)
 {
@@ -572,7 +574,7 @@ static void fn_scroll_back(struct vc_data *vc)
 
 static void fn_show_mem(struct vc_data *vc)
 {
-	show_mem(0);
+	show_mem(0, NULL);
 }
 
 static void fn_show_state(struct vc_data *vc)
@@ -1202,8 +1204,7 @@ DECLARE_TASKLET_DISABLED(keyboard_tasklet, kbd_bh, 0);
 #if defined(CONFIG_X86) || defined(CONFIG_IA64) || defined(CONFIG_ALPHA) ||\
     defined(CONFIG_MIPS) || defined(CONFIG_PPC) || defined(CONFIG_SPARC) ||\
     defined(CONFIG_PARISC) || defined(CONFIG_SUPERH) ||\
-    (defined(CONFIG_ARM) && defined(CONFIG_KEYBOARD_ATKBD) && !defined(CONFIG_ARCH_RPC)) ||\
-    defined(CONFIG_AVR32)
+    (defined(CONFIG_ARM) && defined(CONFIG_KEYBOARD_ATKBD) && !defined(CONFIG_ARCH_RPC))
 
 #define HW_RAW(dev) (test_bit(EV_MSC, dev->evbit) && test_bit(MSC_RAW, dev->mscbit) &&\
 			((dev)->id.bustype == BUS_I8042) && ((dev)->id.vendor == 0x0001) && ((dev)->id.product == 0x0001))
@@ -1623,7 +1624,7 @@ int vt_do_diacrit(unsigned int cmd, void __user *udp, int perm)
 		struct kbdiacr *dia;
 		int i;
 
-		dia = kmalloc(MAX_DIACR * sizeof(struct kbdiacr),
+		dia = kmalloc_array(MAX_DIACR, sizeof(struct kbdiacr),
 								GFP_KERNEL);
 		if (!dia)
 			return -ENOMEM;
@@ -1656,7 +1657,7 @@ int vt_do_diacrit(unsigned int cmd, void __user *udp, int perm)
 		struct kbdiacrsuc __user *a = udp;
 		void *buf;
 
-		buf = kmalloc(MAX_DIACR * sizeof(struct kbdiacruc),
+		buf = kmalloc_array(MAX_DIACR, sizeof(struct kbdiacruc),
 								GFP_KERNEL);
 		if (buf == NULL)
 			return -ENOMEM;

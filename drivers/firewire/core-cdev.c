@@ -1307,8 +1307,7 @@ static void iso_resource_work(struct work_struct *work)
 	 */
 	if (r->todo == ISO_RES_REALLOC && !success &&
 	    !client->in_shutdown &&
-	    idr_find(&client->resource_idr, r->resource.handle)) {
-		idr_remove(&client->resource_idr, r->resource.handle);
+	    idr_remove(&client->resource_idr, r->resource.handle)) {
 		client_put(client);
 		free = true;
 	}
@@ -1785,17 +1784,17 @@ static int fw_device_op_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static unsigned int fw_device_op_poll(struct file *file, poll_table * pt)
+static __poll_t fw_device_op_poll(struct file *file, poll_table * pt)
 {
 	struct client *client = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	poll_wait(file, &client->wait, pt);
 
 	if (fw_device_is_shutdown(client->device))
-		mask |= POLLHUP | POLLERR;
+		mask |= EPOLLHUP | EPOLLERR;
 	if (!list_empty(&client->event_list))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	return mask;
 }

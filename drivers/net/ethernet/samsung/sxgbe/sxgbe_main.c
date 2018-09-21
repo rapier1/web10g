@@ -57,9 +57,9 @@
 static int debug = -1;
 static int eee_timer = SXGBE_DEFAULT_LPI_TIMER;
 
-module_param(eee_timer, int, S_IRUGO | S_IWUSR);
+module_param(eee_timer, int, 0644);
 
-module_param(debug, int, S_IRUGO | S_IWUSR);
+module_param(debug, int, 0644);
 static const u32 default_msg_level = (NETIF_MSG_DRV | NETIF_MSG_PROBE |
 				      NETIF_MSG_LINK | NETIF_MSG_IFUP |
 				      NETIF_MSG_IFDOWN | NETIF_MSG_TIMER);
@@ -105,9 +105,9 @@ void sxgbe_disable_eee_mode(struct sxgbe_priv_data * const priv)
  *  If there is no data transfer and if we are not in LPI state,
  *  then MAC Transmitter can be moved to LPI state.
  */
-static void sxgbe_eee_ctrl_timer(unsigned long arg)
+static void sxgbe_eee_ctrl_timer(struct timer_list *t)
 {
-	struct sxgbe_priv_data *priv = (struct sxgbe_priv_data *)arg;
+	struct sxgbe_priv_data *priv = from_timer(priv, t, eee_ctrl_timer);
 
 	sxgbe_enable_eee_mode(priv);
 	mod_timer(&priv->eee_ctrl_timer, SXGBE_LPI_TIMER(eee_timer));
@@ -134,8 +134,7 @@ bool sxgbe_eee_init(struct sxgbe_priv_data * const priv)
 			return false;
 
 		priv->eee_active = 1;
-		setup_timer(&priv->eee_ctrl_timer, sxgbe_eee_ctrl_timer,
-			    (unsigned long)priv);
+		timer_setup(&priv->eee_ctrl_timer, sxgbe_eee_ctrl_timer, 0);
 		priv->eee_ctrl_timer.expires = SXGBE_LPI_TIMER(eee_timer);
 		add_timer(&priv->eee_ctrl_timer);
 
@@ -387,7 +386,7 @@ static void sxgbe_free_rx_buffers(struct net_device *dev,
 /**
  * init_tx_ring - init the TX descriptor ring
  * @dev: net device structure
- * @tx_ring: ring to be intialised
+ * @tx_ring: ring to be initialised
  * @tx_rsize: ring size
  * Description:  this function initializes the DMA TX descriptor
  */
@@ -437,7 +436,7 @@ dmamem_err:
 /**
  * free_rx_ring - free the RX descriptor ring
  * @dev: net device structure
- * @rx_ring: ring to be intialised
+ * @rx_ring: ring to be initialised
  * @rx_rsize: ring size
  * Description:  this function initializes the DMA RX descriptor
  */
@@ -453,7 +452,7 @@ static void free_rx_ring(struct device *dev, struct sxgbe_rx_queue *rx_ring,
 /**
  * init_rx_ring - init the RX descriptor ring
  * @dev: net device structure
- * @rx_ring: ring to be intialised
+ * @rx_ring: ring to be initialised
  * @rx_rsize: ring size
  * Description:  this function initializes the DMA RX descriptor
  */
@@ -539,7 +538,7 @@ err_free_dma_rx:
 /**
  * free_tx_ring - free the TX descriptor ring
  * @dev: net device structure
- * @tx_ring: ring to be intialised
+ * @tx_ring: ring to be initialised
  * @tx_rsize: ring size
  * Description:  this function initializes the DMA TX descriptor
  */
@@ -1002,13 +1001,13 @@ static void sxgbe_disable_mtl_engine(struct sxgbe_priv_data *priv)
 
 /**
  * sxgbe_tx_timer: mitigation sw timer for tx.
- * @data: data pointer
+ * @t: timer pointer
  * Description:
  * This is the timer handler to directly invoke the sxgbe_tx_clean.
  */
-static void sxgbe_tx_timer(unsigned long data)
+static void sxgbe_tx_timer(struct timer_list *t)
 {
-	struct sxgbe_tx_queue *p = (struct sxgbe_tx_queue *)data;
+	struct sxgbe_tx_queue *p = from_timer(p, t, txtimer);
 	sxgbe_tx_queue_clean(p);
 }
 
@@ -1028,8 +1027,7 @@ static void sxgbe_tx_init_coalesce(struct sxgbe_priv_data *priv)
 		struct sxgbe_tx_queue *p = priv->txq[queue_num];
 		p->tx_coal_frames =  SXGBE_TX_FRAMES;
 		p->tx_coal_timer = SXGBE_COAL_TX_TIMER;
-		setup_timer(&p->txtimer, sxgbe_tx_timer,
-			    (unsigned long)&priv->txq[queue_num]);
+		timer_setup(&p->txtimer, sxgbe_tx_timer, 0);
 		p->txtimer.expires = SXGBE_COAL_TIMER(p->tx_coal_timer);
 		add_timer(&p->txtimer);
 	}
@@ -1418,8 +1416,7 @@ static netdev_tx_t sxgbe_xmit(struct sk_buff *skb, struct net_device *dev)
 		priv->hw->desc->tx_enable_tstamp(first_desc);
 	}
 
-	if (!tqueue->hwts_tx_en)
-		skb_tx_timestamp(skb);
+	skb_tx_timestamp(skb);
 
 	priv->hw->dma->enable_dma_transmission(priv->ioaddr, txq_index);
 
@@ -1563,7 +1560,7 @@ static int sxgbe_poll(struct napi_struct *napi, int budget)
 
 	work_done = sxgbe_rx(priv, budget);
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		priv->hw->dma->enable_dma_irq(priv->ioaddr, qnum);
 	}
 
@@ -1706,11 +1703,9 @@ static inline u64 sxgbe_get_stat64(void __iomem *ioaddr, int reg_lo, int reg_hi)
  *  This function is a driver entry point whenever ifconfig command gets
  *  executed to see device statistics. Statistics are number of
  *  bytes sent or received, errors occurred etc.
- *  Return value:
- *  This function returns various statistical information of device.
  */
-static struct rtnl_link_stats64 *sxgbe_get_stats64(struct net_device *dev,
-						   struct rtnl_link_stats64 *stats)
+static void sxgbe_get_stats64(struct net_device *dev,
+			      struct rtnl_link_stats64 *stats)
 {
 	struct sxgbe_priv_data *priv = netdev_priv(dev);
 	void __iomem *ioaddr = priv->ioaddr;
@@ -1761,8 +1756,6 @@ static struct rtnl_link_stats64 *sxgbe_get_stats64(struct net_device *dev,
 						 SXGBE_MMC_TXUFLWHI_GBCNT_REG);
 	writel(0, ioaddr + SXGBE_MMC_CTL_REG);
 	spin_unlock(&priv->stats_lock);
-
-	return stats;
 }
 
 /*  sxgbe_set_features - entry point to set offload features of the device.

@@ -377,8 +377,8 @@ static int qspi_set_config_register(struct rspi_data *rspi, int access_size)
 	/* Sets SPCMD */
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
-	/* Enables SPI function in master mode */
-	rspi_write8(rspi, SPCR_SPE | SPCR_MSTR, RSPI_SPCR);
+	/* Sets RSPI mode */
+	rspi_write8(rspi, SPCR_MSTR, RSPI_SPCR);
 
 	return 0;
 }
@@ -535,7 +535,7 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 	/* First prepare and submit the DMA request(s), as this may fail */
 	if (rx) {
 		desc_rx = dmaengine_prep_slave_sg(rspi->master->dma_rx,
-					rx->sgl, rx->nents, DMA_FROM_DEVICE,
+					rx->sgl, rx->nents, DMA_DEV_TO_MEM,
 					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 		if (!desc_rx) {
 			ret = -EAGAIN;
@@ -555,7 +555,7 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 
 	if (tx) {
 		desc_tx = dmaengine_prep_slave_sg(rspi->master->dma_tx,
-					tx->sgl, tx->nents, DMA_TO_DEVICE,
+					tx->sgl, tx->nents, DMA_MEM_TO_DEV,
 					DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 		if (!desc_tx) {
 			ret = -EAGAIN;
@@ -808,7 +808,7 @@ static int qspi_transfer_out(struct rspi_data *rspi, struct spi_transfer *xfer)
 			for (i = 0; i < len; i++)
 				rspi_write_data(rspi, *tx++);
 		} else {
-			ret = rspi_pio_transfer(rspi, tx, NULL, n);
+			ret = rspi_pio_transfer(rspi, tx, NULL, len);
 			if (ret < 0)
 				return ret;
 		}
@@ -845,10 +845,9 @@ static int qspi_transfer_in(struct rspi_data *rspi, struct spi_transfer *xfer)
 			for (i = 0; i < len; i++)
 				*rx++ = rspi_read_data(rspi);
 		} else {
-			ret = rspi_pio_transfer(rspi, NULL, rx, n);
+			ret = rspi_pio_transfer(rspi, NULL, rx, len);
 			if (ret < 0)
 				return ret;
-			*rx++ = ret;
 		}
 		n -= len;
 	}
@@ -1222,19 +1221,15 @@ static int rspi_probe(struct platform_device *pdev)
 	struct spi_master *master;
 	struct rspi_data *rspi;
 	int ret;
-	const struct of_device_id *of_id;
 	const struct rspi_plat_data *rspi_pd;
 	const struct spi_ops *ops;
 
 	master = spi_alloc_master(&pdev->dev, sizeof(struct rspi_data));
-	if (master == NULL) {
-		dev_err(&pdev->dev, "spi_alloc_master error.\n");
+	if (master == NULL)
 		return -ENOMEM;
-	}
 
-	of_id = of_match_device(rspi_of_match, &pdev->dev);
-	if (of_id) {
-		ops = of_id->data;
+	ops = of_device_get_match_data(&pdev->dev);
+	if (ops) {
 		ret = rspi_parse_dt(&pdev->dev, master);
 		if (ret)
 			goto error1;

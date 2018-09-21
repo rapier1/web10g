@@ -1,12 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MMU fault handling support.
  *
  * Copyright (C) 1998-2002 Hewlett-Packard Co
  *	David Mosberger-Tang <davidm@hpl.hp.com>
  */
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/extable.h>
 #include <linux/interrupt.h>
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
@@ -15,6 +17,7 @@
 
 #include <asm/pgtable.h>
 #include <asm/processor.h>
+#include <asm/exception.h>
 
 extern int die(char *, struct pt_regs *, long);
 
@@ -82,7 +85,6 @@ ia64_do_page_fault (unsigned long address, unsigned long isr, struct pt_regs *re
 	int signal = SIGSEGV, code = SEGV_MAPERR;
 	struct vm_area_struct *vma, *prev_vma;
 	struct mm_struct *mm = current->mm;
-	struct siginfo si;
 	unsigned long mask;
 	int fault;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
@@ -246,6 +248,9 @@ retry:
 		return;
 	}
 	if (user_mode(regs)) {
+		struct siginfo si;
+
+		clear_siginfo(&si);
 		si.si_signo = signal;
 		si.si_errno = 0;
 		si.si_code = code;

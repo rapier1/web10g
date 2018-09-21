@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2016 Oracle.  All Rights Reserved.
- *
  * Author: Darrick J. Wong <darrick.wong@oracle.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -34,6 +20,8 @@
 #include "xfs_bmap.h"
 #include "xfs_icache.h"
 #include "xfs_trace.h"
+#include "xfs_bmap_btree.h"
+#include "xfs_trans_space.h"
 
 
 kmem_zone_t	*xfs_bui_zone;
@@ -50,6 +38,25 @@ xfs_bui_item_free(
 {
 	kmem_zone_free(xfs_bui_zone, buip);
 }
+
+/*
+ * Freeing the BUI requires that we remove it from the AIL if it has already
+ * been placed there. However, the BUI may not yet have been placed in the AIL
+ * when called by xfs_bui_release() from BUD processing due to the ordering of
+ * committed vs unpin operations in bulk insert operations. Hence the reference
+ * count to ensure only the last caller frees the BUI.
+ */
+void
+xfs_bui_release(
+	struct xfs_bui_log_item	*buip)
+{
+	ASSERT(atomic_read(&buip->bui_refcount) > 0);
+	if (atomic_dec_and_test(&buip->bui_refcount)) {
+		xfs_trans_ail_remove(&buip->bui_item, SHUTDOWN_LOG_IO_ERROR);
+		xfs_bui_item_free(buip);
+	}
+}
+
 
 STATIC void
 xfs_bui_item_size(
@@ -139,8 +146,8 @@ STATIC void
 xfs_bui_item_unlock(
 	struct xfs_log_item	*lip)
 {
-	if (lip->li_flags & XFS_LI_ABORTED)
-		xfs_bui_item_free(BUI_ITEM(lip));
+	if (test_bit(XFS_LI_ABORTED, &lip->li_flags))
+		xfs_bui_release(BUI_ITEM(lip));
 }
 
 /*
@@ -202,23 +209,6 @@ xfs_bui_init(
 	atomic_set(&buip->bui_refcount, 2);
 
 	return buip;
-}
-
-/*
- * Freeing the BUI requires that we remove it from the AIL if it has already
- * been placed there. However, the BUI may not yet have been placed in the AIL
- * when called by xfs_bui_release() from BUD processing due to the ordering of
- * committed vs unpin operations in bulk insert operations. Hence the reference
- * count to ensure only the last caller frees the BUI.
- */
-void
-xfs_bui_release(
-	struct xfs_bui_log_item	*buip)
-{
-	if (atomic_dec_and_test(&buip->bui_refcount)) {
-		xfs_trans_ail_remove(&buip->bui_item, SHUTDOWN_LOG_IO_ERROR);
-		xfs_bui_item_free(buip);
-	}
 }
 
 static inline struct xfs_bud_log_item *BUD_ITEM(struct xfs_log_item *lip)
@@ -301,7 +291,7 @@ xfs_bud_item_unlock(
 {
 	struct xfs_bud_log_item	*budp = BUD_ITEM(lip);
 
-	if (lip->li_flags & XFS_LI_ABORTED) {
+	if (test_bit(XFS_LI_ABORTED, &lip->li_flags)) {
 		xfs_bui_release(budp->bud_buip);
 		kmem_zone_free(xfs_bud_zone, budp);
 	}
@@ -386,13 +376,15 @@ xfs_bud_init(
 int
 xfs_bui_recover(
 	struct xfs_mount		*mp,
-	struct xfs_bui_log_item		*buip)
+	struct xfs_bui_log_item		*buip,
+	struct xfs_defer_ops		*dfops)
 {
 	int				error = 0;
 	unsigned int			bui_type;
 	struct xfs_map_extent		*bmap;
 	xfs_fsblock_t			startblock_fsb;
 	xfs_fsblock_t			inode_fsb;
+	xfs_filblks_t			count;
 	bool				op_ok;
 	struct xfs_bud_log_item		*budp;
 	enum xfs_bmap_intent_type	type;
@@ -400,8 +392,7 @@ xfs_bui_recover(
 	xfs_exntst_t			state;
 	struct xfs_trans		*tp;
 	struct xfs_inode		*ip = NULL;
-	struct xfs_defer_ops		dfops;
-	xfs_fsblock_t			firstfsb;
+	struct xfs_bmbt_irec		irec;
 
 	ASSERT(!test_bit(XFS_BUI_RECOVERED, &buip->bui_flags));
 
@@ -446,7 +437,8 @@ xfs_bui_recover(
 		return -EIO;
 	}
 
-	error = xfs_trans_alloc(mp, &M_RES(mp)->tr_itruncate, 0, 0, 0, &tp);
+	error = xfs_trans_alloc(mp, &M_RES(mp)->tr_itruncate,
+			XFS_EXTENTADD_SPACE_RES(mp, XFS_DATA_FORK), 0, 0, &tp);
 	if (error)
 		return error;
 	budp = xfs_trans_get_bud(tp, buip);
@@ -458,7 +450,6 @@ xfs_bui_recover(
 
 	if (VFS_I(ip)->i_nlink == 0)
 		xfs_iflags_set(ip, XFS_IRECOVERY);
-	xfs_defer_init(&dfops, &firstfsb);
 
 	/* Process deferred bmap item. */
 	state = (bmap->me_flags & XFS_BMAP_EXTENT_UNWRITTEN) ?
@@ -473,21 +464,27 @@ xfs_bui_recover(
 		break;
 	default:
 		error = -EFSCORRUPTED;
-		goto err_dfops;
+		goto err_inode;
 	}
 	xfs_trans_ijoin(tp, ip, 0);
 
-	error = xfs_trans_log_finish_bmap_update(tp, budp, &dfops, type,
+	count = bmap->me_len;
+	error = xfs_trans_log_finish_bmap_update(tp, budp, dfops, type,
 			ip, whichfork, bmap->me_startoff,
-			bmap->me_startblock, bmap->me_len,
-			state);
+			bmap->me_startblock, &count, state);
 	if (error)
-		goto err_dfops;
+		goto err_inode;
 
-	/* Finish transaction, free inodes. */
-	error = xfs_defer_finish(&tp, &dfops, NULL);
-	if (error)
-		goto err_dfops;
+	if (count > 0) {
+		ASSERT(type == XFS_BMAP_UNMAP);
+		irec.br_startblock = bmap->me_startblock;
+		irec.br_blockcount = count;
+		irec.br_startoff = bmap->me_startoff;
+		irec.br_state = state;
+		error = xfs_bmap_unmap_extent(tp->t_mountp, dfops, ip, &irec);
+		if (error)
+			goto err_inode;
+	}
 
 	set_bit(XFS_BUI_RECOVERED, &buip->bui_flags);
 	error = xfs_trans_commit(tp);
@@ -496,8 +493,6 @@ xfs_bui_recover(
 
 	return error;
 
-err_dfops:
-	xfs_defer_cancel(&dfops);
 err_inode:
 	xfs_trans_cancel(tp);
 	if (ip) {

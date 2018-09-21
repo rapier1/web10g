@@ -10,9 +10,11 @@
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/kdev_t.h>
-#include <linux/fs_struct.h>
 #include <linux/proc_fs.h>
 #include <linux/file.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/debug.h>
+
 #include <asm/arcregs.h>
 #include <asm/irqflags.h>
 
@@ -137,7 +139,7 @@ static void show_ecr_verbose(struct pt_regs *regs)
 	} else if (vec == ECR_V_ITLB_MISS) {
 		pr_cont("Insn could not be fetched\n");
 	} else if (vec == ECR_V_MACH_CHK) {
-		pr_cont("%s\n", (cause_code == 0x0) ?
+		pr_cont("Machine Check (%s)\n", (cause_code == 0x0) ?
 					"Double Fault" : "Other Fatal Err");
 
 	} else if (vec == ECR_V_PROTV) {
@@ -160,6 +162,9 @@ static void show_ecr_verbose(struct pt_regs *regs)
 		else
 			pr_cont("Bus Error, check PRM\n");
 #endif
+	} else if (vec == ECR_V_TRAP) {
+		if (regs->ecr_param == 5)
+			pr_cont("gcc generated __builtin_trap\n");
 	} else {
 		pr_cont("Check Programmer's Manual\n");
 	}
@@ -175,7 +180,7 @@ void show_regs(struct pt_regs *regs)
 	struct callee_regs *cregs;
 	char *buf;
 
-	buf = (char *)__get_free_page(GFP_TEMPORARY);
+	buf = (char *)__get_free_page(GFP_KERNEL);
 	if (!buf)
 		return;
 
@@ -229,6 +234,9 @@ void show_kernel_fault_diag(const char *str, struct pt_regs *regs,
 			    unsigned long address)
 {
 	current->thread.fault_address = address;
+
+	/* Show fault description */
+	pr_info("\n%s\n", str);
 
 	/* Caller and Callee regs */
 	show_regs(regs);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * cfg80211 - wext compat code
  *
@@ -62,7 +63,7 @@ int cfg80211_wext_siwmode(struct net_device *dev, struct iw_request_info *info,
 
 	memset(&vifparams, 0, sizeof(vifparams));
 
-	return cfg80211_change_iface(rdev, dev, type, NULL, &vifparams);
+	return cfg80211_change_iface(rdev, dev, type, &vifparams);
 }
 EXPORT_WEXT_HANDLER(cfg80211_wext_siwmode);
 
@@ -1253,8 +1254,7 @@ static int cfg80211_wext_giwrate(struct net_device *dev,
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
-	/* we are under RTNL - globally locked - so can use a static struct */
-	static struct station_info sinfo;
+	struct station_info sinfo = {};
 	u8 addr[ETH_ALEN];
 	int err;
 

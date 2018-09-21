@@ -77,6 +77,7 @@ static int rds_release(struct socket *sock)
 	rds_send_drop_to(rs, NULL);
 	rds_rdma_drop_keys(rs);
 	rds_notify_queue_get(rs, NULL);
+	rds_notify_msg_zcopy_purge(&rs->rs_zcookie_queue);
 
 	spin_lock_bh(&rds_sock_lock);
 	list_del_init(&rs->rs_item);
@@ -110,7 +111,7 @@ void rds_wake_sk_sleep(struct rds_sock *rs)
 }
 
 static int rds_getname(struct socket *sock, struct sockaddr *uaddr,
-		       int *uaddr_len, int peer)
+		       int peer)
 {
 	struct sockaddr_in *sin = (struct sockaddr_in *)uaddr;
 	struct rds_sock *rs = rds_sk_to_rs(sock->sk);
@@ -131,33 +132,32 @@ static int rds_getname(struct socket *sock, struct sockaddr *uaddr,
 
 	sin->sin_family = AF_INET;
 
-	*uaddr_len = sizeof(*sin);
-	return 0;
+	return sizeof(*sin);
 }
 
 /*
  * RDS' poll is without a doubt the least intuitive part of the interface,
- * as POLLIN and POLLOUT do not behave entirely as you would expect from
+ * as EPOLLIN and EPOLLOUT do not behave entirely as you would expect from
  * a network protocol.
  *
- * POLLIN is asserted if
+ * EPOLLIN is asserted if
  *  -	there is data on the receive queue.
  *  -	to signal that a previously congested destination may have become
  *	uncongested
  *  -	A notification has been queued to the socket (this can be a congestion
- *	update, or a RDMA completion).
+ *	update, or a RDMA completion, or a MSG_ZEROCOPY completion).
  *
- * POLLOUT is asserted if there is room on the send queue. This does not mean
+ * EPOLLOUT is asserted if there is room on the send queue. This does not mean
  * however, that the next sendmsg() call will succeed. If the application tries
  * to send to a congested destination, the system call may still fail (and
  * return ENOBUFS).
  */
-static unsigned int rds_poll(struct file *file, struct socket *sock,
+static __poll_t rds_poll(struct file *file, struct socket *sock,
 			     poll_table *wait)
 {
 	struct sock *sk = sock->sk;
 	struct rds_sock *rs = rds_sk_to_rs(sk);
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 	unsigned long flags;
 
 	poll_wait(file, sk_sleep(sk), wait);
@@ -167,22 +167,25 @@ static unsigned int rds_poll(struct file *file, struct socket *sock,
 
 	read_lock_irqsave(&rs->rs_recv_lock, flags);
 	if (!rs->rs_cong_monitor) {
-		/* When a congestion map was updated, we signal POLLIN for
+		/* When a congestion map was updated, we signal EPOLLIN for
 		 * "historical" reasons. Applications can also poll for
 		 * WRBAND instead. */
 		if (rds_cong_updated_since(&rs->rs_cong_track))
-			mask |= (POLLIN | POLLRDNORM | POLLWRBAND);
+			mask |= (EPOLLIN | EPOLLRDNORM | EPOLLWRBAND);
 	} else {
 		spin_lock(&rs->rs_lock);
 		if (rs->rs_cong_notify)
-			mask |= (POLLIN | POLLRDNORM);
+			mask |= (EPOLLIN | EPOLLRDNORM);
 		spin_unlock(&rs->rs_lock);
 	}
 	if (!list_empty(&rs->rs_recv_queue) ||
-	    !list_empty(&rs->rs_notify_queue))
-		mask |= (POLLIN | POLLRDNORM);
+	    !list_empty(&rs->rs_notify_queue) ||
+	    !list_empty(&rs->rs_zcookie_queue.zcookie_head))
+		mask |= (EPOLLIN | EPOLLRDNORM);
 	if (rs->rs_snd_bytes < rds_sk_sndbuf(rs))
-		mask |= (POLLOUT | POLLWRNORM);
+		mask |= (EPOLLOUT | EPOLLWRNORM);
+	if (sk->sk_err || !skb_queue_empty(&sk->sk_error_queue))
+		mask |= POLLERR;
 	read_unlock_irqrestore(&rs->rs_recv_lock, flags);
 
 	/* clear state any time we wake a seen-congested socket */
@@ -298,6 +301,33 @@ static int rds_enable_recvtstamp(struct sock *sk, char __user *optval,
 	return 0;
 }
 
+static int rds_recv_track_latency(struct rds_sock *rs, char __user *optval,
+				  int optlen)
+{
+	struct rds_rx_trace_so trace;
+	int i;
+
+	if (optlen != sizeof(struct rds_rx_trace_so))
+		return -EFAULT;
+
+	if (copy_from_user(&trace, optval, sizeof(trace)))
+		return -EFAULT;
+
+	if (trace.rx_traces > RDS_MSG_RX_DGRAM_TRACE_MAX)
+		return -EFAULT;
+
+	rs->rs_rx_traces = trace.rx_traces;
+	for (i = 0; i < rs->rs_rx_traces; i++) {
+		if (trace.rx_trace_pos[i] > RDS_MSG_RX_DGRAM_TRACE_MAX) {
+			rs->rs_rx_traces = 0;
+			return -EFAULT;
+		}
+		rs->rs_rx_trace[i] = trace.rx_trace_pos[i];
+	}
+
+	return 0;
+}
+
 static int rds_setsockopt(struct socket *sock, int level, int optname,
 			  char __user *optval, unsigned int optlen)
 {
@@ -337,6 +367,9 @@ static int rds_setsockopt(struct socket *sock, int level, int optname,
 		lock_sock(sock->sk);
 		ret = rds_enable_recvtstamp(sock->sk, optval, optlen);
 		release_sock(sock->sk);
+		break;
+	case SO_RDS_MSG_RXPATH_LATENCY:
+		ret = rds_recv_track_latency(rs, optval, optlen);
 		break;
 	default:
 		ret = -ENOPROTOOPT;
@@ -482,8 +515,10 @@ static int __rds_create(struct socket *sock, struct sock *sk, int protocol)
 	INIT_LIST_HEAD(&rs->rs_recv_queue);
 	INIT_LIST_HEAD(&rs->rs_notify_queue);
 	INIT_LIST_HEAD(&rs->rs_cong_list);
+	rds_message_zcopy_queue_init(&rs->rs_zcookie_queue);
 	spin_lock_init(&rs->rs_rdma_lock);
 	rs->rs_rdma_keys = RB_ROOT;
+	rs->rs_rx_traces = 0;
 
 	spin_lock_bh(&rds_sock_lock);
 	list_add_tail(&rs->rs_item, &rds_sock_list);

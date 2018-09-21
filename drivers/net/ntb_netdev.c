@@ -230,10 +230,10 @@ err:
 	return NETDEV_TX_BUSY;
 }
 
-static void ntb_netdev_tx_timer(unsigned long data)
+static void ntb_netdev_tx_timer(struct timer_list *t)
 {
-	struct net_device *ndev = (struct net_device *)data;
-	struct ntb_netdev *dev = netdev_priv(ndev);
+	struct ntb_netdev *dev = from_timer(dev, t, tx_timer);
+	struct net_device *ndev = dev->ndev;
 
 	if (ntb_transport_tx_free_entry(dev->qp) < tx_stop) {
 		mod_timer(&dev->tx_timer, jiffies + msecs_to_jiffies(tx_time));
@@ -269,7 +269,7 @@ static int ntb_netdev_open(struct net_device *ndev)
 		}
 	}
 
-	setup_timer(&dev->tx_timer, ntb_netdev_tx_timer, (unsigned long)ndev);
+	timer_setup(&dev->tx_timer, ntb_netdev_tx_timer, 0);
 
 	netif_carrier_off(ndev);
 	ntb_transport_link_up(dev->qp);
@@ -372,18 +372,19 @@ static void ntb_get_drvinfo(struct net_device *ndev,
 	strlcpy(info->bus_info, pci_name(dev->pdev), sizeof(info->bus_info));
 }
 
-static int ntb_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
+static int ntb_get_link_ksettings(struct net_device *dev,
+				  struct ethtool_link_ksettings *cmd)
 {
-	cmd->supported = SUPPORTED_Backplane;
-	cmd->advertising = ADVERTISED_Backplane;
-	ethtool_cmd_speed_set(cmd, SPEED_UNKNOWN);
-	cmd->duplex = DUPLEX_FULL;
-	cmd->port = PORT_OTHER;
-	cmd->phy_address = 0;
-	cmd->transceiver = XCVR_DUMMY1;
-	cmd->autoneg = AUTONEG_ENABLE;
-	cmd->maxtxpkt = 0;
-	cmd->maxrxpkt = 0;
+	ethtool_link_ksettings_zero_link_mode(cmd, supported);
+	ethtool_link_ksettings_add_link_mode(cmd, supported, Backplane);
+	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
+	ethtool_link_ksettings_add_link_mode(cmd, advertising, Backplane);
+
+	cmd->base.speed = SPEED_UNKNOWN;
+	cmd->base.duplex = DUPLEX_FULL;
+	cmd->base.port = PORT_OTHER;
+	cmd->base.phy_address = 0;
+	cmd->base.autoneg = AUTONEG_ENABLE;
 
 	return 0;
 }
@@ -391,7 +392,7 @@ static int ntb_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 static const struct ethtool_ops ntb_ethtool_ops = {
 	.get_drvinfo = ntb_get_drvinfo,
 	.get_link = ethtool_op_get_link,
-	.get_settings = ntb_get_settings,
+	.get_link_ksettings = ntb_get_link_ksettings,
 };
 
 static const struct ntb_queue_handlers ntb_netdev_handlers = {
@@ -416,6 +417,8 @@ static int ntb_netdev_probe(struct device *client_dev)
 	ndev = alloc_etherdev(sizeof(*dev));
 	if (!ndev)
 		return -ENOMEM;
+
+	SET_NETDEV_DEV(ndev, client_dev);
 
 	dev = netdev_priv(ndev);
 	dev->ndev = ndev;

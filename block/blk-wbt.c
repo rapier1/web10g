@@ -29,6 +29,26 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/wbt.h>
 
+static inline void wbt_clear_state(struct request *rq)
+{
+	rq->wbt_flags = 0;
+}
+
+static inline enum wbt_flags wbt_flags(struct request *rq)
+{
+	return rq->wbt_flags;
+}
+
+static inline bool wbt_is_tracked(struct request *rq)
+{
+	return rq->wbt_flags & WBT_TRACKED;
+}
+
+static inline bool wbt_is_read(struct request *rq)
+{
+	return rq->wbt_flags & WBT_READ;
+}
+
 enum {
 	/*
 	 * Default setting, we'll scale up (to 75% of QD max) or down (min 1)
@@ -96,14 +116,20 @@ static void wb_timestamp(struct rq_wb *rwb, unsigned long *var)
  */
 static bool wb_recent_wait(struct rq_wb *rwb)
 {
-	struct bdi_writeback *wb = &rwb->queue->backing_dev_info.wb;
+	struct bdi_writeback *wb = &rwb->queue->backing_dev_info->wb;
 
 	return time_before(jiffies, wb->dirty_sleep + HZ);
 }
 
-static inline struct rq_wait *get_rq_wait(struct rq_wb *rwb, bool is_kswapd)
+static inline struct rq_wait *get_rq_wait(struct rq_wb *rwb,
+					  enum wbt_flags wb_acct)
 {
-	return &rwb->rq_wait[is_kswapd];
+	if (wb_acct & WBT_KSWAPD)
+		return &rwb->rq_wait[WBT_RWQ_KSWAPD];
+	else if (wb_acct & WBT_DISCARD)
+		return &rwb->rq_wait[WBT_RWQ_DISCARD];
+
+	return &rwb->rq_wait[WBT_RWQ_BG];
 }
 
 static void rwb_wake_all(struct rq_wb *rwb)
@@ -126,7 +152,7 @@ void __wbt_done(struct rq_wb *rwb, enum wbt_flags wb_acct)
 	if (!(wb_acct & WBT_TRACKED))
 		return;
 
-	rqw = get_rq_wait(rwb, wb_acct & WBT_KSWAPD);
+	rqw = get_rq_wait(rwb, wb_acct);
 	inflight = atomic_dec_return(&rqw->inflight);
 
 	/*
@@ -139,10 +165,13 @@ void __wbt_done(struct rq_wb *rwb, enum wbt_flags wb_acct)
 	}
 
 	/*
-	 * If the device does write back caching, drop further down
-	 * before we wake people up.
+	 * For discards, our limit is always the background. For writes, if
+	 * the device does write back caching, drop further down before we
+	 * wake people up.
 	 */
-	if (rwb->wc && !wb_recent_wait(rwb))
+	if (wb_acct & WBT_DISCARD)
+		limit = rwb->wb_background;
+	else if (rwb->wc && !wb_recent_wait(rwb))
 		limit = 0;
 	else
 		limit = rwb->wb_normal;
@@ -165,25 +194,24 @@ void __wbt_done(struct rq_wb *rwb, enum wbt_flags wb_acct)
  * Called on completion of a request. Note that it's also called when
  * a request is merged, when the request gets freed.
  */
-void wbt_done(struct rq_wb *rwb, struct blk_issue_stat *stat)
+void wbt_done(struct rq_wb *rwb, struct request *rq)
 {
 	if (!rwb)
 		return;
 
-	if (!wbt_is_tracked(stat)) {
-		if (rwb->sync_cookie == stat) {
+	if (!wbt_is_tracked(rq)) {
+		if (rwb->sync_cookie == rq) {
 			rwb->sync_issue = 0;
 			rwb->sync_cookie = NULL;
 		}
 
-		if (wbt_is_read(stat))
+		if (wbt_is_read(rq))
 			wb_timestamp(rwb, &rwb->last_comp);
-		wbt_clear_state(stat);
 	} else {
-		WARN_ON_ONCE(stat == rwb->sync_cookie);
-		__wbt_done(rwb, wbt_stat_to_mask(stat));
-		wbt_clear_state(stat);
+		WARN_ON_ONCE(rq == rwb->sync_cookie);
+		__wbt_done(rwb, wbt_flags(rq));
 	}
+	wbt_clear_state(rq);
 }
 
 /*
@@ -255,13 +283,13 @@ static inline bool stat_sample_valid(struct blk_rq_stat *stat)
 	 * that it's writes impacting us, and not just some sole read on
 	 * a device that is in a lower power state.
 	 */
-	return stat[BLK_STAT_READ].nr_samples >= 1 &&
-		stat[BLK_STAT_WRITE].nr_samples >= RWB_MIN_WRITE_SAMPLES;
+	return (stat[READ].nr_samples >= 1 &&
+		stat[WRITE].nr_samples >= RWB_MIN_WRITE_SAMPLES);
 }
 
 static u64 rwb_sync_issue_lat(struct rq_wb *rwb)
 {
-	u64 now, issue = ACCESS_ONCE(rwb->sync_issue);
+	u64 now, issue = READ_ONCE(rwb->sync_issue);
 
 	if (!issue || !rwb->sync_cookie)
 		return 0;
@@ -277,9 +305,9 @@ enum {
 	LAT_EXCEEDED,
 };
 
-static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
+static int latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 {
-	struct backing_dev_info *bdi = &rwb->queue->backing_dev_info;
+	struct backing_dev_info *bdi = rwb->queue->backing_dev_info;
 	u64 thislat;
 
 	/*
@@ -293,7 +321,7 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 	 */
 	thislat = rwb_sync_issue_lat(rwb);
 	if (thislat > rwb->cur_win_nsec ||
-	    (thislat > rwb->min_lat_nsec && !stat[BLK_STAT_READ].nr_samples)) {
+	    (thislat > rwb->min_lat_nsec && !stat[READ].nr_samples)) {
 		trace_wbt_lat(bdi, thislat);
 		return LAT_EXCEEDED;
 	}
@@ -308,8 +336,8 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 		 * waited or still has writes in flights, consider us doing
 		 * just writes as well.
 		 */
-		if ((stat[BLK_STAT_WRITE].nr_samples && blk_stat_is_current(stat)) ||
-		    wb_recent_wait(rwb) || wbt_inflight(rwb))
+		if (stat[WRITE].nr_samples || wb_recent_wait(rwb) ||
+		    wbt_inflight(rwb))
 			return LAT_UNKNOWN_WRITES;
 		return LAT_UNKNOWN;
 	}
@@ -317,8 +345,8 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 	/*
 	 * If the 'min' latency exceeds our target, step down.
 	 */
-	if (stat[BLK_STAT_READ].min > rwb->min_lat_nsec) {
-		trace_wbt_lat(bdi, stat[BLK_STAT_READ].min);
+	if (stat[READ].min > rwb->min_lat_nsec) {
+		trace_wbt_lat(bdi, stat[READ].min);
 		trace_wbt_stat(bdi, stat);
 		return LAT_EXCEEDED;
 	}
@@ -329,17 +357,9 @@ static int __latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 	return LAT_OK;
 }
 
-static int latency_exceeded(struct rq_wb *rwb)
-{
-	struct blk_rq_stat stat[2];
-
-	blk_queue_stat_get(rwb->queue, stat);
-	return __latency_exceeded(rwb, stat);
-}
-
 static void rwb_trace_step(struct rq_wb *rwb, const char *msg)
 {
-	struct backing_dev_info *bdi = &rwb->queue->backing_dev_info;
+	struct backing_dev_info *bdi = rwb->queue->backing_dev_info;
 
 	trace_wbt_step(bdi, msg, rwb->scale_step, rwb->cur_win_nsec,
 			rwb->wb_background, rwb->wb_normal, rwb->wb_max);
@@ -355,7 +375,6 @@ static void scale_up(struct rq_wb *rwb)
 
 	rwb->scale_step--;
 	rwb->unknown_cnt = 0;
-	blk_stat_clear(rwb->queue);
 
 	rwb->scaled_max = calc_wb_limits(rwb);
 
@@ -385,15 +404,12 @@ static void scale_down(struct rq_wb *rwb, bool hard_throttle)
 
 	rwb->scaled_max = false;
 	rwb->unknown_cnt = 0;
-	blk_stat_clear(rwb->queue);
 	calc_wb_limits(rwb);
 	rwb_trace_step(rwb, "step down");
 }
 
 static void rwb_arm_timer(struct rq_wb *rwb)
 {
-	unsigned long expires;
-
 	if (rwb->scale_step > 0) {
 		/*
 		 * We should speed this up, using some variant of a fast
@@ -411,19 +427,18 @@ static void rwb_arm_timer(struct rq_wb *rwb)
 		rwb->cur_win_nsec = rwb->win_nsec;
 	}
 
-	expires = jiffies + nsecs_to_jiffies(rwb->cur_win_nsec);
-	mod_timer(&rwb->window_timer, expires);
+	blk_stat_activate_nsecs(rwb->cb, rwb->cur_win_nsec);
 }
 
-static void wb_timer_fn(unsigned long data)
+static void wb_timer_fn(struct blk_stat_callback *cb)
 {
-	struct rq_wb *rwb = (struct rq_wb *) data;
+	struct rq_wb *rwb = cb->data;
 	unsigned int inflight = wbt_inflight(rwb);
 	int status;
 
-	status = latency_exceeded(rwb);
+	status = latency_exceeded(rwb, cb->stat);
 
-	trace_wbt_timer(&rwb->queue->backing_dev_info, status, rwb->scale_step,
+	trace_wbt_timer(rwb->queue->backing_dev_info, status, rwb->scale_step,
 			inflight);
 
 	/*
@@ -493,9 +508,12 @@ static inline unsigned int get_limit(struct rq_wb *rwb, unsigned long rw)
 {
 	unsigned int limit;
 
+	if ((rw & REQ_OP_MASK) == REQ_OP_DISCARD)
+		return rwb->wb_background;
+
 	/*
 	 * At this point we know it's a buffered write. If this is
-	 * kswapd trying to free memory, or REQ_SYNC is set, set, then
+	 * kswapd trying to free memory, or REQ_SYNC is set, then
 	 * it's WB_SYNC_ALL writeback, and we'll use the max limit for
 	 * that. If the write is marked as a background write, then use
 	 * the idle limit, or go to normal if we haven't had competing
@@ -516,7 +534,7 @@ static inline unsigned int get_limit(struct rq_wb *rwb, unsigned long rw)
 }
 
 static inline bool may_queue(struct rq_wb *rwb, struct rq_wait *rqw,
-			     wait_queue_t *wait, unsigned long rw)
+			     wait_queue_entry_t *wait, unsigned long rw)
 {
 	/*
 	 * inc it here even if disabled, since we'll dec it at completion.
@@ -533,7 +551,7 @@ static inline bool may_queue(struct rq_wb *rwb, struct rq_wait *rqw,
 	 * in line to be woken up, wait for our turn.
 	 */
 	if (waitqueue_active(&rqw->wait) &&
-	    rqw->wait.task_list.next != &wait->task_list)
+	    rqw->wait.head.next != &wait->entry)
 		return false;
 
 	return atomic_inc_below(&rqw->inflight, get_limit(rwb, rw));
@@ -543,11 +561,12 @@ static inline bool may_queue(struct rq_wb *rwb, struct rq_wait *rqw,
  * Block if we will exceed our limit, or if we are currently waiting for
  * the timer to kick off queuing again.
  */
-static void __wbt_wait(struct rq_wb *rwb, unsigned long rw, spinlock_t *lock)
+static void __wbt_wait(struct rq_wb *rwb, enum wbt_flags wb_acct,
+		       unsigned long rw, spinlock_t *lock)
 	__releases(lock)
 	__acquires(lock)
 {
-	struct rq_wait *rqw = get_rq_wait(rwb, current_is_kswapd());
+	struct rq_wait *rqw = get_rq_wait(rwb, wb_acct);
 	DEFINE_WAIT(wait);
 
 	if (may_queue(rwb, rqw, &wait, rw))
@@ -573,21 +592,20 @@ static void __wbt_wait(struct rq_wb *rwb, unsigned long rw, spinlock_t *lock)
 
 static inline bool wbt_should_throttle(struct rq_wb *rwb, struct bio *bio)
 {
-	const int op = bio_op(bio);
-
-	/*
-	 * If not a WRITE, do nothing
-	 */
-	if (op != REQ_OP_WRITE)
+	switch (bio_op(bio)) {
+	case REQ_OP_WRITE:
+		/*
+		 * Don't throttle WRITE_ODIRECT
+		 */
+		if ((bio->bi_opf & (REQ_SYNC | REQ_IDLE)) ==
+		    (REQ_SYNC | REQ_IDLE))
+			return false;
+		/* fallthrough */
+	case REQ_OP_DISCARD:
+		return true;
+	default:
 		return false;
-
-	/*
-	 * Don't throttle WRITE_ODIRECT
-	 */
-	if ((bio->bi_opf & (REQ_SYNC | REQ_IDLE)) == (REQ_SYNC | REQ_IDLE))
-		return false;
-
-	return true;
+	}
 }
 
 /*
@@ -598,7 +616,7 @@ static inline bool wbt_should_throttle(struct rq_wb *rwb, struct bio *bio)
  */
 enum wbt_flags wbt_wait(struct rq_wb *rwb, struct bio *bio, spinlock_t *lock)
 {
-	unsigned int ret = 0;
+	enum wbt_flags ret = 0;
 
 	if (!rwb_enabled(rwb))
 		return 0;
@@ -612,41 +630,42 @@ enum wbt_flags wbt_wait(struct rq_wb *rwb, struct bio *bio, spinlock_t *lock)
 		return ret;
 	}
 
-	__wbt_wait(rwb, bio->bi_opf, lock);
-
-	if (!timer_pending(&rwb->window_timer))
-		rwb_arm_timer(rwb);
-
 	if (current_is_kswapd())
 		ret |= WBT_KSWAPD;
+	if (bio_op(bio) == REQ_OP_DISCARD)
+		ret |= WBT_DISCARD;
+
+	__wbt_wait(rwb, ret, bio->bi_opf, lock);
+
+	if (!blk_stat_is_active(rwb->cb))
+		rwb_arm_timer(rwb);
 
 	return ret | WBT_TRACKED;
 }
 
-void wbt_issue(struct rq_wb *rwb, struct blk_issue_stat *stat)
+void wbt_issue(struct rq_wb *rwb, struct request *rq)
 {
 	if (!rwb_enabled(rwb))
 		return;
 
 	/*
-	 * Track sync issue, in case it takes a long time to complete. Allows
-	 * us to react quicker, if a sync IO takes a long time to complete.
-	 * Note that this is just a hint. 'stat' can go away when the
-	 * request completes, so it's important we never dereference it. We
-	 * only use the address to compare with, which is why we store the
-	 * sync_issue time locally.
+	 * Track sync issue, in case it takes a long time to complete. Allows us
+	 * to react quicker, if a sync IO takes a long time to complete. Note
+	 * that this is just a hint. The request can go away when it completes,
+	 * so it's important we never dereference it. We only use the address to
+	 * compare with, which is why we store the sync_issue time locally.
 	 */
-	if (wbt_is_read(stat) && !rwb->sync_issue) {
-		rwb->sync_cookie = stat;
-		rwb->sync_issue = blk_stat_time(stat);
+	if (wbt_is_read(rq) && !rwb->sync_issue) {
+		rwb->sync_cookie = rq;
+		rwb->sync_issue = rq->io_start_time_ns;
 	}
 }
 
-void wbt_requeue(struct rq_wb *rwb, struct blk_issue_stat *stat)
+void wbt_requeue(struct rq_wb *rwb, struct request *rq)
 {
 	if (!rwb_enabled(rwb))
 		return;
-	if (stat == rwb->sync_cookie) {
+	if (rq == rwb->sync_cookie) {
 		rwb->sync_issue = 0;
 		rwb->sync_cookie = NULL;
 	}
@@ -666,21 +685,36 @@ void wbt_set_write_cache(struct rq_wb *rwb, bool write_cache_on)
 		rwb->wc = write_cache_on;
 }
 
- /*
- * Disable wbt, if enabled by default. Only called from CFQ, if we have
- * cgroups enabled
+/*
+ * Disable wbt, if enabled by default.
  */
 void wbt_disable_default(struct request_queue *q)
 {
 	struct rq_wb *rwb = q->rq_wb;
 
-	if (rwb && rwb->enable_state == WBT_STATE_ON_DEFAULT) {
-		del_timer_sync(&rwb->window_timer);
-		rwb->win_nsec = rwb->min_lat_nsec = 0;
-		wbt_update_limits(rwb);
-	}
+	if (rwb && rwb->enable_state == WBT_STATE_ON_DEFAULT)
+		wbt_exit(q);
 }
 EXPORT_SYMBOL_GPL(wbt_disable_default);
+
+/*
+ * Enable wbt if defaults are configured that way
+ */
+void wbt_enable_default(struct request_queue *q)
+{
+	/* Throttling already enabled? */
+	if (q->rq_wb)
+		return;
+
+	/* Queue not registered? Maybe shutting down... */
+	if (!test_bit(QUEUE_FLAG_REGISTERED, &q->queue_flags))
+		return;
+
+	if ((q->mq_ops && IS_ENABLED(CONFIG_BLK_WBT_MQ)) ||
+	    (q->request_fn && IS_ENABLED(CONFIG_BLK_WBT_SQ)))
+		wbt_init(q);
+}
+EXPORT_SYMBOL_GPL(wbt_enable_default);
 
 u64 wbt_default_latency_nsec(struct request_queue *q)
 {
@@ -694,31 +728,39 @@ u64 wbt_default_latency_nsec(struct request_queue *q)
 		return 75000000ULL;
 }
 
+static int wbt_data_dir(const struct request *rq)
+{
+	const int op = req_op(rq);
+
+	if (op == REQ_OP_READ)
+		return READ;
+	else if (op_is_write(op))
+		return WRITE;
+
+	/* don't account */
+	return -1;
+}
+
 int wbt_init(struct request_queue *q)
 {
 	struct rq_wb *rwb;
 	int i;
 
-	/*
-	 * For now, we depend on the stats window being larger than
-	 * our monitoring window. Ensure that this isn't inadvertently
-	 * violated.
-	 */
-	BUILD_BUG_ON(RWB_WINDOW_NSEC > BLK_STAT_NSEC);
-	BUILD_BUG_ON(WBT_NR_BITS > BLK_STAT_RES_BITS);
-
 	rwb = kzalloc(sizeof(*rwb), GFP_KERNEL);
 	if (!rwb)
 		return -ENOMEM;
+
+	rwb->cb = blk_stat_alloc_callback(wb_timer_fn, wbt_data_dir, 2, rwb);
+	if (!rwb->cb) {
+		kfree(rwb);
+		return -ENOMEM;
+	}
 
 	for (i = 0; i < WBT_NUM_RWQ; i++) {
 		atomic_set(&rwb->rq_wait[i].inflight, 0);
 		init_waitqueue_head(&rwb->rq_wait[i].wait);
 	}
 
-	setup_timer(&rwb->window_timer, wb_timer_fn, (unsigned long) rwb);
-	rwb->wc = 1;
-	rwb->queue_depth = RWB_DEF_DEPTH;
 	rwb->last_comp = rwb->last_issue = jiffies;
 	rwb->queue = q;
 	rwb->win_nsec = RWB_WINDOW_NSEC;
@@ -726,10 +768,10 @@ int wbt_init(struct request_queue *q)
 	wbt_update_limits(rwb);
 
 	/*
-	 * Assign rwb, and turn on stats tracking for this queue
+	 * Assign rwb and add the stats callback.
 	 */
 	q->rq_wb = rwb;
-	blk_stat_enable(q);
+	blk_stat_add_callback(q, rwb->cb);
 
 	rwb->min_lat_nsec = wbt_default_latency_nsec(q);
 
@@ -744,7 +786,8 @@ void wbt_exit(struct request_queue *q)
 	struct rq_wb *rwb = q->rq_wb;
 
 	if (rwb) {
-		del_timer_sync(&rwb->window_timer);
+		blk_stat_remove_callback(q, rwb->cb);
+		blk_stat_free_callback(rwb->cb);
 		q->rq_wb = NULL;
 		kfree(rwb);
 	}

@@ -14,6 +14,8 @@
 #include <soc/arc/aux.h>
 
 #define ARC_REG_MCIP_BCR	0x0d0
+#define ARC_REG_MCIP_IDU_BCR	0x0D5
+#define ARC_REG_GFRC_BUILD	0x0D6
 #define ARC_REG_MCIP_CMD	0x600
 #define ARC_REG_MCIP_WDATA	0x601
 #define ARC_REG_MCIP_READBACK	0x602
@@ -35,10 +37,14 @@ struct mcip_cmd {
 #define CMD_SEMA_RELEASE		0x12
 
 #define CMD_DEBUG_SET_MASK		0x34
+#define CMD_DEBUG_READ_MASK		0x35
 #define CMD_DEBUG_SET_SELECT		0x36
+#define CMD_DEBUG_READ_SELECT		0x37
 
 #define CMD_GFRC_READ_LO		0x42
 #define CMD_GFRC_READ_HI		0x43
+#define CMD_GFRC_SET_CORE		0x47
+#define CMD_GFRC_READ_CORE		0x48
 
 #define CMD_IDU_ENABLE			0x71
 #define CMD_IDU_DISABLE			0x72
@@ -68,6 +74,22 @@ struct mcip_bcr {
 			     pad3:1, pw_dom:1, pad4:6;
 #endif
 };
+
+struct mcip_idu_bcr {
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	unsigned int pad:21, cirqnum:3, ver:8;
+#else
+	unsigned int ver:8, cirqnum:3, pad:21;
+#endif
+};
+
+
+/*
+ * Build register for IDU contains not an actual number of supported common
+ * interrupts but an exponent of 2 which must be multiplied by 4 to
+ * get a number of supported common interrupts.
+ */
+#define mcip_idu_bcr_to_nr_irqs(bcr) (4 * (1 << (bcr).cirqnum))
 
 /*
  * MCIP programming model

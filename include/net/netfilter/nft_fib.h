@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NFT_FIB_H_
 #define _NFT_FIB_H_
 
@@ -32,6 +33,6 @@ void nft_fib6_eval_type(const struct nft_expr *expr, struct nft_regs *regs,
 void nft_fib6_eval(const struct nft_expr *expr, struct nft_regs *regs,
 		   const struct nft_pktinfo *pkt);
 
-void nft_fib_store_result(void *reg, enum nft_fib_result r,
+void nft_fib_store_result(void *reg, const struct nft_fib *priv,
 			  const struct nft_pktinfo *pkt, int index);
 #endif

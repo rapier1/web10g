@@ -41,6 +41,7 @@ static void pmd_ctor(void *addr)
 }
 
 struct kmem_cache *pgtable_cache[MAX_PGTABLE_INDEX_SIZE];
+EXPORT_SYMBOL_GPL(pgtable_cache);	/* used by kvm_hv module */
 
 /*
  * Create a kmem_cache() for pagetables.  This is not used for PTE
@@ -86,7 +87,7 @@ void pgtable_cache_add(unsigned shift, void (*ctor)(void *))
 
 	pr_debug("Allocated pgtable cache for order %d\n", shift);
 }
-
+EXPORT_SYMBOL_GPL(pgtable_cache_add);	/* used by kvm_hv module */
 
 void pgtable_cache_init(void)
 {
@@ -99,6 +100,6 @@ void pgtable_cache_init(void)
 	 * same size as either the pgd or pmd index except with THP enabled
 	 * on book3s 64
 	 */
-	if (PUD_INDEX_SIZE && !PGT_CACHE(PUD_INDEX_SIZE))
-		pgtable_cache_add(PUD_INDEX_SIZE, pud_ctor);
+	if (PUD_CACHE_INDEX && !PGT_CACHE(PUD_CACHE_INDEX))
+		pgtable_cache_add(PUD_CACHE_INDEX, pud_ctor);
 }

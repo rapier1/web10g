@@ -30,12 +30,14 @@
 #include <linux/types.h>
 #include <linux/inet.h>
 #include <linux/slab.h>
+#include <linux/sched/mm.h>
 #include <linux/file.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/kfifo.h>
 #include <linux/scatterlist.h>
 #include <linux/module.h>
+#include <linux/backing-dev.h>
 #include <net/tcp.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
@@ -162,7 +164,6 @@ static void iscsi_sw_tcp_state_change(struct sock *sk)
 	struct iscsi_tcp_conn *tcp_conn;
 	struct iscsi_sw_tcp_conn *tcp_sw_conn;
 	struct iscsi_conn *conn;
-	struct iscsi_session *session;
 	void (*old_state_change)(struct sock *);
 
 	read_lock_bh(&sk->sk_callback_lock);
@@ -171,7 +172,6 @@ static void iscsi_sw_tcp_state_change(struct sock *sk)
 		read_unlock_bh(&sk->sk_callback_lock);
 		return;
 	}
-	session = conn->session;
 
 	iscsi_sw_sk_state_check(sk);
 
@@ -308,6 +308,7 @@ static int iscsi_sw_tcp_xmit_segment(struct iscsi_tcp_conn *tcp_conn,
 
 /**
  * iscsi_sw_tcp_xmit - TCP transmit
+ * @conn: iscsi connection
  **/
 static int iscsi_sw_tcp_xmit(struct iscsi_conn *conn)
 {
@@ -358,6 +359,7 @@ error:
 
 /**
  * iscsi_tcp_xmit_qlen - return the number of bytes queued for xmit
+ * @conn: iscsi connection
  */
 static inline int iscsi_sw_tcp_xmit_qlen(struct iscsi_conn *conn)
 {
@@ -371,10 +373,10 @@ static inline int iscsi_sw_tcp_xmit_qlen(struct iscsi_conn *conn)
 static int iscsi_sw_tcp_pdu_xmit(struct iscsi_task *task)
 {
 	struct iscsi_conn *conn = task->conn;
-	unsigned long pflags = current->flags;
+	unsigned int noreclaim_flag;
 	int rc = 0;
 
-	current->flags |= PF_MEMALLOC;
+	noreclaim_flag = memalloc_noreclaim_save();
 
 	while (iscsi_sw_tcp_xmit_qlen(conn)) {
 		rc = iscsi_sw_tcp_xmit(conn);
@@ -387,7 +389,7 @@ static int iscsi_sw_tcp_pdu_xmit(struct iscsi_task *task)
 		rc = 0;
 	}
 
-	tsk_restore_flags(current, pflags, PF_MEMALLOC);
+	memalloc_noreclaim_restore(noreclaim_flag);
 	return rc;
 }
 
@@ -731,7 +733,7 @@ static int iscsi_sw_tcp_conn_get_param(struct iscsi_cls_conn *cls_conn,
 	struct iscsi_tcp_conn *tcp_conn = conn->dd_data;
 	struct iscsi_sw_tcp_conn *tcp_sw_conn = tcp_conn->dd_data;
 	struct sockaddr_in6 addr;
-	int rc, len;
+	int rc;
 
 	switch(param) {
 	case ISCSI_PARAM_CONN_PORT:
@@ -744,12 +746,12 @@ static int iscsi_sw_tcp_conn_get_param(struct iscsi_cls_conn *cls_conn,
 		}
 		if (param == ISCSI_PARAM_LOCAL_PORT)
 			rc = kernel_getsockname(tcp_sw_conn->sock,
-						(struct sockaddr *)&addr, &len);
+						(struct sockaddr *)&addr);
 		else
 			rc = kernel_getpeername(tcp_sw_conn->sock,
-						(struct sockaddr *)&addr, &len);
+						(struct sockaddr *)&addr);
 		spin_unlock_bh(&conn->session->frwd_lock);
-		if (rc)
+		if (rc < 0)
 			return rc;
 
 		return iscsi_conn_get_addr_param((struct sockaddr_storage *)
@@ -770,7 +772,7 @@ static int iscsi_sw_tcp_host_get_param(struct Scsi_Host *shost,
 	struct iscsi_tcp_conn *tcp_conn;
 	struct iscsi_sw_tcp_conn *tcp_sw_conn;
 	struct sockaddr_in6 addr;
-	int rc, len;
+	int rc;
 
 	switch (param) {
 	case ISCSI_HOST_PARAM_IPADDRESS:
@@ -792,9 +794,9 @@ static int iscsi_sw_tcp_host_get_param(struct Scsi_Host *shost,
 		}
 
 		rc = kernel_getsockname(tcp_sw_conn->sock,
-					(struct sockaddr *)&addr, &len);
+					(struct sockaddr *)&addr);
 		spin_unlock_bh(&session->frwd_lock);
-		if (rc)
+		if (rc < 0)
 			return rc;
 
 		return iscsi_conn_get_addr_param((struct sockaddr_storage *)
@@ -947,13 +949,19 @@ static umode_t iscsi_sw_tcp_attr_is_visible(int param_type, int param)
 
 static int iscsi_sw_tcp_slave_alloc(struct scsi_device *sdev)
 {
-	set_bit(QUEUE_FLAG_BIDI, &sdev->request_queue->queue_flags);
+	blk_queue_flag_set(QUEUE_FLAG_BIDI, sdev->request_queue);
 	return 0;
 }
 
 static int iscsi_sw_tcp_slave_configure(struct scsi_device *sdev)
 {
-	blk_queue_bounce_limit(sdev->request_queue, BLK_BOUNCE_ANY);
+	struct iscsi_sw_tcp_host *tcp_sw_host = iscsi_host_priv(sdev->host);
+	struct iscsi_session *session = tcp_sw_host->session;
+	struct iscsi_conn *conn = session->leadconn;
+
+	if (conn->datadgst_en)
+		sdev->request_queue->backing_dev_info->capabilities
+			|= BDI_CAP_STABLE_WRITES;
 	blk_queue_dma_alignment(sdev->request_queue, 0);
 	return 0;
 }
@@ -967,6 +975,7 @@ static struct scsi_host_template iscsi_sw_tcp_sht = {
 	.sg_tablesize		= 4096,
 	.max_sectors		= 0xFFFF,
 	.cmd_per_lun		= ISCSI_DEF_CMD_PER_LUN,
+	.eh_timed_out		= iscsi_eh_cmd_timed_out,
 	.eh_abort_handler       = iscsi_eh_abort,
 	.eh_device_reset_handler= iscsi_eh_device_reset,
 	.eh_target_reset_handler = iscsi_eh_recover_target,

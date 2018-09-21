@@ -94,19 +94,6 @@ struct adsp_fw_hdr {
 	u32 load_offset;
 } __packed;
 
-#define MAX_INSTANCE_BUFF 2
-
-struct uuid_module {
-	uuid_le uuid;
-	int id;
-	int is_loadable;
-	int max_instance;
-	u64 pvt_id[MAX_INSTANCE_BUFF];
-	int *instance_id;
-
-	struct list_head list;
-};
-
 struct skl_ext_manifest_hdr {
 	u32 id;
 	u32 len;
@@ -114,32 +101,6 @@ struct skl_ext_manifest_hdr {
 	u16 version_minor;
 	u32 entries;
 };
-
-int snd_skl_get_module_info(struct skl_sst *ctx,
-				struct skl_module_cfg *mconfig)
-{
-	struct uuid_module *module;
-	uuid_le *uuid_mod;
-
-	uuid_mod = (uuid_le *)mconfig->guid;
-
-	if (list_empty(&ctx->uuid_list)) {
-		dev_err(ctx->dev, "Module list is empty\n");
-		return -EINVAL;
-	}
-
-	list_for_each_entry(module, &ctx->uuid_list, list) {
-		if (uuid_le_cmp(*uuid_mod, module->uuid) == 0) {
-			mconfig->id.module_id = module->id;
-			mconfig->is_loadable = module->is_loadable;
-
-			return 0;
-		}
-	}
-
-	return -EINVAL;
-}
-EXPORT_SYMBOL_GPL(snd_skl_get_module_info);
 
 static int skl_get_pvtid_map(struct uuid_module *module, int instance_id)
 {
@@ -217,26 +178,24 @@ static inline int skl_pvtid_128(struct uuid_module *module)
  * skl_get_pvt_id: generate a private id for use as module id
  *
  * @ctx: driver context
- * @mconfig: module configuration data
+ * @uuid_mod: module's uuid
+ * @instance_id: module's instance id
  *
  * This generates a 128 bit private unique id for a module TYPE so that
  * module instance is unique
  */
-int skl_get_pvt_id(struct skl_sst *ctx, struct skl_module_cfg *mconfig)
+int skl_get_pvt_id(struct skl_sst *ctx, uuid_le *uuid_mod, int instance_id)
 {
 	struct uuid_module *module;
-	uuid_le *uuid_mod;
 	int pvt_id;
-
-	uuid_mod = (uuid_le *)mconfig->guid;
 
 	list_for_each_entry(module, &ctx->uuid_list, list) {
 		if (uuid_le_cmp(*uuid_mod, module->uuid) == 0) {
 
 			pvt_id = skl_pvtid_128(module);
 			if (pvt_id >= 0) {
-				module->instance_id[pvt_id] =
-						mconfig->id.instance_id;
+				module->instance_id[pvt_id] = instance_id;
+
 				return pvt_id;
 			}
 		}
@@ -250,27 +209,26 @@ EXPORT_SYMBOL_GPL(skl_get_pvt_id);
  * skl_put_pvt_id: free up the private id allocated
  *
  * @ctx: driver context
- * @mconfig: module configuration data
+ * @uuid_mod: module's uuid
+ * @pvt_id: module pvt id
  *
  * This frees a 128 bit private unique id previously generated
  */
-int skl_put_pvt_id(struct skl_sst *ctx, struct skl_module_cfg *mconfig)
+int skl_put_pvt_id(struct skl_sst *ctx, uuid_le *uuid_mod, int *pvt_id)
 {
 	int i;
-	uuid_le *uuid_mod;
 	struct uuid_module *module;
 
-	uuid_mod = (uuid_le *)mconfig->guid;
 	list_for_each_entry(module, &ctx->uuid_list, list) {
 		if (uuid_le_cmp(*uuid_mod, module->uuid) == 0) {
 
-			if (mconfig->id.pvt_id != 0)
-				i = (mconfig->id.pvt_id) / 64;
+			if (*pvt_id != 0)
+				i = (*pvt_id) / 64;
 			else
 				i = 0;
 
-			module->pvt_id[i] &= ~(1 << (mconfig->id.pvt_id));
-			mconfig->id.pvt_id = -1;
+			module->pvt_id[i] &= ~(1 << (*pvt_id));
+			*pvt_id = -1;
 			return 0;
 		}
 	}
@@ -295,6 +253,7 @@ int snd_skl_parse_uuids(struct sst_dsp *ctx, const struct firmware *fw,
 	struct uuid_module *module;
 	struct firmware stripped_fw;
 	unsigned int safe_file;
+	int ret = 0;
 
 	/* Get the FW pointer to derive ADSP header */
 	stripped_fw.data = fw->data;
@@ -343,8 +302,10 @@ int snd_skl_parse_uuids(struct sst_dsp *ctx, const struct firmware *fw,
 
 	for (i = 0; i < num_entry; i++, mod_entry++) {
 		module = kzalloc(sizeof(*module), GFP_KERNEL);
-		if (!module)
-			return -ENOMEM;
+		if (!module) {
+			ret = -ENOMEM;
+			goto free_uuid_list;
+		}
 
 		uuid_bin = (uuid_le *)mod_entry->uuid.id;
 		memcpy(&module->uuid, uuid_bin, sizeof(module->uuid));
@@ -355,8 +316,8 @@ int snd_skl_parse_uuids(struct sst_dsp *ctx, const struct firmware *fw,
 		size = sizeof(int) * mod_entry->instance_max_count;
 		module->instance_id = devm_kzalloc(ctx->dev, size, GFP_KERNEL);
 		if (!module->instance_id) {
-			kfree(module);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto free_uuid_list;
 		}
 
 		list_add_tail(&module->list, &skl->uuid_list);
@@ -367,6 +328,10 @@ int snd_skl_parse_uuids(struct sst_dsp *ctx, const struct firmware *fw,
 	}
 
 	return 0;
+
+free_uuid_list:
+	skl_freeup_uuid_list(skl);
+	return ret;
 }
 
 void skl_freeup_uuid_list(struct skl_sst *ctx)
@@ -404,4 +369,80 @@ int skl_dsp_strip_extended_manifest(struct firmware *fw)
 	}
 
 	return 0;
+}
+
+int skl_sst_ctx_init(struct device *dev, int irq, const char *fw_name,
+	struct skl_dsp_loader_ops dsp_ops, struct skl_sst **dsp,
+	struct sst_dsp_device *skl_dev)
+{
+	struct skl_sst *skl;
+	struct sst_dsp *sst;
+
+	skl = devm_kzalloc(dev, sizeof(*skl), GFP_KERNEL);
+	if (skl == NULL)
+		return -ENOMEM;
+
+	skl->dev = dev;
+	skl_dev->thread_context = skl;
+	INIT_LIST_HEAD(&skl->uuid_list);
+	skl->dsp = skl_dsp_ctx_init(dev, skl_dev, irq);
+	if (!skl->dsp) {
+		dev_err(skl->dev, "%s: no device\n", __func__);
+		return -ENODEV;
+	}
+
+	sst = skl->dsp;
+	sst->fw_name = fw_name;
+	sst->dsp_ops = dsp_ops;
+	init_waitqueue_head(&skl->mod_load_wait);
+	INIT_LIST_HEAD(&sst->module_list);
+
+	skl->is_first_boot = true;
+	if (dsp)
+		*dsp = skl;
+
+	return 0;
+}
+
+int skl_prepare_lib_load(struct skl_sst *skl, struct skl_lib_info *linfo,
+		struct firmware *stripped_fw,
+		unsigned int hdr_offset, int index)
+{
+	int ret;
+	struct sst_dsp *dsp = skl->dsp;
+
+	if (linfo->fw == NULL) {
+		ret = request_firmware(&linfo->fw, linfo->name,
+					skl->dev);
+		if (ret < 0) {
+			dev_err(skl->dev, "Request lib %s failed:%d\n",
+				linfo->name, ret);
+			return ret;
+		}
+	}
+
+	if (skl->is_first_boot) {
+		ret = snd_skl_parse_uuids(dsp, linfo->fw, hdr_offset, index);
+		if (ret < 0)
+			return ret;
+	}
+
+	stripped_fw->data = linfo->fw->data;
+	stripped_fw->size = linfo->fw->size;
+	skl_dsp_strip_extended_manifest(stripped_fw);
+
+	return 0;
+}
+
+void skl_release_library(struct skl_lib_info *linfo, int lib_count)
+{
+	int i;
+
+	/* library indices start from 1 to N. 0 represents base FW */
+	for (i = 1; i < lib_count; i++) {
+		if (linfo[i].fw) {
+			release_firmware(linfo[i].fw);
+			linfo[i].fw = NULL;
+		}
+	}
 }

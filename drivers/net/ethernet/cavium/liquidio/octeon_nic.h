@@ -62,6 +62,10 @@ struct octnic_ctrl_pkt {
 
 	/** Callback function called when the command has been fetched */
 	octnic_ctrl_pkt_cb_fn_t cb_fn;
+
+	u32 status;
+	u16 *response_code;
+	struct completion *completion;
 };
 
 #define MAX_UDD_SIZE(nctrl) (sizeof((nctrl)->udd))
@@ -275,7 +279,8 @@ octeon_alloc_soft_command_resp(struct octeon_device    *oct,
  * queue should be stopped, and IQ_SEND_OK if it sent okay.
  */
 int octnet_send_nic_data_pkt(struct octeon_device *oct,
-			     struct octnic_data_pkt *ndata);
+			     struct octnic_data_pkt *ndata,
+			     int xmit_more);
 
 /** Send a NIC control packet to the device
  * @param oct - octeon device pointer

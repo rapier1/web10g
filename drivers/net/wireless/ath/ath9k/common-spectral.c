@@ -479,14 +479,16 @@ ath_cmn_is_fft_buf_full(struct ath_spec_scan_priv *spec_priv)
 {
 	int i = 0;
 	int ret = 0;
+	struct rchan_buf *buf;
 	struct rchan *rc = spec_priv->rfs_chan_spec_scan;
 
-	for_each_online_cpu(i)
-		ret += relay_buf_full(rc->buf[i]);
+	for_each_possible_cpu(i) {
+		if ((buf = *per_cpu_ptr(rc->buf, i))) {
+			ret += relay_buf_full(buf);
+		}
+	}
 
-	i = num_online_cpus();
-
-	if (ret == i)
+	if (ret)
 		return 1;
 	else
 		return 0;
@@ -741,6 +743,9 @@ void ath9k_cmn_spectral_scan_trigger(struct ath_common *common,
 		ath_err(common, "spectrum analyzer not implemented on this hardware\n");
 		return;
 	}
+
+	if (!spec_priv->spec_config.enabled)
+		return;
 
 	ath_ps_ops(common)->wakeup(common);
 	rxfilter = ath9k_hw_getrxfilter(ah);
@@ -1075,7 +1080,7 @@ static struct rchan_callbacks rfs_spec_scan_cb = {
 
 void ath9k_cmn_spectral_deinit_debug(struct ath_spec_scan_priv *spec_priv)
 {
-	if (IS_ENABLED(CONFIG_ATH9K_DEBUGFS) && spec_priv->rfs_chan_spec_scan) {
+	if (spec_priv->rfs_chan_spec_scan) {
 		relay_close(spec_priv->rfs_chan_spec_scan);
 		spec_priv->rfs_chan_spec_scan = NULL;
 	}
@@ -1093,23 +1098,23 @@ void ath9k_cmn_spectral_init_debug(struct ath_spec_scan_priv *spec_priv,
 		return;
 
 	debugfs_create_file("spectral_scan_ctl",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    debugfs_phy, spec_priv,
 			    &fops_spec_scan_ctl);
 	debugfs_create_file("spectral_short_repeat",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_short_repeat);
 	debugfs_create_file("spectral_count",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_count);
 	debugfs_create_file("spectral_period",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_period);
 	debugfs_create_file("spectral_fft_period",
-			    S_IRUSR | S_IWUSR,
+			    0600,
 			    debugfs_phy, spec_priv,
 			    &fops_spectral_fft_period);
 }

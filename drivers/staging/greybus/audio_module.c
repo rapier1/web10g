@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Greybus audio driver
  * Copyright 2015 Google Inc.
  * Copyright 2015 Linaro Ltd.
- *
- * Released under the GPLv2 only.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -134,7 +133,7 @@ static int gbaudio_request_stream(struct gbaudio_module_info *module,
 				  struct gb_audio_streaming_event_request *req)
 {
 	dev_warn(module->dev, "Audio Event received: cport: %u, event: %u\n",
-		 req->data_cport, req->event);
+		 le16_to_cpu(req->data_cport), req->event);
 
 	return 0;
 }

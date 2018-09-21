@@ -273,15 +273,18 @@ static int ufs_qcom_power_up_sequence(struct ufs_hba *hba)
 	bool is_rate_B = (UFS_QCOM_LIMIT_HS_RATE == PA_HS_MODE_B)
 							? true : false;
 
+	if (is_rate_B)
+		phy_set_mode(phy, PHY_MODE_UFS_HS_B);
+
 	/* Assert PHY reset and apply PHY calibration values */
 	ufs_qcom_assert_reset(hba);
 	/* provide 1ms delay to let the reset pulse propagate */
 	usleep_range(1000, 1100);
 
-	ret = ufs_qcom_phy_calibrate_phy(phy, is_rate_B);
-
+	/* phy initialization - calibrate the phy */
+	ret = phy_init(phy);
 	if (ret) {
-		dev_err(hba->dev, "%s: ufs_qcom_phy_calibrate_phy() failed, ret = %d\n",
+		dev_err(hba->dev, "%s: phy init failed, ret = %d\n",
 			__func__, ret);
 		goto out;
 	}
@@ -294,21 +297,22 @@ static int ufs_qcom_power_up_sequence(struct ufs_hba *hba)
 	 * voltage, current to settle down before starting serdes.
 	 */
 	usleep_range(1000, 1100);
-	ret = ufs_qcom_phy_start_serdes(phy);
-	if (ret) {
-		dev_err(hba->dev, "%s: ufs_qcom_phy_start_serdes() failed, ret = %d\n",
-			__func__, ret);
-		goto out;
-	}
 
-	ret = ufs_qcom_phy_is_pcs_ready(phy);
-	if (ret)
-		dev_err(hba->dev,
-			"%s: is_physical_coding_sublayer_ready() failed, ret = %d\n",
+	/* power on phy - start serdes and phy's power and clocks */
+	ret = phy_power_on(phy);
+	if (ret) {
+		dev_err(hba->dev, "%s: phy power on failed, ret = %d\n",
 			__func__, ret);
+		goto out_disable_phy;
+	}
 
 	ufs_qcom_select_unipro_mode(host);
 
+	return 0;
+
+out_disable_phy:
+	ufs_qcom_assert_reset(hba);
+	phy_exit(phy);
 out:
 	return ret;
 }
@@ -1094,7 +1098,7 @@ static void ufs_qcom_advertise_quirks(struct ufs_hba *hba)
 		hba->quirks |= UFSHCD_QUIRK_BROKEN_LCC;
 	}
 
-	if (host->hw_ver.major >= 0x2) {
+	if (host->hw_ver.major == 0x2) {
 		hba->quirks |= UFSHCD_QUIRK_BROKEN_UFS_HCI_VERSION;
 
 		if (!ufs_qcom_cap_qunipro(host))
@@ -1273,14 +1277,9 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 	ufs_qcom_phy_save_controller_version(host->generic_phy,
 		host->hw_ver.major, host->hw_ver.minor, host->hw_ver.step);
 
-	phy_init(host->generic_phy);
-	err = phy_power_on(host->generic_phy);
-	if (err)
-		goto out_unregister_bus;
-
 	err = ufs_qcom_init_lane_clks(host);
 	if (err)
-		goto out_disable_phy;
+		goto out_variant_clear;
 
 	ufs_qcom_set_caps(hba);
 	ufs_qcom_advertise_quirks(hba);
@@ -1301,10 +1300,6 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	goto out;
 
-out_disable_phy:
-	phy_power_off(host->generic_phy);
-out_unregister_bus:
-	phy_exit(host->generic_phy);
 out_variant_clear:
 	ufshcd_set_variant(hba, NULL);
 out:
@@ -1458,7 +1453,7 @@ static void ufs_qcom_print_hw_debug_reg_all(struct ufs_hba *hba,
 	print_fn(hba, reg, 44, "UFS_UFS_DBG_RD_REG_OCSC ", priv);
 
 	reg = ufshcd_readl(hba, REG_UFS_CFG1);
-	reg |= UFS_BIT(17);
+	reg |= UTP_DBG_RAMS_EN;
 	ufshcd_writel(hba, reg, REG_UFS_CFG1);
 
 	reg = ufs_qcom_get_debug_reg_offset(host, UFS_UFS_DBG_RD_EDTL_RAM);
@@ -1471,7 +1466,7 @@ static void ufs_qcom_print_hw_debug_reg_all(struct ufs_hba *hba,
 	print_fn(hba, reg, 64, "UFS_UFS_DBG_RD_PRDT_RAM ", priv);
 
 	/* clear bit 17 - UTP_DBG_RAMS_EN */
-	ufshcd_rmwl(hba, UFS_BIT(17), 0, REG_UFS_CFG1);
+	ufshcd_rmwl(hba, UTP_DBG_RAMS_EN, 0, REG_UFS_CFG1);
 
 	reg = ufs_qcom_get_debug_reg_offset(host, UFS_DBG_RD_REG_UAWM);
 	print_fn(hba, reg, 4, "UFS_DBG_RD_REG_UAWM ", priv);
@@ -1497,17 +1492,21 @@ static void ufs_qcom_print_hw_debug_reg_all(struct ufs_hba *hba,
 
 static void ufs_qcom_enable_test_bus(struct ufs_qcom_host *host)
 {
-	if (host->dbg_print_en & UFS_QCOM_DBG_PRINT_TEST_BUS_EN)
+	if (host->dbg_print_en & UFS_QCOM_DBG_PRINT_TEST_BUS_EN) {
+		ufshcd_rmwl(host->hba, UFS_REG_TEST_BUS_EN,
+				UFS_REG_TEST_BUS_EN, REG_UFS_CFG1);
 		ufshcd_rmwl(host->hba, TEST_BUS_EN, TEST_BUS_EN, REG_UFS_CFG1);
-	else
+	} else {
+		ufshcd_rmwl(host->hba, UFS_REG_TEST_BUS_EN, 0, REG_UFS_CFG1);
 		ufshcd_rmwl(host->hba, TEST_BUS_EN, 0, REG_UFS_CFG1);
+	}
 }
 
 static void ufs_qcom_get_default_testbus_cfg(struct ufs_qcom_host *host)
 {
 	/* provide a legal default configuration */
-	host->testbus.select_major = TSTBUS_UAWM;
-	host->testbus.select_minor = 1;
+	host->testbus.select_major = TSTBUS_UNIPRO;
+	host->testbus.select_minor = 37;
 }
 
 static bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host)
@@ -1516,18 +1515,6 @@ static bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host)
 		dev_err(host->hba->dev,
 			"%s: UFS_CFG1[TEST_BUS_SEL} may not equal 0x%05X\n",
 			__func__, host->testbus.select_major);
-		return false;
-	}
-
-	/*
-	 * Not performing check for each individual select_major
-	 * mappings of select_minor, since there is no harm in
-	 * configuring a non-existent select_minor
-	 */
-	if (host->testbus.select_minor > 0x1F) {
-		dev_err(host->hba->dev,
-			"%s: 0x%05X is not a legal testbus option\n",
-			__func__, host->testbus.select_minor);
 		return false;
 	}
 
@@ -1593,7 +1580,8 @@ int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 		break;
 	case TSTBUS_UNIPRO:
 		reg = UFS_UNIPRO_CFG;
-		offset = 1;
+		offset = 20;
+		mask = 0xFFF;
 		break;
 	/*
 	 * No need for a default case, since
@@ -1612,6 +1600,11 @@ int ufs_qcom_testbus_config(struct ufs_qcom_host *host)
 		    (u32)host->testbus.select_minor << offset,
 		    reg);
 	ufs_qcom_enable_test_bus(host);
+	/*
+	 * Make sure the test bus configuration is
+	 * committed before returning.
+	 */
+	mb();
 	ufshcd_release(host->hba);
 	pm_runtime_put_sync(host->hba->dev);
 
@@ -1623,13 +1616,39 @@ static void ufs_qcom_testbus_read(struct ufs_hba *hba)
 	ufs_qcom_dump_regs(hba, UFS_TEST_BUS, 1, "UFS_TEST_BUS ");
 }
 
+static void ufs_qcom_print_unipro_testbus(struct ufs_hba *hba)
+{
+	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	u32 *testbus = NULL;
+	int i, nminor = 256, testbus_len = nminor * sizeof(u32);
+
+	testbus = kmalloc(testbus_len, GFP_KERNEL);
+	if (!testbus)
+		return;
+
+	host->testbus.select_major = TSTBUS_UNIPRO;
+	for (i = 0; i < nminor; i++) {
+		host->testbus.select_minor = i;
+		ufs_qcom_testbus_config(host);
+		testbus[i] = ufshcd_readl(hba, UFS_TEST_BUS);
+	}
+	print_hex_dump(KERN_ERR, "UNIPRO_TEST_BUS ", DUMP_PREFIX_OFFSET,
+			16, 4, testbus, testbus_len, false);
+	kfree(testbus);
+}
+
 static void ufs_qcom_dump_dbg_regs(struct ufs_hba *hba)
 {
 	ufs_qcom_dump_regs(hba, REG_UFS_SYS1CLK_1US, 16,
 			"HCI Vendor Specific Registers ");
 
+	/* sleep a bit intermittently as we are dumping too much data */
 	ufs_qcom_print_hw_debug_reg_all(hba, NULL, ufs_qcom_dump_regs_wrapper);
+	usleep_range(1000, 1100);
 	ufs_qcom_testbus_read(hba);
+	usleep_range(1000, 1100);
+	ufs_qcom_print_unipro_testbus(hba);
+	usleep_range(1000, 1100);
 }
 
 /**
@@ -1692,6 +1711,7 @@ static const struct of_device_id ufs_qcom_of_match[] = {
 	{ .compatible = "qcom,ufshc"},
 	{},
 };
+MODULE_DEVICE_TABLE(of, ufs_qcom_of_match);
 
 static const struct dev_pm_ops ufs_qcom_pm_ops = {
 	.suspend	= ufshcd_pltfrm_suspend,

@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Fusb300 UDC (USB gadget)
  *
  * Copyright (C) 2010 Faraday Technology Corp.
  *
  * Author : Yuan-hsin Chen <yhchen@faraday-tech.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
  */
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
@@ -518,7 +515,7 @@ static void fusb300_fifo_flush(struct usb_ep *_ep)
 {
 }
 
-static struct usb_ep_ops fusb300_ep_ops = {
+static const struct usb_ep_ops fusb300_ep_ops = {
 	.enable		= fusb300_enable,
 	.disable	= fusb300_disable,
 

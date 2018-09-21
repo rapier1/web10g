@@ -355,10 +355,10 @@ static void slic_xmit_complete(struct slic_device *sdev)
 {
 	struct slic_tx_queue *txq = &sdev->txq;
 	struct net_device *dev = sdev->netdev;
-	unsigned int idx = txq->done_idx;
 	struct slic_tx_buffer *buff;
 	unsigned int frames = 0;
 	unsigned int bytes = 0;
+	unsigned int idx;
 
 	/* Limit processing to SLIC_MAX_TX_COMPLETIONS frames to avoid that new
 	 * completions during processing keeps the loop running endlessly.
@@ -1471,8 +1471,8 @@ drop_skb:
 	return NETDEV_TX_OK;
 }
 
-static struct rtnl_link_stats64 *slic_get_stats(struct net_device *dev,
-						struct rtnl_link_stats64 *lst)
+static void slic_get_stats(struct net_device *dev,
+			   struct rtnl_link_stats64 *lst)
 {
 	struct slic_device *sdev = netdev_priv(dev);
 	struct slic_stats *stats = &sdev->stats;
@@ -1489,8 +1489,6 @@ static struct rtnl_link_stats64 *slic_get_stats(struct net_device *dev,
 	SLIC_GET_STATS_COUNTER(lst->rx_crc_errors, stats, rx_crc);
 	SLIC_GET_STATS_COUNTER(lst->rx_fifo_errors, stats, rx_oflow802);
 	SLIC_GET_STATS_COUNTER(lst->tx_carrier_errors, stats, tx_carrier);
-
-	return lst;
 }
 
 static int slic_get_sset_count(struct net_device *dev, int sset)

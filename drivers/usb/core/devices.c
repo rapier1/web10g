@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * devices.c
  * (C) Copyright 1999 Randy Dunlap.
@@ -5,26 +6,12 @@
  *     (proc file per device)
  * (C) Copyright 1999 Deti Fliegl (new USB architecture)
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  *************************************************************
  *
  * <mountpoint>/devices contains USB topology, device, config, class,
  * interface, & endpoint data.
  *
- * I considered using /proc/bus/usb/devices/device# for each device
+ * I considered using /dev/bus/usb/device# for each device
  * as it is attached or detached, but I didn't like this for some
  * reason -- maybe it's just too deep of a directory structure.
  * I also don't like looking in multiple places to gather and view
@@ -40,7 +27,7 @@
  *   Converted the whole proc stuff to real
  *   read methods. Now not the whole device list needs to fit
  *   into one page, only the device list for one bus.
- *   Added a poll method to /proc/bus/usb/devices, to wake
+ *   Added a poll method to /sys/kernel/debug/usb/devices, to wake
  *   up an eventual usbd
  * 2000-01-04: Thomas Sailer <sailer@ife.ee.ethz.ch>
  *   Turned into its own filesystem
@@ -635,7 +622,7 @@ static ssize_t usb_device_read(struct file *file, char __user *buf,
 }
 
 /* Kernel lock for "lastev" protection */
-static unsigned int usb_device_poll(struct file *file,
+static __poll_t usb_device_poll(struct file *file,
 				    struct poll_table_struct *wait)
 {
 	unsigned int event_count;
@@ -645,7 +632,7 @@ static unsigned int usb_device_poll(struct file *file,
 	event_count = atomic_read(&device_event.count);
 	if (file->f_version != event_count) {
 		file->f_version = event_count;
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 	}
 
 	return 0;

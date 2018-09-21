@@ -22,7 +22,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/i2c/pxa-i2c.h>
+#include <linux/platform_data/i2c-pxa.h>
 
 #include <asm/mach/map.h>
 #include <mach/hardware.h>
@@ -168,7 +168,7 @@ static int pxa27x_cpu_pm_valid(suspend_state_t state)
 static int pxa27x_cpu_pm_prepare(void)
 {
 	/* set resume return address */
-	PSPR = virt_to_phys(cpu_resume);
+	PSPR = __pa_symbol(cpu_resume);
 	return 0;
 }
 

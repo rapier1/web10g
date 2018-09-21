@@ -9,7 +9,7 @@
  *	under the terms of the GNU General Public License as published by the Free
  *	Software Foundation, version 2.
  *
- * see Documentation/dvb/README.dvb-usb for more information
+ * see Documentation/media/dvb-drivers/dvb-usb.rst for more information
  */
 #include "digitv.h"
 
@@ -32,6 +32,9 @@ static int digitv_ctrl_msg(struct dvb_usb_device *d,
 	int ret, wo;
 
 	wo = (rbuf == NULL || rlen == 0); /* write-only */
+
+	if (wlen > 4 || rlen > 4)
+		return -EIO;
 
 	memset(st->sndbuf, 0, 7);
 	memset(st->rcvbuf, 0, 7);

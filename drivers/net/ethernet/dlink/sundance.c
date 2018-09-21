@@ -431,7 +431,7 @@ static void mdio_write(struct net_device *dev, int phy_id, int location, int val
 static int  mdio_wait_link(struct net_device *dev, int wait);
 static int  netdev_open(struct net_device *dev);
 static void check_duplex(struct net_device *dev);
-static void netdev_timer(unsigned long data);
+static void netdev_timer(struct timer_list *t);
 static void tx_timeout(struct net_device *dev);
 static void init_ring(struct net_device *dev);
 static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev);
@@ -913,10 +913,8 @@ static int netdev_open(struct net_device *dev)
 			   ioread16(ioaddr + MACCtrl1), ioread16(ioaddr + MACCtrl0));
 
 	/* Set the timer to check for link beat. */
-	init_timer(&np->timer);
+	timer_setup(&np->timer, netdev_timer, 0);
 	np->timer.expires = jiffies + 3*HZ;
-	np->timer.data = (unsigned long)dev;
-	np->timer.function = netdev_timer;				/* timer handler */
 	add_timer(&np->timer);
 
 	/* Enable interrupts by setting the interrupt mask. */
@@ -953,10 +951,10 @@ static void check_duplex(struct net_device *dev)
 	}
 }
 
-static void netdev_timer(unsigned long data)
+static void netdev_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
-	struct netdev_private *np = netdev_priv(dev);
+	struct netdev_private *np = from_timer(np, t, timer);
+	struct net_device *dev = np->mii_if.dev;
 	void __iomem *ioaddr = np->base;
 	int next_tick = 10*HZ;
 
@@ -1664,21 +1662,23 @@ static void get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
-static int get_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+static int get_link_ksettings(struct net_device *dev,
+			      struct ethtool_link_ksettings *cmd)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	spin_lock_irq(&np->lock);
-	mii_ethtool_gset(&np->mii_if, ecmd);
+	mii_ethtool_get_link_ksettings(&np->mii_if, cmd);
 	spin_unlock_irq(&np->lock);
 	return 0;
 }
 
-static int set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
+static int set_link_ksettings(struct net_device *dev,
+			      const struct ethtool_link_ksettings *cmd)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	int res;
 	spin_lock_irq(&np->lock);
-	res = mii_ethtool_sset(&np->mii_if, ecmd);
+	res = mii_ethtool_set_link_ksettings(&np->mii_if, cmd);
 	spin_unlock_irq(&np->lock);
 	return res;
 }
@@ -1800,8 +1800,6 @@ static int sundance_set_wol(struct net_device *dev,
 static const struct ethtool_ops ethtool_ops = {
 	.begin = check_if_running,
 	.get_drvinfo = get_drvinfo,
-	.get_settings = get_settings,
-	.set_settings = set_settings,
 	.nway_reset = nway_reset,
 	.get_link = get_link,
 	.get_wol = sundance_get_wol,
@@ -1811,6 +1809,8 @@ static const struct ethtool_ops ethtool_ops = {
 	.get_strings = get_strings,
 	.get_sset_count = get_sset_count,
 	.get_ethtool_stats = get_ethtool_stats,
+	.get_link_ksettings = get_link_ksettings,
+	.set_link_ksettings = set_link_ksettings,
 };
 
 static int netdev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)

@@ -21,6 +21,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
+#include <linux/sched/loadavg.h>
 #include <linux/timer.h>
 #include <linux/io.h>
 #include <linux/slab.h>
@@ -58,9 +59,9 @@ static inline void heartbeat_toggle_bit(struct heartbeat_data *hd,
 	}
 }
 
-static void heartbeat_timer(unsigned long data)
+static void heartbeat_timer(struct timer_list *t)
 {
-	struct heartbeat_data *hd = (struct heartbeat_data *)data;
+	struct heartbeat_data *hd = from_timer(hd, t, timer);
 	static unsigned bit = 0, up = 1;
 
 	heartbeat_toggle_bit(hd, bit, hd->flags & HEARTBEAT_INVERTED);
@@ -132,7 +133,7 @@ static int heartbeat_drv_probe(struct platform_device *pdev)
 		}
 	}
 
-	setup_timer(&hd->timer, heartbeat_timer, (unsigned long)hd);
+	timer_setup(&hd->timer, heartbeat_timer, 0);
 	platform_set_drvdata(pdev, hd);
 
 	return mod_timer(&hd->timer, jiffies + 1);

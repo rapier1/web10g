@@ -193,7 +193,7 @@
 #define QUADSPI_LUT_NUM		64
 
 /* SEQID -- we can have 16 seqids at most. */
-#define SEQID_QUAD_READ		0
+#define SEQID_READ		0
 #define SEQID_WREN		1
 #define SEQID_WRDI		2
 #define SEQID_RDSR		3
@@ -214,6 +214,7 @@ enum fsl_qspi_devtype {
 	FSL_QUADSPI_IMX7D,
 	FSL_QUADSPI_IMX6UL,
 	FSL_QUADSPI_LS1021A,
+	FSL_QUADSPI_LS2080A,
 };
 
 struct fsl_qspi_devtype_data {
@@ -266,6 +267,15 @@ static struct fsl_qspi_devtype_data ls1021a_data = {
 	.ahb_buf_size = 1024,
 	.driver_data = 0,
 };
+
+static const struct fsl_qspi_devtype_data ls2080a_data = {
+	.devtype = FSL_QUADSPI_LS2080A,
+	.rxfifo = 128,
+	.txfifo = 64,
+	.ahb_buf_size = 1024,
+	.driver_data = QUADSPI_QUIRK_TKT253890,
+};
+
 
 #define FSL_QSPI_MAX_CHIP	4
 struct fsl_qspi {
@@ -373,8 +383,12 @@ static void fsl_qspi_init_lut(struct fsl_qspi *q)
 	void __iomem *base = q->iobase;
 	int rxfifo = q->devtype_data->rxfifo;
 	u32 lut_base;
-	u8 cmd, addrlen, dummy;
 	int i;
+
+	struct spi_nor *nor = &q->nor[0];
+	u8 addrlen = (nor->addr_width == 3) ? ADDR24BIT : ADDR32BIT;
+	u8 read_op = nor->read_opcode;
+	u8 read_dm = nor->read_dummy;
 
 	fsl_qspi_unlock_lut(q);
 
@@ -382,23 +396,13 @@ static void fsl_qspi_init_lut(struct fsl_qspi *q)
 	for (i = 0; i < QUADSPI_LUT_NUM; i++)
 		qspi_writel(q, 0, base + QUADSPI_LUT_BASE + i * 4);
 
-	/* Quad Read */
-	lut_base = SEQID_QUAD_READ * 4;
+	/* Read */
+	lut_base = SEQID_READ * 4;
 
-	if (q->nor_size <= SZ_16M) {
-		cmd = SPINOR_OP_READ_1_1_4;
-		addrlen = ADDR24BIT;
-		dummy = 8;
-	} else {
-		/* use the 4-byte address */
-		cmd = SPINOR_OP_READ_1_1_4;
-		addrlen = ADDR32BIT;
-		dummy = 8;
-	}
-
-	qspi_writel(q, LUT0(CMD, PAD1, cmd) | LUT1(ADDR, PAD1, addrlen),
+	qspi_writel(q, LUT0(CMD, PAD1, read_op) | LUT1(ADDR, PAD1, addrlen),
 			base + QUADSPI_LUT(lut_base));
-	qspi_writel(q, LUT0(DUMMY, PAD1, dummy) | LUT1(FSL_READ, PAD4, rxfifo),
+	qspi_writel(q, LUT0(DUMMY, PAD1, read_dm) |
+		    LUT1(FSL_READ, PAD4, rxfifo),
 			base + QUADSPI_LUT(lut_base + 1));
 
 	/* Write enable */
@@ -409,16 +413,8 @@ static void fsl_qspi_init_lut(struct fsl_qspi *q)
 	/* Page Program */
 	lut_base = SEQID_PP * 4;
 
-	if (q->nor_size <= SZ_16M) {
-		cmd = SPINOR_OP_PP;
-		addrlen = ADDR24BIT;
-	} else {
-		/* use the 4-byte address */
-		cmd = SPINOR_OP_PP;
-		addrlen = ADDR32BIT;
-	}
-
-	qspi_writel(q, LUT0(CMD, PAD1, cmd) | LUT1(ADDR, PAD1, addrlen),
+	qspi_writel(q, LUT0(CMD, PAD1, nor->program_opcode) |
+		    LUT1(ADDR, PAD1, addrlen),
 			base + QUADSPI_LUT(lut_base));
 	qspi_writel(q, LUT0(FSL_WRITE, PAD1, 0),
 			base + QUADSPI_LUT(lut_base + 1));
@@ -432,10 +428,8 @@ static void fsl_qspi_init_lut(struct fsl_qspi *q)
 	/* Erase a sector */
 	lut_base = SEQID_SE * 4;
 
-	cmd = q->nor[0].erase_opcode;
-	addrlen = q->nor_size <= SZ_16M ? ADDR24BIT : ADDR32BIT;
-
-	qspi_writel(q, LUT0(CMD, PAD1, cmd) | LUT1(ADDR, PAD1, addrlen),
+	qspi_writel(q, LUT0(CMD, PAD1, nor->erase_opcode) |
+		    LUT1(ADDR, PAD1, addrlen),
 			base + QUADSPI_LUT(lut_base));
 
 	/* Erase the whole chip */
@@ -484,7 +478,7 @@ static int fsl_qspi_get_seqid(struct fsl_qspi *q, u8 cmd)
 {
 	switch (cmd) {
 	case SPINOR_OP_READ_1_1_4:
-		return SEQID_QUAD_READ;
+		return SEQID_READ;
 	case SPINOR_OP_WREN:
 		return SEQID_WREN;
 	case SPINOR_OP_WRDI:
@@ -677,7 +671,7 @@ static void fsl_qspi_set_map_addr(struct fsl_qspi *q)
  * causes the controller to clear the buffer, and use the sequence pointed
  * by the QUADSPI_BFGENCR[SEQID] to initiate a read from the flash.
  */
-static void fsl_qspi_init_abh_read(struct fsl_qspi *q)
+static void fsl_qspi_init_ahb_read(struct fsl_qspi *q)
 {
 	void __iomem *base = q->iobase;
 	int seqid;
@@ -811,17 +805,18 @@ static int fsl_qspi_nor_setup_last(struct fsl_qspi *q)
 	fsl_qspi_init_lut(q);
 
 	/* Init for AHB read */
-	fsl_qspi_init_abh_read(q);
+	fsl_qspi_init_ahb_read(q);
 
 	return 0;
 }
 
 static const struct of_device_id fsl_qspi_dt_ids[] = {
-	{ .compatible = "fsl,vf610-qspi", .data = (void *)&vybrid_data, },
-	{ .compatible = "fsl,imx6sx-qspi", .data = (void *)&imx6sx_data, },
-	{ .compatible = "fsl,imx7d-qspi", .data = (void *)&imx7d_data, },
-	{ .compatible = "fsl,imx6ul-qspi", .data = (void *)&imx6ul_data, },
+	{ .compatible = "fsl,vf610-qspi", .data = &vybrid_data, },
+	{ .compatible = "fsl,imx6sx-qspi", .data = &imx6sx_data, },
+	{ .compatible = "fsl,imx7d-qspi", .data = &imx7d_data, },
+	{ .compatible = "fsl,imx6ul-qspi", .data = &imx6ul_data, },
 	{ .compatible = "fsl,ls1021a-qspi", .data = (void *)&ls1021a_data, },
+	{ .compatible = "fsl,ls2080a-qspi", .data = &ls2080a_data, },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, fsl_qspi_dt_ids);
@@ -973,6 +968,10 @@ static void fsl_qspi_unprep(struct spi_nor *nor, enum spi_nor_ops ops)
 
 static int fsl_qspi_probe(struct platform_device *pdev)
 {
+	const struct spi_nor_hwcaps hwcaps = {
+		.mask = SNOR_HWCAPS_READ_1_1_4 |
+			SNOR_HWCAPS_PP,
+	};
 	struct device_node *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	struct fsl_qspi *q;
@@ -1063,6 +1062,24 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		spi_nor_set_flash_node(nor, np);
 		nor->priv = q;
 
+		if (q->nor_num > 1 && !mtd->name) {
+			int spiflash_idx;
+
+			ret = of_property_read_u32(np, "reg", &spiflash_idx);
+			if (!ret) {
+				mtd->name = devm_kasprintf(dev, GFP_KERNEL,
+							   "%s-%d",
+							   dev_name(dev),
+							   spiflash_idx);
+				if (!mtd->name) {
+					ret = -ENOMEM;
+					goto mutex_failed;
+				}
+			} else {
+				dev_warn(dev, "reg property is missing\n");
+			}
+		}
+
 		/* fill the hooks */
 		nor->read_reg = fsl_qspi_read_reg;
 		nor->write_reg = fsl_qspi_write_reg;
@@ -1081,7 +1098,7 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		/* set the chip address for READID */
 		fsl_qspi_set_base_addr(q, nor);
 
-		ret = spi_nor_scan(nor, NULL, SPI_NOR_QUAD);
+		ret = spi_nor_scan(nor, NULL, &hwcaps);
 		if (ret)
 			goto mutex_failed;
 
@@ -1186,7 +1203,6 @@ static int fsl_qspi_resume(struct platform_device *pdev)
 static struct platform_driver fsl_qspi_driver = {
 	.driver = {
 		.name	= "fsl-quadspi",
-		.bus	= &platform_bus_type,
 		.of_match_table = fsl_qspi_dt_ids,
 	},
 	.probe          = fsl_qspi_probe,

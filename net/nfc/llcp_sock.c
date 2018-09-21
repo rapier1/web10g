@@ -21,6 +21,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/nfc.h>
+#include <linux/sched/signal.h>
 
 #include "nfc.h"
 #include "llcp.h"
@@ -76,7 +77,8 @@ static int llcp_sock_bind(struct socket *sock, struct sockaddr *addr, int alen)
 	struct sockaddr_nfc_llcp llcp_addr;
 	int len, ret = 0;
 
-	if (!addr || addr->sa_family != AF_NFC)
+	if (!addr || alen < offsetofend(struct sockaddr, sa_family) ||
+	    addr->sa_family != AF_NFC)
 		return -EINVAL;
 
 	pr_debug("sk %p addr %p family %d\n", sk, addr, addr->sa_family);
@@ -150,7 +152,8 @@ static int llcp_raw_sock_bind(struct socket *sock, struct sockaddr *addr,
 	struct sockaddr_nfc_llcp llcp_addr;
 	int len, ret = 0;
 
-	if (!addr || addr->sa_family != AF_NFC)
+	if (!addr || alen < offsetofend(struct sockaddr, sa_family) ||
+	    addr->sa_family != AF_NFC)
 		return -EINVAL;
 
 	pr_debug("sk %p addr %p family %d\n", sk, addr, addr->sa_family);
@@ -440,7 +443,7 @@ struct sock *nfc_llcp_accept_dequeue(struct sock *parent,
 }
 
 static int llcp_sock_accept(struct socket *sock, struct socket *newsock,
-			    int flags)
+			    int flags, bool kern)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	struct sock *sk = sock->sk, *new_sk;
@@ -494,7 +497,7 @@ error:
 }
 
 static int llcp_sock_getname(struct socket *sock, struct sockaddr *uaddr,
-			     int *len, int peer)
+			     int peer)
 {
 	struct sock *sk = sock->sk;
 	struct nfc_llcp_sock *llcp_sock = nfc_llcp_sock(sk);
@@ -507,7 +510,6 @@ static int llcp_sock_getname(struct socket *sock, struct sockaddr *uaddr,
 		 llcp_sock->dsap, llcp_sock->ssap);
 
 	memset(llcp_addr, 0, sizeof(*llcp_addr));
-	*len = sizeof(struct sockaddr_nfc_llcp);
 
 	lock_sock(sk);
 	if (!llcp_sock->dev) {
@@ -525,10 +527,10 @@ static int llcp_sock_getname(struct socket *sock, struct sockaddr *uaddr,
 	       llcp_addr->service_name_len);
 	release_sock(sk);
 
-	return 0;
+	return sizeof(struct sockaddr_nfc_llcp);
 }
 
-static inline unsigned int llcp_accept_poll(struct sock *parent)
+static inline __poll_t llcp_accept_poll(struct sock *parent)
 {
 	struct nfc_llcp_sock *llcp_sock, *parent_sock;
 	struct sock *sk;
@@ -540,17 +542,17 @@ static inline unsigned int llcp_accept_poll(struct sock *parent)
 		sk = &llcp_sock->sk;
 
 		if (sk->sk_state == LLCP_CONNECTED)
-			return POLLIN | POLLRDNORM;
+			return EPOLLIN | EPOLLRDNORM;
 	}
 
 	return 0;
 }
 
-static unsigned int llcp_sock_poll(struct file *file, struct socket *sock,
+static __poll_t llcp_sock_poll(struct file *file, struct socket *sock,
 				   poll_table *wait)
 {
 	struct sock *sk = sock->sk;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	pr_debug("%p\n", sk);
 
@@ -560,23 +562,23 @@ static unsigned int llcp_sock_poll(struct file *file, struct socket *sock,
 		return llcp_accept_poll(sk);
 
 	if (sk->sk_err || !skb_queue_empty(&sk->sk_error_queue))
-		mask |= POLLERR |
-			(sock_flag(sk, SOCK_SELECT_ERR_QUEUE) ? POLLPRI : 0);
+		mask |= EPOLLERR |
+			(sock_flag(sk, SOCK_SELECT_ERR_QUEUE) ? EPOLLPRI : 0);
 
 	if (!skb_queue_empty(&sk->sk_receive_queue))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	if (sk->sk_state == LLCP_CLOSED)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 
 	if (sk->sk_shutdown & RCV_SHUTDOWN)
-		mask |= POLLRDHUP | POLLIN | POLLRDNORM;
+		mask |= EPOLLRDHUP | EPOLLIN | EPOLLRDNORM;
 
 	if (sk->sk_shutdown == SHUTDOWN_MASK)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 
 	if (sock_writeable(sk) && sk->sk_state == LLCP_CONNECTED)
-		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
+		mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 	else
 		sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 
@@ -661,8 +663,7 @@ static int llcp_sock_connect(struct socket *sock, struct sockaddr *_addr,
 
 	pr_debug("sock %p sk %p flags 0x%x\n", sock, sk, flags);
 
-	if (!addr || len < sizeof(struct sockaddr_nfc) ||
-	    addr->sa_family != AF_NFC)
+	if (!addr || len < sizeof(*addr) || addr->sa_family != AF_NFC)
 		return -EINVAL;
 
 	if (addr->service_name_len == 0 && addr->dsap == 0)

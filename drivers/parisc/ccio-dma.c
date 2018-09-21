@@ -110,6 +110,8 @@
 #define CMD_TLB_DIRECT_WRITE 35         /* IO_COMMAND for I/O TLB Writes     */
 #define CMD_TLB_PURGE        33         /* IO_COMMAND to Purge I/O TLB entry */
 
+#define CCIO_MAPPING_ERROR    (~(dma_addr_t)0)
+
 struct ioa_registers {
         /* Runway Supervisory Set */
         int32_t    unused1[12];
@@ -741,6 +743,8 @@ ccio_map_single(struct device *dev, void *addr, size_t size,
 
 	BUG_ON(!dev);
 	ioc = GET_IOC(dev);
+	if (!ioc)
+		return CCIO_MAPPING_ERROR;
 
 	BUG_ON(size <= 0);
 
@@ -814,6 +818,10 @@ ccio_unmap_page(struct device *dev, dma_addr_t iova, size_t size,
 	
 	BUG_ON(!dev);
 	ioc = GET_IOC(dev);
+	if (!ioc) {
+		WARN_ON(!ioc);
+		return;
+	}
 
 	DBG_RUN("%s() iovp 0x%lx/%x\n",
 		__func__, (long)iova, size);
@@ -918,6 +926,8 @@ ccio_map_sg(struct device *dev, struct scatterlist *sglist, int nents,
 	
 	BUG_ON(!dev);
 	ioc = GET_IOC(dev);
+	if (!ioc)
+		return 0;
 	
 	DBG_RUN_SG("%s() START %d entries\n", __func__, nents);
 
@@ -990,6 +1000,10 @@ ccio_unmap_sg(struct device *dev, struct scatterlist *sglist, int nents,
 
 	BUG_ON(!dev);
 	ioc = GET_IOC(dev);
+	if (!ioc) {
+		WARN_ON(!ioc);
+		return;
+	}
 
 	DBG_RUN_SG("%s() START %d entries, %p,%x\n",
 		__func__, nents, sg_virt(sglist), sglist->length);
@@ -1011,7 +1025,12 @@ ccio_unmap_sg(struct device *dev, struct scatterlist *sglist, int nents,
 	DBG_RUN_SG("%s() DONE (nents %d)\n", __func__, nents);
 }
 
-static struct dma_map_ops ccio_ops = {
+static int ccio_mapping_error(struct device *dev, dma_addr_t dma_addr)
+{
+	return dma_addr == CCIO_MAPPING_ERROR;
+}
+
+static const struct dma_map_ops ccio_ops = {
 	.dma_supported =	ccio_dma_supported,
 	.alloc =		ccio_alloc,
 	.free =			ccio_free,
@@ -1019,6 +1038,7 @@ static struct dma_map_ops ccio_ops = {
 	.unmap_page =		ccio_unmap_page,
 	.map_sg = 		ccio_map_sg,
 	.unmap_sg = 		ccio_unmap_sg,
+	.mapping_error =	ccio_mapping_error,
 };
 
 #ifdef CONFIG_PROC_FS
@@ -1088,19 +1108,6 @@ static int ccio_proc_info(struct seq_file *m, void *p)
 	return 0;
 }
 
-static int ccio_proc_info_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, &ccio_proc_info, NULL);
-}
-
-static const struct file_operations ccio_proc_info_fops = {
-	.owner = THIS_MODULE,
-	.open = ccio_proc_info_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
 static int ccio_proc_bitmap_info(struct seq_file *m, void *p)
 {
 	struct ioc *ioc = ioc_list;
@@ -1115,19 +1122,6 @@ static int ccio_proc_bitmap_info(struct seq_file *m, void *p)
 
 	return 0;
 }
-
-static int ccio_proc_bitmap_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, &ccio_proc_bitmap_info, NULL);
-}
-
-static const struct file_operations ccio_proc_bitmap_fops = {
-	.owner = THIS_MODULE,
-	.open = ccio_proc_bitmap_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
 #endif /* CONFIG_PROC_FS */
 
 /**
@@ -1175,7 +1169,7 @@ void * ccio_get_iommu(const struct parisc_device *dev)
  * to/from certain pages.  To avoid this happening, we mark these pages
  * as `used', and ensure that nothing will try to allocate from them.
  */
-void ccio_cujo20_fixup(struct parisc_device *cujo, u32 iovp)
+void __init ccio_cujo20_fixup(struct parisc_device *cujo, u32 iovp)
 {
 	unsigned int idx;
 	struct parisc_device *dev = parisc_parent(cujo);
@@ -1221,7 +1215,7 @@ ccio_get_iotlb_size(struct parisc_device *dev)
 #endif /* 0 */
 
 /* We *can't* support JAVA (T600). Venture there at your own risk. */
-static const struct parisc_device_id ccio_tbl[] = {
+static const struct parisc_device_id ccio_tbl[] __initconst = {
 	{ HPHW_IOA, HVERSION_REV_ANY_ID, U2_IOA_RUNWAY, 0xb }, /* U2 */
 	{ HPHW_IOA, HVERSION_REV_ANY_ID, UTURN_IOA_RUNWAY, 0xb }, /* UTurn */
 	{ 0, }
@@ -1229,7 +1223,7 @@ static const struct parisc_device_id ccio_tbl[] = {
 
 static int ccio_probe(struct parisc_device *dev);
 
-static struct parisc_driver ccio_driver = {
+static struct parisc_driver ccio_driver __refdata = {
 	.name =		"ccio",
 	.id_table =	ccio_tbl,
 	.probe =	ccio_probe,
@@ -1243,7 +1237,7 @@ static struct parisc_driver ccio_driver = {
  * I/O Page Directory, the resource map, and initalizing the
  * U2/Uturn chip into virtual mode.
  */
-static void
+static void __init
 ccio_ioc_init(struct ioc *ioc)
 {
 	int i;
@@ -1539,7 +1533,7 @@ static int __init ccio_probe(struct parisc_device *dev)
 	ioc = kzalloc(sizeof(struct ioc), GFP_KERNEL);
 	if (ioc == NULL) {
 		printk(KERN_ERR MODULE_NAME ": memory allocation failure\n");
-		return 1;
+		return -ENOMEM;
 	}
 
 	ioc->name = dev->id.hversion == U2_IOA_RUNWAY ? "U2" : "UTurn";
@@ -1554,6 +1548,10 @@ static int __init ccio_probe(struct parisc_device *dev)
 
 	ioc->hw_path = dev->hw_path;
 	ioc->ioc_regs = ioremap_nocache(dev->hpa.start, 4096);
+	if (!ioc->ioc_regs) {
+		kfree(ioc);
+		return -ENOMEM;
+	}
 	ccio_ioc_init(ioc);
 	ccio_init_resources(ioc);
 	hppa_dma_ops = &ccio_ops;
@@ -1565,15 +1563,13 @@ static int __init ccio_probe(struct parisc_device *dev)
 
 #ifdef CONFIG_PROC_FS
 	if (ioc_count == 0) {
-		proc_create(MODULE_NAME, 0, proc_runway_root,
-			    &ccio_proc_info_fops);
-		proc_create(MODULE_NAME"-bitmap", 0, proc_runway_root,
-			    &ccio_proc_bitmap_fops);
+		proc_create_single(MODULE_NAME, 0, proc_runway_root,
+				ccio_proc_info);
+		proc_create_single(MODULE_NAME"-bitmap", 0, proc_runway_root,
+				ccio_proc_bitmap_info);
 	}
 #endif
 	ioc_count++;
-
-	parisc_has_iommu();
 	return 0;
 }
 

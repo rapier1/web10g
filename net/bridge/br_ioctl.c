@@ -98,7 +98,7 @@ static int add_del_if(struct net_bridge *br, int ifindex, int isadd)
 		return -EINVAL;
 
 	if (isadd)
-		ret = br_add_if(br, dev);
+		ret = br_add_if(br, dev, NULL);
 	else
 		ret = br_del_if(br, dev);
 
@@ -149,7 +149,7 @@ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 		b.hello_timer_value = br_timer_value(&br->hello_timer);
 		b.tcn_timer_value = br_timer_value(&br->tcn_timer);
 		b.topology_change_timer_value = br_timer_value(&br->topology_change_timer);
-		b.gc_timer_value = br_timer_value(&br->gc_timer);
+		b.gc_timer_value = br_timer_value(&br->gc_work.timer);
 		rcu_read_unlock();
 
 		if (copy_to_user((void __user *)args[1], &b, sizeof(b)))
@@ -293,7 +293,7 @@ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 
 	if (!ret) {
 		if (p)
-			br_ifinfo_notify(RTM_NEWLINK, p);
+			br_ifinfo_notify(RTM_NEWLINK, NULL, p);
 		else
 			netdev_state_change(br->dev);
 	}

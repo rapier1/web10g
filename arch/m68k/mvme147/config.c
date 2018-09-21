@@ -63,7 +63,7 @@ int __init mvme147_parse_bootinfo(const struct bi_record *bi)
 
 void mvme147_reset(void)
 {
-	printk ("\r\n\nCalled mvme147_reset\r\n");
+	pr_info("\r\n\nCalled mvme147_reset\r\n");
 	m147_pcc->watchdog = 0x0a;	/* Clear timer */
 	m147_pcc->watchdog = 0xa5;	/* Enable watchdog - 100ms to reset */
 	while (1)
@@ -153,12 +153,14 @@ int mvme147_hwclk(int op, struct rtc_time *t)
 	if (!op) {
 		m147_rtc->ctrl = RTC_READ;
 		t->tm_year = bcd2int (m147_rtc->bcd_year);
-		t->tm_mon  = bcd2int (m147_rtc->bcd_mth);
+		t->tm_mon  = bcd2int(m147_rtc->bcd_mth) - 1;
 		t->tm_mday = bcd2int (m147_rtc->bcd_dom);
 		t->tm_hour = bcd2int (m147_rtc->bcd_hr);
 		t->tm_min  = bcd2int (m147_rtc->bcd_min);
 		t->tm_sec  = bcd2int (m147_rtc->bcd_sec);
 		m147_rtc->ctrl = 0;
+		if (t->tm_year < 70)
+			t->tm_year += 100;
 	}
 	return 0;
 }

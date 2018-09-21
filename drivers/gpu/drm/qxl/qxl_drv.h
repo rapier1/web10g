@@ -36,19 +36,18 @@
 #include <linux/firmware.h>
 #include <linux/platform_device.h>
 
-#include "drmP.h"
-#include "drm_crtc.h"
-#include <ttm/ttm_bo_api.h>
-#include <ttm/ttm_bo_driver.h>
-#include <ttm/ttm_placement.h>
-#include <ttm/ttm_module.h>
-
+#include <drm/drm_crtc.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_gem.h>
-
+#include <drm/drmP.h>
+#include <drm/ttm/ttm_bo_api.h>
+#include <drm/ttm/ttm_bo_driver.h>
 /* just for ttm_validate_buffer */
-#include <ttm/ttm_execbuf_util.h>
-
+#include <drm/ttm/ttm_execbuf_util.h>
+#include <drm/ttm/ttm_module.h>
+#include <drm/ttm/ttm_placement.h>
 #include <drm/qxl_drm.h>
+
 #include "qxl_dev.h"
 
 #define DRIVER_AUTHOR		"Dave Airlie"
@@ -63,31 +62,8 @@
 
 #define QXL_DEBUGFS_MAX_COMPONENTS		32
 
-extern int qxl_log_level;
 extern int qxl_num_crtc;
-
-enum {
-	QXL_INFO_LEVEL = 1,
-	QXL_DEBUG_LEVEL = 2,
-};
-
-#define QXL_INFO(qdev, fmt, ...) do { \
-		if (qxl_log_level >= QXL_INFO_LEVEL) {	\
-			qxl_io_log(qdev, fmt, __VA_ARGS__); \
-		}	\
-	} while (0)
-#define QXL_DEBUG(qdev, fmt, ...) do { \
-		if (qxl_log_level >= QXL_DEBUG_LEVEL) {	\
-			qxl_io_log(qdev, fmt, __VA_ARGS__); \
-		}	\
-	} while (0)
-#define QXL_INFO_ONCE(qdev, fmt, ...) do { \
-		static int done;		\
-		if (!done) {			\
-			done = 1;			\
-			QXL_INFO(qdev, fmt, __VA_ARGS__);	\
-		}						\
-	} while (0)
+extern int qxl_max_ioctls;
 
 #define DRM_FILE_OFFSET 0x100000000ULL
 #define DRM_FILE_PAGE_OFFSET (DRM_FILE_OFFSET >> PAGE_SHIFT)
@@ -113,6 +89,8 @@ struct qxl_bo {
 	/* Constant after initialization */
 	struct drm_gem_object		gem_base;
 	bool is_primary; /* is this now a primary surface */
+	bool is_dumb;
+	struct qxl_bo *shadow;
 	bool hw_surf_alloc;
 	struct qxl_surface surf;
 	uint32_t surface_id;
@@ -133,10 +111,7 @@ struct qxl_bo_list {
 struct qxl_crtc {
 	struct drm_crtc base;
 	int index;
-	int cur_x;
-	int cur_y;
-	int hot_spot_x;
-	int hot_spot_y;
+
 	struct qxl_bo *cursor_bo;
 };
 
@@ -164,8 +139,6 @@ struct qxl_mman {
 };
 
 struct qxl_mode_info {
-	int num_modes;
-	struct qxl_mode *modes;
 	bool mode_config_initialized;
 
 	/* pointer to fbdev info structure */
@@ -194,6 +167,7 @@ struct qxl_release {
 
 	int id;
 	int type;
+	struct qxl_bo *release_bo;
 	uint32_t release_offset;
 	uint32_t surface_release_id;
 	struct ww_acquire_ctx ticket;
@@ -236,15 +210,11 @@ int qxl_debugfs_add_files(struct qxl_device *rdev,
 			     struct drm_info_list *files,
 			     unsigned nfiles);
 int qxl_debugfs_fence_init(struct qxl_device *rdev);
-void qxl_debugfs_remove_files(struct qxl_device *qdev);
 
 struct qxl_device;
 
 struct qxl_device {
-	struct device			*dev;
-	struct drm_device		*ddev;
-	struct pci_dev			*pdev;
-	unsigned long flags;
+	struct drm_device ddev;
 
 	resource_size_t vram_base, vram_size;
 	resource_size_t surfaceram_base, surfaceram_size;
@@ -329,14 +299,12 @@ struct qxl_device {
 	int monitors_config_height;
 };
 
-/* forward declaration for QXL_INFO_IO */
-__printf(2,3) void qxl_io_log(struct qxl_device *qdev, const char *fmt, ...);
-
 extern const struct drm_ioctl_desc qxl_ioctls[];
 extern int qxl_max_ioctl;
 
-int qxl_driver_load(struct drm_device *dev, unsigned long flags);
-int qxl_driver_unload(struct drm_device *dev);
+int qxl_device_init(struct qxl_device *qdev, struct drm_driver *drv,
+		    struct pci_dev *pdev);
+void qxl_device_fini(struct qxl_device *qdev);
 
 int qxl_modeset_init(struct qxl_device *qdev);
 void qxl_modeset_fini(struct qxl_device *qdev);
@@ -361,7 +329,7 @@ int qxl_check_idle(struct qxl_ring *ring);
 static inline void *
 qxl_fb_virtual_address(struct qxl_device *qdev, unsigned long physical)
 {
-	QXL_INFO(qdev, "not implemented (%lu)\n", physical);
+	DRM_DEBUG_DRIVER("not implemented (%lu)\n", physical);
 	return 0;
 }
 
@@ -529,7 +497,7 @@ int qxl_garbage_collect(struct qxl_device *qdev);
 /* debugfs */
 
 int qxl_debugfs_init(struct drm_minor *minor);
-void qxl_debugfs_takedown(struct drm_minor *minor);
+int qxl_ttm_debugfs_init(struct qxl_device *qdev);
 
 /* qxl_prime.c */
 int qxl_gem_prime_pin(struct drm_gem_object *obj);

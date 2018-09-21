@@ -11,10 +11,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/delay.h>
@@ -62,7 +58,7 @@ static const struct vs6624_format {
 	},
 };
 
-static struct v4l2_mbus_framefmt vs6624_default_fmt = {
+static const struct v4l2_mbus_framefmt vs6624_default_fmt = {
 	.width = VGA_WIDTH,
 	.height = VGA_HEIGHT,
 	.code = MEDIA_BUS_FMT_UYVY8_2X8,
@@ -661,31 +657,22 @@ static int vs6624_get_fmt(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int vs6624_g_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+static int vs6624_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *ival)
 {
 	struct vs6624 *sensor = to_vs6624(sd);
-	struct v4l2_captureparm *cp = &parms->parm.capture;
 
-	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-
-	memset(cp, 0, sizeof(*cp));
-	cp->capability = V4L2_CAP_TIMEPERFRAME;
-	cp->timeperframe.numerator = sensor->frame_rate.denominator;
-	cp->timeperframe.denominator = sensor->frame_rate.numerator;
+	ival->interval.numerator = sensor->frame_rate.denominator;
+	ival->interval.denominator = sensor->frame_rate.numerator;
 	return 0;
 }
 
-static int vs6624_s_parm(struct v4l2_subdev *sd, struct v4l2_streamparm *parms)
+static int vs6624_s_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *ival)
 {
 	struct vs6624 *sensor = to_vs6624(sd);
-	struct v4l2_captureparm *cp = &parms->parm.capture;
-	struct v4l2_fract *tpf = &cp->timeperframe;
+	struct v4l2_fract *tpf = &ival->interval;
 
-	if (parms->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-	if (cp->extendedmode != 0)
-		return -EINVAL;
 
 	if (tpf->numerator == 0 || tpf->denominator == 0
 		|| (tpf->denominator > tpf->numerator * MAX_FRAME_RATE)) {
@@ -742,8 +729,8 @@ static const struct v4l2_subdev_core_ops vs6624_core_ops = {
 };
 
 static const struct v4l2_subdev_video_ops vs6624_video_ops = {
-	.s_parm = vs6624_s_parm,
-	.g_parm = vs6624_g_parm,
+	.s_frame_interval = vs6624_s_frame_interval,
+	.g_frame_interval = vs6624_g_frame_interval,
 	.s_stream = vs6624_s_stream,
 };
 

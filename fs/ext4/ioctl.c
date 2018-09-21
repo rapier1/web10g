@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/ext4/ioctl.c
  *
@@ -14,10 +15,16 @@
 #include <linux/mount.h>
 #include <linux/file.h>
 #include <linux/quotaops.h>
+#include <linux/random.h>
 #include <linux/uuid.h>
 #include <linux/uaccess.h>
+#include <linux/delay.h>
+#include <linux/iversion.h>
 #include "ext4_jbd2.h"
 #include "ext4.h"
+#include <linux/fsmap.h>
+#include "fsmap.h"
+#include <trace/events/ext4.h>
 
 /**
  * Swap memory between @a and @b for @len bytes.
@@ -60,18 +67,16 @@ static void swap_inode_data(struct inode *inode1, struct inode *inode2)
 	ei1 = EXT4_I(inode1);
 	ei2 = EXT4_I(inode2);
 
-	memswap(&inode1->i_flags, &inode2->i_flags, sizeof(inode1->i_flags));
-	memswap(&inode1->i_version, &inode2->i_version,
-		  sizeof(inode1->i_version));
-	memswap(&inode1->i_blocks, &inode2->i_blocks,
-		  sizeof(inode1->i_blocks));
-	memswap(&inode1->i_bytes, &inode2->i_bytes, sizeof(inode1->i_bytes));
-	memswap(&inode1->i_atime, &inode2->i_atime, sizeof(inode1->i_atime));
-	memswap(&inode1->i_mtime, &inode2->i_mtime, sizeof(inode1->i_mtime));
+	swap(inode1->i_flags, inode2->i_flags);
+	swap(inode1->i_version, inode2->i_version);
+	swap(inode1->i_blocks, inode2->i_blocks);
+	swap(inode1->i_bytes, inode2->i_bytes);
+	swap(inode1->i_atime, inode2->i_atime);
+	swap(inode1->i_mtime, inode2->i_mtime);
 
 	memswap(ei1->i_data, ei2->i_data, sizeof(ei1->i_data));
-	memswap(&ei1->i_flags, &ei2->i_flags, sizeof(ei1->i_flags));
-	memswap(&ei1->i_disksize, &ei2->i_disksize, sizeof(ei1->i_disksize));
+	swap(ei1->i_flags, ei2->i_flags);
+	swap(ei1->i_disksize, ei2->i_disksize);
 	ext4_es_remove_extent(inode1, 0, EXT_MAX_BLOCKS);
 	ext4_es_remove_extent(inode2, 0, EXT_MAX_BLOCKS);
 
@@ -96,7 +101,6 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	int err;
 	struct inode *inode_bl;
 	struct ext4_inode_info *ei_bl;
-	struct ext4_sb_info *sbi = EXT4_SB(sb);
 
 	if (inode->i_nlink != 1 || !S_ISREG(inode->i_mode))
 		return -EINVAL;
@@ -120,8 +124,6 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	truncate_inode_pages(&inode_bl->i_data, 0);
 
 	/* Wait for all existing dio workers */
-	ext4_inode_block_unlocked_dio(inode);
-	ext4_inode_block_unlocked_dio(inode_bl);
 	inode_dio_wait(inode);
 	inode_dio_wait(inode_bl);
 
@@ -141,7 +143,7 @@ static long swap_inode_boot_loader(struct super_block *sb,
 		i_gid_write(inode_bl, 0);
 		inode_bl->i_flags = 0;
 		ei_bl->i_flags = 0;
-		inode_bl->i_version = 1;
+		inode_set_iversion(inode_bl, 1);
 		i_size_write(inode_bl, 0);
 		inode_bl->i_mode = S_IFREG;
 		if (ext4_has_feature_extents(sb)) {
@@ -155,10 +157,8 @@ static long swap_inode_boot_loader(struct super_block *sb,
 
 	inode->i_ctime = inode_bl->i_ctime = current_time(inode);
 
-	spin_lock(&sbi->s_next_gen_lock);
-	inode->i_generation = sbi->s_next_generation++;
-	inode_bl->i_generation = sbi->s_next_generation++;
-	spin_unlock(&sbi->s_next_gen_lock);
+	inode->i_generation = prandom_u32();
+	inode_bl->i_generation = prandom_u32();
 
 	ext4_discard_preallocations(inode);
 
@@ -184,8 +184,6 @@ static long swap_inode_boot_loader(struct super_block *sb,
 	ext4_double_up_write_data_sem(inode, inode_bl);
 
 journal_err_out:
-	ext4_inode_resume_unlocked_dio(inode);
-	ext4_inode_resume_unlocked_dio(inode_bl);
 	unlock_two_nondirectories(inode, inode_bl);
 	iput(inode_bl);
 	return err;
@@ -214,7 +212,7 @@ static int ext4_ioctl_setflags(struct inode *inode,
 	unsigned int jflag;
 
 	/* Is it quota file? Do not allow user to mess with it */
-	if (IS_NOQUOTA(inode))
+	if (ext4_is_quota_file(inode))
 		goto flags_out;
 
 	oldflags = ei->i_flags;
@@ -288,10 +286,20 @@ flags_err:
 	if (err)
 		goto flags_out;
 
-	if ((jflag ^ oldflags) & (EXT4_JOURNAL_DATA_FL))
+	if ((jflag ^ oldflags) & (EXT4_JOURNAL_DATA_FL)) {
+		/*
+		 * Changes to the journaling mode can cause unsafe changes to
+		 * S_DAX if we are using the DAX mount option.
+		 */
+		if (test_opt(inode->i_sb, DAX)) {
+			err = -EBUSY;
+			goto flags_out;
+		}
+
 		err = ext4_change_inode_journal_flag(inode, jflag);
-	if (err)
-		goto flags_out;
+		if (err)
+			goto flags_out;
+	}
 	if (migrate) {
 		if (flags & EXT4_EXTENTS_FL)
 			err = ext4_ext_migrate(inode);
@@ -338,7 +346,7 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 	err = -EPERM;
 	inode_lock(inode);
 	/* Is it quota file? Do not allow user to mess with it */
-	if (IS_NOQUOTA(inode))
+	if (ext4_is_quota_file(inode))
 		goto out_unlock;
 
 	err = ext4_get_inode_loc(inode, &iloc);
@@ -347,11 +355,14 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 
 	raw_inode = ext4_raw_inode(&iloc);
 	if (!EXT4_FITS_IN_INODE(raw_inode, ei, i_projid)) {
-		err = -EOVERFLOW;
+		err = ext4_expand_extra_isize(inode,
+					      EXT4_SB(sb)->s_want_extra_isize,
+					      &iloc);
+		if (err)
+			goto out_unlock;
+	} else {
 		brelse(iloc.bh);
-		goto out_unlock;
 	}
-	brelse(iloc.bh);
 
 	dquot_initialize(inode);
 
@@ -369,7 +380,13 @@ static int ext4_ioctl_setproject(struct file *filp, __u32 projid)
 
 	transfer_to[PRJQUOTA] = dqget(sb, make_kqid_projid(kprojid));
 	if (!IS_ERR(transfer_to[PRJQUOTA])) {
+
+		/* __dquot_transfer() calls back ext4_get_inode_usage() which
+		 * counts xattr inode references.
+		 */
+		down_read(&EXT4_I(inode)->xattr_sem);
 		err = __dquot_transfer(inode, transfer_to);
+		up_read(&EXT4_I(inode)->xattr_sem);
 		dqput(transfer_to[PRJQUOTA]);
 		if (err)
 			goto out_dirty;
@@ -442,6 +459,173 @@ static inline unsigned long ext4_xflags_to_iflags(__u32 xflags)
 	return iflags;
 }
 
+static int ext4_shutdown(struct super_block *sb, unsigned long arg)
+{
+	struct ext4_sb_info *sbi = EXT4_SB(sb);
+	__u32 flags;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	if (get_user(flags, (__u32 __user *)arg))
+		return -EFAULT;
+
+	if (flags > EXT4_GOING_FLAGS_NOLOGFLUSH)
+		return -EINVAL;
+
+	if (ext4_forced_shutdown(sbi))
+		return 0;
+
+	ext4_msg(sb, KERN_ALERT, "shut down requested (%d)", flags);
+	trace_ext4_shutdown(sb, flags);
+
+	switch (flags) {
+	case EXT4_GOING_FLAGS_DEFAULT:
+		freeze_bdev(sb->s_bdev);
+		set_bit(EXT4_FLAGS_SHUTDOWN, &sbi->s_ext4_flags);
+		thaw_bdev(sb->s_bdev, sb);
+		break;
+	case EXT4_GOING_FLAGS_LOGFLUSH:
+		set_bit(EXT4_FLAGS_SHUTDOWN, &sbi->s_ext4_flags);
+		if (sbi->s_journal && !is_journal_aborted(sbi->s_journal)) {
+			(void) ext4_force_commit(sb);
+			jbd2_journal_abort(sbi->s_journal, -ESHUTDOWN);
+		}
+		break;
+	case EXT4_GOING_FLAGS_NOLOGFLUSH:
+		set_bit(EXT4_FLAGS_SHUTDOWN, &sbi->s_ext4_flags);
+		if (sbi->s_journal && !is_journal_aborted(sbi->s_journal))
+			jbd2_journal_abort(sbi->s_journal, -ESHUTDOWN);
+		break;
+	default:
+		return -EINVAL;
+	}
+	clear_opt(sb, DISCARD);
+	return 0;
+}
+
+struct getfsmap_info {
+	struct super_block	*gi_sb;
+	struct fsmap_head __user *gi_data;
+	unsigned int		gi_idx;
+	__u32			gi_last_flags;
+};
+
+static int ext4_getfsmap_format(struct ext4_fsmap *xfm, void *priv)
+{
+	struct getfsmap_info *info = priv;
+	struct fsmap fm;
+
+	trace_ext4_getfsmap_mapping(info->gi_sb, xfm);
+
+	info->gi_last_flags = xfm->fmr_flags;
+	ext4_fsmap_from_internal(info->gi_sb, &fm, xfm);
+	if (copy_to_user(&info->gi_data->fmh_recs[info->gi_idx++], &fm,
+			sizeof(struct fsmap)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int ext4_ioc_getfsmap(struct super_block *sb,
+			     struct fsmap_head __user *arg)
+{
+	struct getfsmap_info info = {0};
+	struct ext4_fsmap_head xhead = {0};
+	struct fsmap_head head;
+	bool aborted = false;
+	int error;
+
+	if (copy_from_user(&head, arg, sizeof(struct fsmap_head)))
+		return -EFAULT;
+	if (memchr_inv(head.fmh_reserved, 0, sizeof(head.fmh_reserved)) ||
+	    memchr_inv(head.fmh_keys[0].fmr_reserved, 0,
+		       sizeof(head.fmh_keys[0].fmr_reserved)) ||
+	    memchr_inv(head.fmh_keys[1].fmr_reserved, 0,
+		       sizeof(head.fmh_keys[1].fmr_reserved)))
+		return -EINVAL;
+	/*
+	 * ext4 doesn't report file extents at all, so the only valid
+	 * file offsets are the magic ones (all zeroes or all ones).
+	 */
+	if (head.fmh_keys[0].fmr_offset ||
+	    (head.fmh_keys[1].fmr_offset != 0 &&
+	     head.fmh_keys[1].fmr_offset != -1ULL))
+		return -EINVAL;
+
+	xhead.fmh_iflags = head.fmh_iflags;
+	xhead.fmh_count = head.fmh_count;
+	ext4_fsmap_to_internal(sb, &xhead.fmh_keys[0], &head.fmh_keys[0]);
+	ext4_fsmap_to_internal(sb, &xhead.fmh_keys[1], &head.fmh_keys[1]);
+
+	trace_ext4_getfsmap_low_key(sb, &xhead.fmh_keys[0]);
+	trace_ext4_getfsmap_high_key(sb, &xhead.fmh_keys[1]);
+
+	info.gi_sb = sb;
+	info.gi_data = arg;
+	error = ext4_getfsmap(sb, &xhead, ext4_getfsmap_format, &info);
+	if (error == EXT4_QUERY_RANGE_ABORT) {
+		error = 0;
+		aborted = true;
+	} else if (error)
+		return error;
+
+	/* If we didn't abort, set the "last" flag in the last fmx */
+	if (!aborted && info.gi_idx) {
+		info.gi_last_flags |= FMR_OF_LAST;
+		if (copy_to_user(&info.gi_data->fmh_recs[info.gi_idx - 1].fmr_flags,
+				 &info.gi_last_flags,
+				 sizeof(info.gi_last_flags)))
+			return -EFAULT;
+	}
+
+	/* copy back header */
+	head.fmh_entries = xhead.fmh_entries;
+	head.fmh_oflags = xhead.fmh_oflags;
+	if (copy_to_user(arg, &head, sizeof(struct fsmap_head)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static long ext4_ioctl_group_add(struct file *file,
+				 struct ext4_new_group_data *input)
+{
+	struct super_block *sb = file_inode(file)->i_sb;
+	int err, err2=0;
+
+	err = ext4_resize_begin(sb);
+	if (err)
+		return err;
+
+	if (ext4_has_feature_bigalloc(sb)) {
+		ext4_msg(sb, KERN_ERR,
+			 "Online resizing not supported with bigalloc");
+		err = -EOPNOTSUPP;
+		goto group_add_out;
+	}
+
+	err = mnt_want_write_file(file);
+	if (err)
+		goto group_add_out;
+
+	err = ext4_group_add(sb, input);
+	if (EXT4_SB(sb)->s_journal) {
+		jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
+		err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
+		jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
+	}
+	if (err == 0)
+		err = err2;
+	mnt_drop_write_file(file);
+	if (!err && ext4_has_group_desc_csum(sb) &&
+	    test_opt(sb, INIT_INODE_TABLE))
+		err = ext4_register_li_request(sb, input->group);
+group_add_out:
+	ext4_resize_end(sb);
+	return err;
+}
+
 long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = file_inode(filp);
@@ -452,8 +636,9 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	ext4_debug("cmd = %u, arg = %lu\n", cmd, arg);
 
 	switch (cmd) {
+	case FS_IOC_GETFSMAP:
+		return ext4_ioc_getfsmap(sb, (void __user *)arg);
 	case EXT4_IOC_GETFLAGS:
-		ext4_get_inode_flags(ei);
 		flags = ei->i_flags & EXT4_FL_USER_VISIBLE;
 		return put_user(flags, (int __user *) arg);
 	case EXT4_IOC_SETFLAGS: {
@@ -625,44 +810,12 @@ mext_out:
 
 	case EXT4_IOC_GROUP_ADD: {
 		struct ext4_new_group_data input;
-		int err, err2=0;
-
-		err = ext4_resize_begin(sb);
-		if (err)
-			return err;
 
 		if (copy_from_user(&input, (struct ext4_new_group_input __user *)arg,
-				sizeof(input))) {
-			err = -EFAULT;
-			goto group_add_out;
-		}
+				sizeof(input)))
+			return -EFAULT;
 
-		if (ext4_has_feature_bigalloc(sb)) {
-			ext4_msg(sb, KERN_ERR,
-				 "Online resizing not supported with bigalloc");
-			err = -EOPNOTSUPP;
-			goto group_add_out;
-		}
-
-		err = mnt_want_write_file(filp);
-		if (err)
-			goto group_add_out;
-
-		err = ext4_group_add(sb, &input);
-		if (EXT4_SB(sb)->s_journal) {
-			jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
-			err2 = jbd2_journal_flush(EXT4_SB(sb)->s_journal);
-			jbd2_journal_unlock_updates(EXT4_SB(sb)->s_journal);
-		}
-		if (err == 0)
-			err = err2;
-		mnt_drop_write_file(filp);
-		if (!err && ext4_has_group_desc_csum(sb) &&
-		    test_opt(sb, INIT_INODE_TABLE))
-			err = ext4_register_li_request(sb, input.group);
-group_add_out:
-		ext4_resize_end(sb);
-		return err;
+		return ext4_ioctl_group_add(filp, &input);
 	}
 
 	case EXT4_IOC_MIGRATE:
@@ -718,12 +871,6 @@ group_add_out:
 		ext4_fsblk_t n_blocks_count;
 		int err = 0, err2 = 0;
 		ext4_group_t o_group = EXT4_SB(sb)->s_groups_count;
-
-		if (ext4_has_feature_bigalloc(sb)) {
-			ext4_msg(sb, KERN_ERR,
-				 "Online resizing not (yet) supported with bigalloc");
-			return -EOPNOTSUPP;
-		}
 
 		if (copy_from_user(&n_blocks_count, (__u64 __user *)arg,
 				   sizeof(__u64))) {
@@ -841,7 +988,6 @@ resizefs_out:
 		struct fsxattr fa;
 
 		memset(&fa, 0, sizeof(struct fsxattr));
-		ext4_get_inode_flags(ei);
 		fa.fsx_xflags = ext4_iflags_to_xflags(ei->i_flags & EXT4_FL_USER_VISIBLE);
 
 		if (ext4_has_feature_project(inode->i_sb)) {
@@ -893,6 +1039,8 @@ resizefs_out:
 
 		return 0;
 	}
+	case EXT4_IOC_SHUTDOWN:
+		return ext4_shutdown(sb, arg);
 	default:
 		return -ENOTTY;
 	}
@@ -932,8 +1080,7 @@ long ext4_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 	case EXT4_IOC32_GROUP_ADD: {
 		struct compat_ext4_new_group_input __user *uinput;
-		struct ext4_new_group_input input;
-		mm_segment_t old_fs;
+		struct ext4_new_group_data input;
 		int err;
 
 		uinput = compat_ptr(arg);
@@ -946,12 +1093,7 @@ long ext4_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				&uinput->reserved_blocks);
 		if (err)
 			return -EFAULT;
-		old_fs = get_fs();
-		set_fs(KERNEL_DS);
-		err = ext4_ioctl(file, EXT4_IOC_GROUP_ADD,
-				 (unsigned long) &input);
-		set_fs(old_fs);
-		return err;
+		return ext4_ioctl_group_add(file, &input);
 	}
 	case EXT4_IOC_MOVE_EXT:
 	case EXT4_IOC_RESIZE_FS:
@@ -959,6 +1101,8 @@ long ext4_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case EXT4_IOC_SET_ENCRYPTION_POLICY:
 	case EXT4_IOC_GET_ENCRYPTION_PWSALT:
 	case EXT4_IOC_GET_ENCRYPTION_POLICY:
+	case EXT4_IOC_SHUTDOWN:
+	case FS_IOC_GETFSMAP:
 		break;
 	default:
 		return -ENOIOCTLCMD;

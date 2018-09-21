@@ -34,37 +34,7 @@
 #include <linux/random.h>
 #include <linux/highmem.h>
 #include <crypto/skcipher.h>
-
-static int
-cifs_crypto_shash_md5_allocate(struct TCP_Server_Info *server)
-{
-	int rc;
-	unsigned int size;
-
-	if (server->secmech.sdescmd5 != NULL)
-		return 0; /* already allocated */
-
-	server->secmech.md5 = crypto_alloc_shash("md5", 0, 0);
-	if (IS_ERR(server->secmech.md5)) {
-		cifs_dbg(VFS, "could not allocate crypto md5\n");
-		rc = PTR_ERR(server->secmech.md5);
-		server->secmech.md5 = NULL;
-		return rc;
-	}
-
-	size = sizeof(struct shash_desc) +
-			crypto_shash_descsize(server->secmech.md5);
-	server->secmech.sdescmd5 = kmalloc(size, GFP_KERNEL);
-	if (!server->secmech.sdescmd5) {
-		crypto_free_shash(server->secmech.md5);
-		server->secmech.md5 = NULL;
-		return -ENOMEM;
-	}
-	server->secmech.sdescmd5->shash.tfm = server->secmech.md5;
-	server->secmech.sdescmd5->shash.flags = 0x0;
-
-	return 0;
-}
+#include <crypto/aead.h>
 
 int __cifs_calc_signature(struct smb_rqst *rqst,
 			struct TCP_Server_Info *server, char *signature,
@@ -74,25 +44,29 @@ int __cifs_calc_signature(struct smb_rqst *rqst,
 	int rc;
 	struct kvec *iov = rqst->rq_iov;
 	int n_vec = rqst->rq_nvec;
+	int is_smb2 = server->vals->header_preamble_size == 0;
 
-	for (i = 0; i < n_vec; i++) {
+	/* iov[0] is actual data and not the rfc1002 length for SMB2+ */
+	if (is_smb2) {
+		if (iov[0].iov_len <= 4)
+			return -EIO;
+		i = 0;
+	} else {
+		if (n_vec < 2 || iov[0].iov_len != 4)
+			return -EIO;
+		i = 1; /* skip rfc1002 length */
+	}
+
+	for (; i < n_vec; i++) {
 		if (iov[i].iov_len == 0)
 			continue;
 		if (iov[i].iov_base == NULL) {
 			cifs_dbg(VFS, "null iovec entry\n");
 			return -EIO;
 		}
-		/* The first entry includes a length field (which does not get
-		   signed that occupies the first 4 bytes before the header */
-		if (i == 0) {
-			if (iov[0].iov_len <= 8) /* cmd field at offset 9 */
-				break; /* nothing to sign or corrupt header */
-			rc = crypto_shash_update(shash,
-				iov[i].iov_base + 4, iov[i].iov_len - 4);
-		} else {
-			rc = crypto_shash_update(shash,
-				iov[i].iov_base, iov[i].iov_len);
-		}
+
+		rc = crypto_shash_update(shash,
+					 iov[i].iov_base, iov[i].iov_len);
 		if (rc) {
 			cifs_dbg(VFS, "%s: Could not update with payload\n",
 				 __func__);
@@ -102,11 +76,12 @@ int __cifs_calc_signature(struct smb_rqst *rqst,
 
 	/* now hash over the rq_pages array */
 	for (i = 0; i < rqst->rq_npages; i++) {
-		void *kaddr = kmap(rqst->rq_pages[i]);
-		size_t len = rqst->rq_pagesz;
+		void *kaddr;
+		unsigned int len, offset;
 
-		if (i == rqst->rq_npages - 1)
-			len = rqst->rq_tailsz;
+		rqst_page_get_length(rqst, i, &len, &offset);
+
+		kaddr = (char *) kmap(rqst->rq_pages[i]) + offset;
 
 		crypto_shash_update(shash, kaddr, len);
 
@@ -135,13 +110,10 @@ static int cifs_calc_signature(struct smb_rqst *rqst,
 	if (!rqst->rq_iov || !signature || !server)
 		return -EINVAL;
 
-	if (!server->secmech.sdescmd5) {
-		rc = cifs_crypto_shash_md5_allocate(server);
-		if (rc) {
-			cifs_dbg(VFS, "%s: Can't alloc md5 crypto\n", __func__);
-			return -1;
-		}
-	}
+	rc = cifs_alloc_hash("md5", &server->secmech.md5,
+			     &server->secmech.sdescmd5);
+	if (rc)
+		return -1;
 
 	rc = crypto_shash_init(&server->secmech.sdescmd5->shash);
 	if (rc) {
@@ -167,6 +139,10 @@ int cifs_sign_rqst(struct smb_rqst *rqst, struct TCP_Server_Info *server,
 	int rc = 0;
 	char smb_signature[20];
 	struct smb_hdr *cifs_pdu = (struct smb_hdr *)rqst->rq_iov[0].iov_base;
+
+	if (rqst->rq_iov[0].iov_len != 4 ||
+	    rqst->rq_iov[0].iov_base + 4 != rqst->rq_iov[1].iov_base)
+		return -EIO;
 
 	if ((cifs_pdu == NULL) || (server == NULL))
 		return -EINVAL;
@@ -209,12 +185,14 @@ int cifs_sign_smbv(struct kvec *iov, int n_vec, struct TCP_Server_Info *server,
 int cifs_sign_smb(struct smb_hdr *cifs_pdu, struct TCP_Server_Info *server,
 		  __u32 *pexpected_response_sequence_number)
 {
-	struct kvec iov;
+	struct kvec iov[2];
 
-	iov.iov_base = cifs_pdu;
-	iov.iov_len = be32_to_cpu(cifs_pdu->smb_buf_length) + 4;
+	iov[0].iov_base = cifs_pdu;
+	iov[0].iov_len = 4;
+	iov[1].iov_base = (char *)cifs_pdu + 4;
+	iov[1].iov_len = be32_to_cpu(cifs_pdu->smb_buf_length);
 
-	return cifs_sign_smbv(&iov, 1, server,
+	return cifs_sign_smbv(iov, 2, server,
 			      pexpected_response_sequence_number);
 }
 
@@ -226,6 +204,10 @@ int cifs_verify_signature(struct smb_rqst *rqst,
 	char server_response_sig[8];
 	char what_we_think_sig_should_be[20];
 	struct smb_hdr *cifs_pdu = (struct smb_hdr *)rqst->rq_iov[0].iov_base;
+
+	if (rqst->rq_iov[0].iov_len != 4 ||
+	    rqst->rq_iov[0].iov_base + 4 != rqst->rq_iov[1].iov_base)
+		return -EIO;
 
 	if (cifs_pdu == NULL || server == NULL)
 		return -EINVAL;
@@ -318,9 +300,8 @@ int calc_lanman_hash(const char *password, const char *cryptkey, bool encrypt,
 {
 	int i;
 	int rc;
-	char password_with_pad[CIFS_ENCPWD_SIZE];
+	char password_with_pad[CIFS_ENCPWD_SIZE] = {0};
 
-	memset(password_with_pad, 0, CIFS_ENCPWD_SIZE);
 	if (password)
 		strncpy(password_with_pad, password, CIFS_ENCPWD_SIZE);
 
@@ -471,6 +452,7 @@ find_timestamp(struct cifs_ses *ses)
 	unsigned char *blobptr;
 	unsigned char *blobend;
 	struct ntlmssp2_name *attrptr;
+	struct timespec ts;
 
 	if (!ses->auth_key.len || !ses->auth_key.response)
 		return 0;
@@ -495,7 +477,8 @@ find_timestamp(struct cifs_ses *ses)
 		blobptr += attrsize; /* advance attr value */
 	}
 
-	return cpu_to_le64(cifs_UnixTimeToNT(CURRENT_TIME));
+	ktime_get_real_ts(&ts);
+	return cpu_to_le64(cifs_UnixTimeToNT(ts));
 }
 
 static int calc_ntlmv2_hash(struct cifs_ses *ses, char *ntlmv2_hash,
@@ -655,37 +638,6 @@ CalcNTLMv2_response(const struct cifs_ses *ses, char *ntlmv2_hash)
 	return rc;
 }
 
-static int crypto_hmacmd5_alloc(struct TCP_Server_Info *server)
-{
-	int rc;
-	unsigned int size;
-
-	/* check if already allocated */
-	if (server->secmech.sdeschmacmd5)
-		return 0;
-
-	server->secmech.hmacmd5 = crypto_alloc_shash("hmac(md5)", 0, 0);
-	if (IS_ERR(server->secmech.hmacmd5)) {
-		cifs_dbg(VFS, "could not allocate crypto hmacmd5\n");
-		rc = PTR_ERR(server->secmech.hmacmd5);
-		server->secmech.hmacmd5 = NULL;
-		return rc;
-	}
-
-	size = sizeof(struct shash_desc) +
-			crypto_shash_descsize(server->secmech.hmacmd5);
-	server->secmech.sdeschmacmd5 = kmalloc(size, GFP_KERNEL);
-	if (!server->secmech.sdeschmacmd5) {
-		crypto_free_shash(server->secmech.hmacmd5);
-		server->secmech.hmacmd5 = NULL;
-		return -ENOMEM;
-	}
-	server->secmech.sdeschmacmd5->shash.tfm = server->secmech.hmacmd5;
-	server->secmech.sdeschmacmd5->shash.flags = 0x0;
-
-	return 0;
-}
-
 int
 setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 {
@@ -749,9 +701,10 @@ setup_ntlmv2_rsp(struct cifs_ses *ses, const struct nls_table *nls_cp)
 
 	mutex_lock(&ses->server->srv_mutex);
 
-	rc = crypto_hmacmd5_alloc(ses->server);
+	rc = cifs_alloc_hash("hmac(md5)",
+			     &ses->server->secmech.hmacmd5,
+			     &ses->server->secmech.sdeschmacmd5);
 	if (rc) {
-		cifs_dbg(VFS, "could not crypto alloc hmacmd5 rc %d\n", rc);
 		goto unlock;
 	}
 
@@ -868,7 +821,7 @@ out:
 }
 
 void
-cifs_crypto_shash_release(struct TCP_Server_Info *server)
+cifs_crypto_secmech_release(struct TCP_Server_Info *server)
 {
 	if (server->secmech.cmacaes) {
 		crypto_free_shash(server->secmech.cmacaes);
@@ -885,9 +838,24 @@ cifs_crypto_shash_release(struct TCP_Server_Info *server)
 		server->secmech.md5 = NULL;
 	}
 
+	if (server->secmech.sha512) {
+		crypto_free_shash(server->secmech.sha512);
+		server->secmech.sha512 = NULL;
+	}
+
 	if (server->secmech.hmacmd5) {
 		crypto_free_shash(server->secmech.hmacmd5);
 		server->secmech.hmacmd5 = NULL;
+	}
+
+	if (server->secmech.ccmaesencrypt) {
+		crypto_free_aead(server->secmech.ccmaesencrypt);
+		server->secmech.ccmaesencrypt = NULL;
+	}
+
+	if (server->secmech.ccmaesdecrypt) {
+		crypto_free_aead(server->secmech.ccmaesdecrypt);
+		server->secmech.ccmaesdecrypt = NULL;
 	}
 
 	kfree(server->secmech.sdesccmacaes);
@@ -898,4 +866,6 @@ cifs_crypto_shash_release(struct TCP_Server_Info *server)
 	server->secmech.sdeschmacmd5 = NULL;
 	kfree(server->secmech.sdescmd5);
 	server->secmech.sdescmd5 = NULL;
+	kfree(server->secmech.sdescsha512);
+	server->secmech.sdescsha512 = NULL;
 }

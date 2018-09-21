@@ -14,10 +14,6 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "saa7134.h"
@@ -33,7 +29,7 @@
 
 #include <media/v4l2-common.h>
 #include "dvb-pll.h"
-#include <dvb_frontend.h>
+#include <media/dvb_frontend.h>
 
 #include "mt352.h"
 #include "mt352_priv.h" /* FIXME */
@@ -1046,11 +1042,11 @@ static int md8800_set_high_voltage2(struct dvb_frontend *fe, long arg)
  * nxt200x based ATSC cards, helper functions
  */
 
-static struct nxt200x_config avertvhda180 = {
+static const struct nxt200x_config avertvhda180 = {
 	.demod_address    = 0x0a,
 };
 
-static struct nxt200x_config kworldatsc110 = {
+static const struct nxt200x_config kworldatsc110 = {
 	.demod_address    = 0x0a,
 };
 
@@ -1199,7 +1195,7 @@ static struct s5h1411_config kworld_s5h1411_config = {
 	.inversion     = S5H1411_INVERSION_ON,
 	.status_mode   = S5H1411_DEMODLOCKING,
 	.mpeg_timing   =
-		S5H1411_MPEGTIMING_CONTINOUS_NONINVERTING_CLOCK,
+		S5H1411_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK,
 };
 
 
@@ -1393,7 +1389,7 @@ static int dvb_init(struct saa7134_dev *dev)
 			if (configure_tda827x_fe(dev, &lifeview_trio_config,
 						 &tda827x_cfg_0) < 0)
 				goto detach_frontend;
-		} else {  		/* satellite */
+		} else {		/* satellite */
 			fe0->dvb.frontend = dvb_attach(tda10086_attach, &flydvbs, &dev->i2c_adap);
 			if (fe0->dvb.frontend) {
 				if (dvb_attach(tda826x_attach, fe0->dvb.frontend, 0x63,
@@ -1663,7 +1659,7 @@ static int dvb_init(struct saa7134_dev *dev)
 			if (configure_tda827x_fe(dev, &asus_tiger_3in1_config,
 							&tda827x_cfg_2) < 0)
 				goto detach_frontend;
-		} else {  		/* satellite */
+		} else {		/* satellite */
 			fe0->dvb.frontend = dvb_attach(tda10086_attach,
 						&flydvbs, &dev->i2c_adap);
 			if (fe0->dvb.frontend) {

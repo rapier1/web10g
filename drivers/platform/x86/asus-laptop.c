@@ -1516,14 +1516,12 @@ static int asus_input_init(struct asus_laptop *asus)
 	error = input_register_device(input);
 	if (error) {
 		pr_warn("Unable to register input device\n");
-		goto err_free_keymap;
+		goto err_free_dev;
 	}
 
 	asus->inputdev = input;
 	return 0;
 
-err_free_keymap:
-	sparse_keymap_free(input);
 err_free_dev:
 	input_free_device(input);
 	return error;
@@ -1531,10 +1529,8 @@ err_free_dev:
 
 static void asus_input_exit(struct asus_laptop *asus)
 {
-	if (asus->inputdev) {
-		sparse_keymap_free(asus->inputdev);
+	if (asus->inputdev)
 		input_unregister_device(asus->inputdev);
-	}
 	asus->inputdev = NULL;
 }
 
@@ -1597,8 +1593,7 @@ static umode_t asus_sysfs_is_visible(struct kobject *kobj,
 				    int idx)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = to_platform_device(dev);
-	struct asus_laptop *asus = platform_get_drvdata(pdev);
+	struct asus_laptop *asus = dev_get_drvdata(dev);
 	acpi_handle handle = asus->handle;
 	bool supported;
 

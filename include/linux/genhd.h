@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_GENHD_H
 #define _LINUX_GENHD_H
 
@@ -140,6 +141,7 @@ struct hd_struct {
 #define GENHD_FL_NATIVE_CAPACITY		128
 #define GENHD_FL_BLOCK_EVENTS_ON_EXCL_WRITE	256
 #define GENHD_FL_NO_PART_SCAN			512
+#define GENHD_FL_HIDDEN				1024
 
 enum {
 	DISK_EVENT_MEDIA_CHANGE			= 1 << 0, /* media changed */
@@ -159,11 +161,11 @@ struct badblocks;
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 
 struct blk_integrity {
-	struct blk_integrity_profile	*profile;
-	unsigned char			flags;
-	unsigned char			tuple_size;
-	unsigned char			interval_exp;
-	unsigned char			tag_size;
+	const struct blk_integrity_profile	*profile;
+	unsigned char				flags;
+	unsigned char				tuple_size;
+	unsigned char				interval_exp;
+	unsigned char				tag_size;
 };
 
 #endif	/* CONFIG_BLK_DEV_INTEGRITY */
@@ -196,6 +198,7 @@ struct gendisk {
 	void *private_data;
 
 	int flags;
+	struct rw_semaphore lookup_sem;
 	struct kobject *slave_dir;
 
 	struct timer_rand_state *random;
@@ -206,6 +209,7 @@ struct gendisk {
 #endif	/* CONFIG_BLK_DEV_INTEGRITY */
 	int node_id;
 	struct badblocks *bb;
+	struct lockdep_map lockdep_map;
 };
 
 static inline struct gendisk *part_to_disk(struct hd_struct *part)
@@ -217,12 +221,6 @@ static inline struct gendisk *part_to_disk(struct hd_struct *part)
 			return dev_to_disk(part_to_dev(part));
 	}
 	return NULL;
-}
-
-static inline int blk_part_pack_uuid(const u8 *uuid_str, u8 *to)
-{
-	uuid_be_to_bin(uuid_str, (uuid_be *)to);
-	return 0;
 }
 
 static inline int disk_max_parts(struct gendisk *disk)
@@ -240,7 +238,7 @@ static inline bool disk_part_scan_enabled(struct gendisk *disk)
 
 static inline dev_t disk_devt(struct gendisk *disk)
 {
-	return disk_to_dev(disk)->devt;
+	return MKDEV(disk->major, disk->first_minor);
 }
 
 static inline dev_t part_devt(struct hd_struct *part)
@@ -248,6 +246,7 @@ static inline dev_t part_devt(struct hd_struct *part)
 	return part_to_dev(part)->devt;
 }
 
+extern struct hd_struct *__disk_get_part(struct gendisk *disk, int partno);
 extern struct hd_struct *disk_get_part(struct gendisk *disk, int partno);
 
 static inline void disk_put_part(struct hd_struct *part)
@@ -368,24 +367,14 @@ static inline void free_part_stats(struct hd_struct *part)
 #define part_stat_sub(cpu, gendiskp, field, subnd)			\
 	part_stat_add(cpu, gendiskp, field, -subnd)
 
-static inline void part_inc_in_flight(struct hd_struct *part, int rw)
-{
-	atomic_inc(&part->in_flight[rw]);
-	if (part->partno)
-		atomic_inc(&part_to_disk(part)->part0.in_flight[rw]);
-}
-
-static inline void part_dec_in_flight(struct hd_struct *part, int rw)
-{
-	atomic_dec(&part->in_flight[rw]);
-	if (part->partno)
-		atomic_dec(&part_to_disk(part)->part0.in_flight[rw]);
-}
-
-static inline int part_in_flight(struct hd_struct *part)
-{
-	return atomic_read(&part->in_flight[0]) + atomic_read(&part->in_flight[1]);
-}
+void part_in_flight(struct request_queue *q, struct hd_struct *part,
+		    unsigned int inflight[2]);
+void part_in_flight_rw(struct request_queue *q, struct hd_struct *part,
+		       unsigned int inflight[2]);
+void part_dec_in_flight(struct request_queue *q, struct hd_struct *part,
+			int rw);
+void part_inc_in_flight(struct request_queue *q, struct hd_struct *part,
+			int rw);
 
 static inline struct partition_meta_info *alloc_part_info(struct gendisk *disk)
 {
@@ -401,13 +390,18 @@ static inline void free_part_info(struct hd_struct *part)
 }
 
 /* block/blk-core.c */
-extern void part_round_stats(int cpu, struct hd_struct *part);
+extern void part_round_stats(struct request_queue *q, int cpu, struct hd_struct *part);
 
 /* block/genhd.c */
 extern void device_add_disk(struct device *parent, struct gendisk *disk);
 static inline void add_disk(struct gendisk *disk)
 {
 	device_add_disk(NULL, disk);
+}
+extern void device_add_disk_no_queue_reg(struct device *parent, struct gendisk *disk);
+static inline void add_disk_no_queue_reg(struct gendisk *disk)
+{
+	device_add_disk_no_queue_reg(NULL, disk);
 }
 
 extern void del_gendisk(struct gendisk *gp);
@@ -608,10 +602,10 @@ extern void __delete_partition(struct percpu_ref *);
 extern void delete_partition(struct gendisk *, int);
 extern void printk_all_partitions(void);
 
-extern struct gendisk *alloc_disk_node(int minors, int node_id);
-extern struct gendisk *alloc_disk(int minors);
-extern struct kobject *get_disk(struct gendisk *disk);
+extern struct gendisk *__alloc_disk_node(int minors, int node_id);
+extern struct kobject *get_disk_and_module(struct gendisk *disk);
 extern void put_disk(struct gendisk *disk);
+extern void put_disk_and_module(struct gendisk *disk);
 extern void blk_register_region(dev_t devt, unsigned long range,
 			struct module *module,
 			struct kobject *(*probe)(dev_t, int *, void *),
@@ -632,6 +626,24 @@ extern ssize_t part_fail_store(struct device *dev,
 			       struct device_attribute *attr,
 			       const char *buf, size_t count);
 #endif /* CONFIG_FAIL_MAKE_REQUEST */
+
+#define alloc_disk_node(minors, node_id)				\
+({									\
+	static struct lock_class_key __key;				\
+	const char *__name;						\
+	struct gendisk *__disk;						\
+									\
+	__name = "(gendisk_completion)"#minors"("#node_id")";		\
+									\
+	__disk = __alloc_disk_node(minors, node_id);			\
+									\
+	if (__disk)							\
+		lockdep_init_map(&__disk->lockdep_map, __name, &__key, 0); \
+									\
+	__disk;								\
+})
+
+#define alloc_disk(minors) alloc_disk_node(minors, NUMA_NO_NODE)
 
 static inline int hd_ref_init(struct hd_struct *part)
 {
@@ -722,11 +734,9 @@ static inline void part_nr_sects_write(struct hd_struct *part, sector_t size)
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 extern void blk_integrity_add(struct gendisk *);
 extern void blk_integrity_del(struct gendisk *);
-extern void blk_integrity_revalidate(struct gendisk *);
 #else	/* CONFIG_BLK_DEV_INTEGRITY */
 static inline void blk_integrity_add(struct gendisk *disk) { }
 static inline void blk_integrity_del(struct gendisk *disk) { }
-static inline void blk_integrity_revalidate(struct gendisk *disk) { }
 #endif	/* CONFIG_BLK_DEV_INTEGRITY */
 
 #else /* CONFIG_BLOCK */
@@ -737,11 +747,6 @@ static inline dev_t blk_lookup_devt(const char *name, int partno)
 {
 	dev_t devt = MKDEV(0, 0);
 	return devt;
-}
-
-static inline int blk_part_pack_uuid(const u8 *uuid_str, u8 *to)
-{
-	return -EINVAL;
 }
 #endif /* CONFIG_BLOCK */
 

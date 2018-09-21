@@ -1,4 +1,5 @@
-#ifndef __LINUX_COMPILER_H
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __LINUX_COMPILER_TYPES_H
 #error "Please don't include <linux/compiler-gcc.h> directly, include <linux/compiler.h> instead."
 #endif
 
@@ -65,21 +66,40 @@
 #endif
 
 /*
+ * Feature detection for gnu_inline (gnu89 extern inline semantics). Either
+ * __GNUC_STDC_INLINE__ is defined (not using gnu89 extern inline semantics,
+ * and we opt in to the gnu89 semantics), or __GNUC_STDC_INLINE__ is not
+ * defined so the gnu89 semantics are the default.
+ */
+#ifdef __GNUC_STDC_INLINE__
+# define __gnu_inline	__attribute__((gnu_inline))
+#else
+# define __gnu_inline
+#endif
+
+/*
  * Force always-inline if the user requests it so via the .config,
- * or if gcc is too old:
+ * or if gcc is too old.
+ * GCC does not warn about unused static inline functions for
+ * -Wunused-function.  This turns out to avoid the need for complex #ifdef
+ * directives.  Suppress the warning in clang as well by using "unused"
+ * function attribute, which is redundant but not harmful for gcc.
+ * Prefer gnu_inline, so that extern inline functions do not emit an
+ * externally visible function. This makes extern inline behave as per gnu89
+ * semantics rather than c99. This prevents multiple symbol definition errors
+ * of extern inline functions at link time.
+ * A lot of inline functions can cause havoc with function tracing.
  */
 #if !defined(CONFIG_ARCH_SUPPORTS_OPTIMIZED_INLINING) ||		\
     !defined(CONFIG_OPTIMIZE_INLINING) || (__GNUC__ < 4)
-#define inline		inline		__attribute__((always_inline)) notrace
-#define __inline__	__inline__	__attribute__((always_inline)) notrace
-#define __inline	__inline	__attribute__((always_inline)) notrace
+#define inline \
+	inline __attribute__((always_inline, unused)) notrace __gnu_inline
 #else
-/* A lot of inline functions can cause havoc with function tracing */
-#define inline		inline		notrace
-#define __inline__	__inline__	notrace
-#define __inline	__inline	notrace
+#define inline inline		__attribute__((unused)) notrace __gnu_inline
 #endif
 
+#define __inline__ inline
+#define __inline inline
 #define __always_inline	inline __attribute__((always_inline))
 #define  noinline	__attribute__((noinline))
 
@@ -87,6 +107,10 @@
 #define __packed	__attribute__((packed))
 #define __weak		__attribute__((weak))
 #define __alias(symbol)	__attribute__((alias(#symbol)))
+
+#ifdef RETPOLINE
+#define __noretpoline __attribute__((indirect_branch("keep")))
+#endif
 
 /*
  * it doesn't make sense on ARM (currently the only user of __naked)
@@ -116,11 +140,13 @@
  */
 #define __pure			__attribute__((pure))
 #define __aligned(x)		__attribute__((aligned(x)))
+#define __aligned_largest	__attribute__((aligned))
 #define __printf(a, b)		__attribute__((format(printf, a, b)))
 #define __scanf(a, b)		__attribute__((format(scanf, a, b)))
 #define __attribute_const__	__attribute__((__const__))
 #define __maybe_unused		__attribute__((unused))
 #define __always_unused		__attribute__((unused))
+#define __mode(x)               __attribute__((mode(x)))
 
 /* gcc version specific checks */
 
@@ -187,6 +213,11 @@
 #endif /* __CHECKER__ */
 #endif /* GCC_VERSION >= 40300 */
 
+#if GCC_VERSION >= 40400
+#define __optimize(level)	__attribute__((__optimize__(level)))
+#define __nostackprotector	__optimize("no-stack-protector")
+#endif /* GCC_VERSION >= 40400 */
+
 #if GCC_VERSION >= 40500
 
 #ifndef __CHECKER__
@@ -194,6 +225,15 @@
 #define __latent_entropy __attribute__((latent_entropy))
 #endif
 #endif
+
+/*
+ * calling noreturn functions, __builtin_unreachable() and __builtin_trap()
+ * confuse the stack allocation in gcc, leading to overly large stack
+ * frames, see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=82365
+ *
+ * Adding an empty inline assembly before it works around the problem
+ */
+#define barrier_before_unreachable() asm volatile("")
 
 /*
  * Mark a position in code as unreachable.  This can be used to
@@ -204,14 +244,28 @@
  * this in the preprocessor, but we can live with this because they're
  * unreleased.  Really, we need to have autoconf for the kernel.
  */
-#define unreachable() __builtin_unreachable()
+#define unreachable() \
+	do {					\
+		annotate_unreachable();		\
+		barrier_before_unreachable();	\
+		__builtin_unreachable();	\
+	} while (0)
 
 /* Mark a function definition as prohibited from being cloned. */
 #define __noclone	__attribute__((__noclone__, __optimize__("no-tracer")))
 
+#if defined(RANDSTRUCT_PLUGIN) && !defined(__CHECKER__)
+#define __randomize_layout __attribute__((randomize_layout))
+#define __no_randomize_layout __attribute__((no_randomize_layout))
+/* This anon struct can add padding, so only enable it under randstruct. */
+#define randomized_struct_fields_start	struct {
+#define randomized_struct_fields_end	} __randomize_layout;
+#endif
+
 #endif /* GCC_VERSION >= 40500 */
 
 #if GCC_VERSION >= 40600
+
 /*
  * When used with Link Time Optimization, gcc can optimize away C functions or
  * variables which are referenced only from assembly code.  __visible tells the
@@ -219,7 +273,8 @@
  * this.
  */
 #define __visible	__attribute__((externally_visible))
-#endif
+
+#endif /* GCC_VERSION >= 40600 */
 
 
 #if GCC_VERSION >= 40900 && !defined(__CHECKER__)
@@ -280,6 +335,14 @@
 #define __no_sanitize_address __attribute__((no_sanitize_address))
 #endif
 
+#if GCC_VERSION >= 50100
+/*
+ * Mark structures as requiring designated initializers.
+ * https://gcc.gnu.org/onlinedocs/gcc/Designated-Inits.html
+ */
+#define __designated_init __attribute__((designated_init))
+#endif
+
 #endif	/* gcc version >= 40000 specific checks */
 
 #if !defined(__noclone)
@@ -295,3 +358,32 @@
  * code
  */
 #define uninitialized_var(x) x = x
+
+#if GCC_VERSION >= 50100
+#define COMPILER_HAS_GENERIC_BUILTIN_OVERFLOW 1
+#endif
+
+/*
+ * Turn individual warnings and errors on and off locally, depending
+ * on version.
+ */
+#define __diag_GCC(version, severity, s) \
+	__diag_GCC_ ## version(__diag_GCC_ ## severity s)
+
+/* Severity used in pragma directives */
+#define __diag_GCC_ignore	ignored
+#define __diag_GCC_warn		warning
+#define __diag_GCC_error	error
+
+/* Compilers before gcc-4.6 do not understand "#pragma GCC diagnostic push" */
+#if GCC_VERSION >= 40600
+#define __diag_str1(s)		#s
+#define __diag_str(s)		__diag_str1(s)
+#define __diag(s)		_Pragma(__diag_str(GCC diagnostic s))
+#endif
+
+#if GCC_VERSION >= 80000
+#define __diag_GCC_8(s)		__diag(s)
+#else
+#define __diag_GCC_8(s)
+#endif

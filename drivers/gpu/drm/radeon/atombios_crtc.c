@@ -1145,7 +1145,6 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
 	struct radeon_device *rdev = dev->dev_private;
-	struct radeon_framebuffer *radeon_fb;
 	struct drm_framebuffer *target_fb;
 	struct drm_gem_object *obj;
 	struct radeon_bo *rbo;
@@ -1164,19 +1163,15 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 		return 0;
 	}
 
-	if (atomic) {
-		radeon_fb = to_radeon_framebuffer(fb);
+	if (atomic)
 		target_fb = fb;
-	}
-	else {
-		radeon_fb = to_radeon_framebuffer(crtc->primary->fb);
+	else
 		target_fb = crtc->primary->fb;
-	}
 
 	/* If atomic, assume fb object is pinned & idle & fenced and
 	 * just update base pointers
 	 */
-	obj = radeon_fb->obj;
+	obj = target_fb->obj[0];
 	rbo = gem_to_radeon_bo(obj);
 	r = radeon_bo_reserve(rbo, false);
 	if (unlikely(r != 0))
@@ -1195,7 +1190,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	radeon_bo_get_tiling_flags(rbo, &tiling_flags, NULL);
 	radeon_bo_unreserve(rbo);
 
-	switch (target_fb->pixel_format) {
+	switch (target_fb->format->format) {
 	case DRM_FORMAT_C8:
 		fb_format = (EVERGREEN_GRPH_DEPTH(EVERGREEN_GRPH_DEPTH_8BPP) |
 			     EVERGREEN_GRPH_FORMAT(EVERGREEN_GRPH_FORMAT_INDEXED));
@@ -1261,7 +1256,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 		break;
 	default:
 		DRM_ERROR("Unsupported screen format %s\n",
-		          drm_get_format_name(target_fb->pixel_format, &format_name));
+		          drm_get_format_name(target_fb->format->format, &format_name));
 		return -EINVAL;
 	}
 
@@ -1277,7 +1272,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 
 				/* Calculate the macrotile mode index. */
 				tile_split_bytes = 64 << tile_split;
-				tileb = 8 * 8 * target_fb->bits_per_pixel / 8;
+				tileb = 8 * 8 * target_fb->format->cpp[0];
 				tileb = min(tile_split_bytes, tileb);
 
 				for (index = 0; tileb > 64; index++)
@@ -1285,13 +1280,14 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 
 				if (index >= 16) {
 					DRM_ERROR("Wrong screen bpp (%u) or tile split (%u)\n",
-						  target_fb->bits_per_pixel, tile_split);
+						  target_fb->format->cpp[0] * 8,
+						  tile_split);
 					return -EINVAL;
 				}
 
 				num_banks = (rdev->config.cik.macrotile_mode_array[index] >> 6) & 0x3;
 			} else {
-				switch (target_fb->bits_per_pixel) {
+				switch (target_fb->format->cpp[0] * 8) {
 				case 8:
 					index = 10;
 					break;
@@ -1414,7 +1410,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(EVERGREEN_GRPH_X_END + radeon_crtc->crtc_offset, target_fb->width);
 	WREG32(EVERGREEN_GRPH_Y_END + radeon_crtc->crtc_offset, target_fb->height);
 
-	fb_pitch_pixels = target_fb->pitches[0] / (target_fb->bits_per_pixel / 8);
+	fb_pitch_pixels = target_fb->pitches[0] / target_fb->format->cpp[0];
 	WREG32(EVERGREEN_GRPH_PITCH + radeon_crtc->crtc_offset, fb_pitch_pixels);
 	WREG32(EVERGREEN_GRPH_ENABLE + radeon_crtc->crtc_offset, 1);
 
@@ -1440,8 +1436,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(EVERGREEN_MASTER_UPDATE_MODE + radeon_crtc->crtc_offset, 0);
 
 	if (!atomic && fb && fb != crtc->primary->fb) {
-		radeon_fb = to_radeon_framebuffer(fb);
-		rbo = gem_to_radeon_bo(radeon_fb->obj);
+		rbo = gem_to_radeon_bo(fb->obj[0]);
 		r = radeon_bo_reserve(rbo, false);
 		if (unlikely(r != 0))
 			return r;
@@ -1462,7 +1457,6 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
 	struct radeon_device *rdev = dev->dev_private;
-	struct radeon_framebuffer *radeon_fb;
 	struct drm_gem_object *obj;
 	struct radeon_bo *rbo;
 	struct drm_framebuffer *target_fb;
@@ -1480,16 +1474,12 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 		return 0;
 	}
 
-	if (atomic) {
-		radeon_fb = to_radeon_framebuffer(fb);
+	if (atomic)
 		target_fb = fb;
-	}
-	else {
-		radeon_fb = to_radeon_framebuffer(crtc->primary->fb);
+	else
 		target_fb = crtc->primary->fb;
-	}
 
-	obj = radeon_fb->obj;
+	obj = target_fb->obj[0];
 	rbo = gem_to_radeon_bo(obj);
 	r = radeon_bo_reserve(rbo, false);
 	if (unlikely(r != 0))
@@ -1510,7 +1500,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	radeon_bo_get_tiling_flags(rbo, &tiling_flags, NULL);
 	radeon_bo_unreserve(rbo);
 
-	switch (target_fb->pixel_format) {
+	switch (target_fb->format->format) {
 	case DRM_FORMAT_C8:
 		fb_format =
 		    AVIVO_D1GRPH_CONTROL_DEPTH_8BPP |
@@ -1563,7 +1553,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 		break;
 	default:
 		DRM_ERROR("Unsupported screen format %s\n",
-		          drm_get_format_name(target_fb->pixel_format, &format_name));
+		          drm_get_format_name(target_fb->format->format, &format_name));
 		return -EINVAL;
 	}
 
@@ -1621,7 +1611,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(AVIVO_D1GRPH_X_END + radeon_crtc->crtc_offset, target_fb->width);
 	WREG32(AVIVO_D1GRPH_Y_END + radeon_crtc->crtc_offset, target_fb->height);
 
-	fb_pitch_pixels = target_fb->pitches[0] / (target_fb->bits_per_pixel / 8);
+	fb_pitch_pixels = target_fb->pitches[0] / target_fb->format->cpp[0];
 	WREG32(AVIVO_D1GRPH_PITCH + radeon_crtc->crtc_offset, fb_pitch_pixels);
 	WREG32(AVIVO_D1GRPH_ENABLE + radeon_crtc->crtc_offset, 1);
 
@@ -1640,8 +1630,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(AVIVO_D1MODE_MASTER_UPDATE_MODE + radeon_crtc->crtc_offset, 3);
 
 	if (!atomic && fb && fb != crtc->primary->fb) {
-		radeon_fb = to_radeon_framebuffer(fb);
-		rbo = gem_to_radeon_bo(radeon_fb->obj);
+		rbo = gem_to_radeon_bo(fb->obj[0]);
 		r = radeon_bo_reserve(rbo, false);
 		if (unlikely(r != 0))
 			return r;
@@ -2148,11 +2137,9 @@ static void atombios_crtc_disable(struct drm_crtc *crtc)
 	atombios_crtc_dpms(crtc, DRM_MODE_DPMS_OFF);
 	if (crtc->primary->fb) {
 		int r;
-		struct radeon_framebuffer *radeon_fb;
 		struct radeon_bo *rbo;
 
-		radeon_fb = to_radeon_framebuffer(crtc->primary->fb);
-		rbo = gem_to_radeon_bo(radeon_fb->obj);
+		rbo = gem_to_radeon_bo(crtc->primary->fb->obj[0]);
 		r = radeon_bo_reserve(rbo, false);
 		if (unlikely(r))
 			DRM_ERROR("failed to reserve rbo before unpin\n");
@@ -2216,7 +2203,6 @@ static const struct drm_crtc_helper_funcs atombios_helper_funcs = {
 	.mode_set_base_atomic = atombios_crtc_set_base_atomic,
 	.prepare = atombios_crtc_prepare,
 	.commit = atombios_crtc_commit,
-	.load_lut = radeon_crtc_load_lut,
 	.disable = atombios_crtc_disable,
 };
 

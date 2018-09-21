@@ -40,13 +40,20 @@ struct udev *udev_context;
 static int32_t read_attr_usbip_status(struct usbip_usb_device *udev)
 {
 	char status_attr_path[SYSFS_PATH_MAX];
+	int size;
 	int fd;
 	int length;
 	char status;
 	int value = 0;
 
-	snprintf(status_attr_path, SYSFS_PATH_MAX, "%s/usbip_status",
-		 udev->path);
+	size = snprintf(status_attr_path, sizeof(status_attr_path),
+			"%s/usbip_status", udev->path);
+	if (size < 0 || (unsigned int)size >= sizeof(status_attr_path)) {
+		err("usbip_status path length %i >= %lu or < 0", size,
+		    (long unsigned)sizeof(status_attr_path));
+		return -1;
+	}
+
 
 	fd = open(status_attr_path, O_RDONLY);
 	if (fd < 0) {
@@ -218,6 +225,7 @@ int usbip_export_device(struct usbip_exported_device *edev, int sockfd)
 {
 	char attr_name[] = "usbip_sockfd";
 	char sockfd_attr_path[SYSFS_PATH_MAX];
+	int size;
 	char sockfd_buff[30];
 	int ret;
 
@@ -226,21 +234,34 @@ int usbip_export_device(struct usbip_exported_device *edev, int sockfd)
 		switch (edev->status) {
 		case SDEV_ST_ERROR:
 			dbg("status SDEV_ST_ERROR");
+			ret = ST_DEV_ERR;
 			break;
 		case SDEV_ST_USED:
 			dbg("status SDEV_ST_USED");
+			ret = ST_DEV_BUSY;
 			break;
 		default:
 			dbg("status unknown: 0x%x", edev->status);
+			ret = -1;
 		}
-		return -1;
+		return ret;
 	}
 
 	/* only the first interface is true */
-	snprintf(sockfd_attr_path, sizeof(sockfd_attr_path), "%s/%s",
-		 edev->udev.path, attr_name);
+	size = snprintf(sockfd_attr_path, sizeof(sockfd_attr_path), "%s/%s",
+			edev->udev.path, attr_name);
+	if (size < 0 || (unsigned int)size >= sizeof(sockfd_attr_path)) {
+		err("exported device path length %i >= %lu or < 0", size,
+		    (long unsigned)sizeof(sockfd_attr_path));
+		return -1;
+	}
 
-	snprintf(sockfd_buff, sizeof(sockfd_buff), "%d\n", sockfd);
+	size = snprintf(sockfd_buff, sizeof(sockfd_buff), "%d\n", sockfd);
+	if (size < 0 || (unsigned int)size >= sizeof(sockfd_buff)) {
+		err("socket length %i >= %lu or < 0", size,
+		    (long unsigned)sizeof(sockfd_buff));
+		return -1;
+	}
 
 	ret = write_sysfs_attribute(sockfd_attr_path, sockfd_buff,
 				    strlen(sockfd_buff));

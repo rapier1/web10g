@@ -81,6 +81,17 @@ cifs_build_path_to_root(struct smb_vol *vol, struct cifs_sb_info *cifs_sb,
 char *
 build_path_from_dentry(struct dentry *direntry)
 {
+	struct cifs_sb_info *cifs_sb = CIFS_SB(direntry->d_sb);
+	struct cifs_tcon *tcon = cifs_sb_master_tcon(cifs_sb);
+	bool prefix = tcon->Flags & SMB_SHARE_IS_IN_DFS;
+
+	return build_path_from_dentry_optional_prefix(direntry,
+						      prefix);
+}
+
+char *
+build_path_from_dentry_optional_prefix(struct dentry *direntry, bool prefix)
+{
 	struct dentry *temp;
 	int namelen;
 	int dfsplen;
@@ -92,7 +103,7 @@ build_path_from_dentry(struct dentry *direntry)
 	unsigned seq;
 
 	dirsep = CIFS_DIR_SEP(cifs_sb);
-	if (tcon->Flags & SMB_SHARE_IS_IN_DFS)
+	if (prefix)
 		dfsplen = strnlen(tcon->treeName, MAX_TREE_SIZE + 1);
 	else
 		dfsplen = 0;
@@ -183,14 +194,20 @@ cifs_bp_rename_retry:
 }
 
 /*
+ * Don't allow path components longer than the server max.
  * Don't allow the separator character in a path component.
  * The VFS will not allow "/", but "\" is allowed by posix.
  */
 static int
-check_name(struct dentry *direntry)
+check_name(struct dentry *direntry, struct cifs_tcon *tcon)
 {
 	struct cifs_sb_info *cifs_sb = CIFS_SB(direntry->d_sb);
 	int i;
+
+	if (unlikely(tcon->fsAttrInfo.MaxPathNameComponentLength &&
+		     direntry->d_name.len >
+		     le32_to_cpu(tcon->fsAttrInfo.MaxPathNameComponentLength)))
+		return -ENAMETOOLONG;
 
 	if (!(cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIX_PATHS)) {
 		for (i = 0; i < direntry->d_name.len; i++) {
@@ -352,7 +369,7 @@ cifs_do_create(struct inode *inode, struct dentry *direntry, unsigned int xid,
 	oparms.path = full_path;
 	oparms.fid = fid;
 	oparms.reconnect = false;
-
+	oparms.mode = mode;
 	rc = server->ops->open(xid, &oparms, oplock, buf);
 	if (rc) {
 		cifs_dbg(FYI, "cifs_create returned 0x%x\n", rc);
@@ -489,10 +506,6 @@ cifs_atomic_open(struct inode *inode, struct dentry *direntry,
 		return finish_no_open(file, res);
 	}
 
-	rc = check_name(direntry);
-	if (rc)
-		return rc;
-
 	xid = get_xid();
 
 	cifs_dbg(FYI, "parent inode = 0x%p name is: %pd and dentry = 0x%p\n",
@@ -505,6 +518,11 @@ cifs_atomic_open(struct inode *inode, struct dentry *direntry,
 	}
 
 	tcon = tlink_tcon(tlink);
+
+	rc = check_name(direntry, tcon);
+	if (rc)
+		goto out;
+
 	server = tcon->ses->server;
 
 	if (server->ops->new_lease_key)
@@ -666,6 +684,9 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 		goto mknod_out;
 	}
 
+	if (!S_ISCHR(mode) && !S_ISBLK(mode))
+		goto mknod_out;
+
 	if (!(cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL))
 		goto mknod_out;
 
@@ -674,10 +695,8 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 
 	buf = kmalloc(sizeof(FILE_ALL_INFO), GFP_KERNEL);
 	if (buf == NULL) {
-		kfree(full_path);
 		rc = -ENOMEM;
-		free_xid(xid);
-		return rc;
+		goto mknod_out;
 	}
 
 	if (backup_cred(cifs_sb))
@@ -724,7 +743,7 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, umode_t mode,
 		pdev->minor = cpu_to_le64(MINOR(device_number));
 		rc = tcon->ses->server->ops->sync_write(xid, &fid, &io_parms,
 							&bytes_written, iov, 1);
-	} /* else if (S_ISFIFO) */
+	}
 	tcon->ses->server->ops->close(xid, tcon, &fid);
 	d_drop(direntry);
 
@@ -761,21 +780,25 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 	tlink = cifs_sb_tlink(cifs_sb);
 	if (IS_ERR(tlink)) {
 		free_xid(xid);
-		return (struct dentry *)tlink;
+		return ERR_CAST(tlink);
 	}
 	pTcon = tlink_tcon(tlink);
 
-	rc = check_name(direntry);
-	if (rc)
-		goto lookup_out;
+	rc = check_name(direntry, pTcon);
+	if (unlikely(rc)) {
+		cifs_put_tlink(tlink);
+		free_xid(xid);
+		return ERR_PTR(rc);
+	}
 
 	/* can not grab the rename sem here since it would
 	deadlock in the cases (beginning of sys_rename itself)
 	in which we already have the sb rename sem */
 	full_path = build_path_from_dentry(direntry);
 	if (full_path == NULL) {
-		rc = -ENOMEM;
-		goto lookup_out;
+		cifs_put_tlink(tlink);
+		free_xid(xid);
+		return ERR_PTR(-ENOMEM);
 	}
 
 	if (d_really_is_positive(direntry)) {
@@ -794,29 +817,25 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry,
 				parent_dir_inode->i_sb, xid, NULL);
 	}
 
-	if ((rc == 0) && (newInode != NULL)) {
-		d_add(direntry, newInode);
+	if (rc == 0) {
 		/* since paths are not looked up by component - the parent
 		   directories are presumed to be good here */
 		renew_parental_timestamps(direntry);
-
 	} else if (rc == -ENOENT) {
-		rc = 0;
 		cifs_set_time(direntry, jiffies);
-		d_add(direntry, NULL);
-	/*	if it was once a directory (but how can we tell?) we could do
-		shrink_dcache_parent(direntry); */
-	} else if (rc != -EACCES) {
-		cifs_dbg(FYI, "Unexpected lookup error %d\n", rc);
-		/* We special case check for Access Denied - since that
-		is a common return code */
+		newInode = NULL;
+	} else {
+		if (rc != -EACCES) {
+			cifs_dbg(FYI, "Unexpected lookup error %d\n", rc);
+			/* We special case check for Access Denied - since that
+			is a common return code */
+		}
+		newInode = ERR_PTR(rc);
 	}
-
-lookup_out:
 	kfree(full_path);
 	cifs_put_tlink(tlink);
 	free_xid(xid);
-	return ERR_PTR(rc);
+	return d_splice_alias(newInode, direntry);
 }
 
 static int

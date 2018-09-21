@@ -6,7 +6,7 @@
  *  it under the terms of the GNU General Public License version 2 as
  *  publishhed by the Free Software Foundation.
  *
- *  Copyright (C) 2012 John Crispin <blogic@openwrt.org>
+ *  Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
 #include <linux/module.h>
@@ -158,7 +158,8 @@ static int ltq_pinctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
 
 	for_each_child_of_node(np_config, np)
 		max_maps += ltq_pinctrl_dt_subnode_size(np);
-	*map = kzalloc(max_maps * sizeof(struct pinctrl_map) * 2, GFP_KERNEL);
+	*map = kzalloc(array3_size(max_maps, sizeof(struct pinctrl_map), 2),
+		       GFP_KERNEL);
 	if (!*map)
 		return -ENOMEM;
 	tmp = *map;

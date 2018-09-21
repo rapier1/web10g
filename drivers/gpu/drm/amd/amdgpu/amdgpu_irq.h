@@ -28,6 +28,7 @@
 #include "amdgpu_ih.h"
 
 #define AMDGPU_MAX_IRQ_SRC_ID	0x100
+#define AMDGPU_MAX_IRQ_CLIENT_ID	0x100
 
 struct amdgpu_device;
 struct amdgpu_iv_entry;
@@ -44,6 +45,10 @@ struct amdgpu_irq_src {
 	void *data;
 };
 
+struct amdgpu_irq_client {
+	struct amdgpu_irq_src **sources;
+};
+
 /* provided by interrupt generating IP blocks */
 struct amdgpu_irq_src_funcs {
 	int (*set)(struct amdgpu_device *adev, struct amdgpu_irq_src *source,
@@ -58,7 +63,7 @@ struct amdgpu_irq {
 	bool				installed;
 	spinlock_t			lock;
 	/* interrupt sources */
-	struct amdgpu_irq_src		*sources[AMDGPU_MAX_IRQ_SRC_ID];
+	struct amdgpu_irq_client	client[AMDGPU_IH_CLIENTID_MAX];
 
 	/* status, etc. */
 	bool				msi_enabled; /* msi enabled */
@@ -73,14 +78,13 @@ struct amdgpu_irq {
 	uint32_t                        srbm_soft_reset;
 };
 
-void amdgpu_irq_preinstall(struct drm_device *dev);
-int amdgpu_irq_postinstall(struct drm_device *dev);
-void amdgpu_irq_uninstall(struct drm_device *dev);
+void amdgpu_irq_disable_all(struct amdgpu_device *adev);
 irqreturn_t amdgpu_irq_handler(int irq, void *arg);
 
 int amdgpu_irq_init(struct amdgpu_device *adev);
 void amdgpu_irq_fini(struct amdgpu_device *adev);
-int amdgpu_irq_add_id(struct amdgpu_device *adev, unsigned src_id,
+int amdgpu_irq_add_id(struct amdgpu_device *adev,
+		      unsigned client_id, unsigned src_id,
 		      struct amdgpu_irq_src *source);
 void amdgpu_irq_dispatch(struct amdgpu_device *adev,
 			 struct amdgpu_iv_entry *entry);

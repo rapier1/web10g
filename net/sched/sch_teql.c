@@ -167,7 +167,8 @@ teql_destroy(struct Qdisc *sch)
 	}
 }
 
-static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt)
+static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt,
+			   struct netlink_ext_ack *extack)
 {
 	struct net_device *dev = qdisc_dev(sch);
 	struct teql_master *m = (struct teql_master *)sch->ops;
@@ -401,8 +402,8 @@ static int teql_master_close(struct net_device *dev)
 	return 0;
 }
 
-static struct rtnl_link_stats64 *teql_master_stats64(struct net_device *dev,
-						     struct rtnl_link_stats64 *stats)
+static void teql_master_stats64(struct net_device *dev,
+				struct rtnl_link_stats64 *stats)
 {
 	struct teql_master *m = netdev_priv(dev);
 
@@ -410,7 +411,6 @@ static struct rtnl_link_stats64 *teql_master_stats64(struct net_device *dev,
 	stats->tx_bytes		= m->tx_bytes;
 	stats->tx_errors	= m->tx_errors;
 	stats->tx_dropped	= m->tx_dropped;
-	return stats;
 }
 
 static int teql_master_mtu(struct net_device *dev, int new_mtu)

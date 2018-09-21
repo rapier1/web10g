@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /**
  * drivers/usb/class/usbtmc.c - USB Test & Measurement class driver
  *
  * Copyright (C) 2007 Stefan Kopp, Gechingen, Germany
  * Copyright (C) 2008 Novell, Inc.
  * Copyright (C) 2008 Greg Kroah-Hartman <gregkh@suse.de>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * The GNU General Public License is available at
- * http://www.gnu.org/copyleft/gpl.html.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -33,7 +21,6 @@
 #include <linux/usb/tmc.h>
 
 
-#define RIGOL			1
 #define USBTMC_HEADER_SIZE	12
 #define USBTMC_MINOR_BASE	176
 
@@ -105,8 +92,6 @@ struct usbtmc_device_data {
 	/* coalesced usb488_caps from usbtmc_dev_capabilities */
 	__u8 usb488_caps;
 
-	u8 rigol_quirk;
-
 	/* attributes from the USB TMC spec for this device */
 	u8 TermChar;
 	bool TermCharEnabled;
@@ -121,17 +106,6 @@ struct usbtmc_device_data {
 	struct fasync_struct *fasync;
 };
 #define to_usbtmc_data(d) container_of(d, struct usbtmc_device_data, kref)
-
-struct usbtmc_ID_rigol_quirk {
-	__u16 idVendor;
-	__u16 idProduct;
-};
-
-static const struct usbtmc_ID_rigol_quirk usbtmc_id_quirk[] = {
-	{ 0x1ab1, 0x0588 },
-	{ 0x1ab1, 0x04b0 },
-	{ 0, 0 }
-};
 
 /* Forward declarations */
 static struct usb_driver usbtmc_driver;
@@ -615,16 +589,14 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		goto exit;
 	}
 
-	if (data->rigol_quirk) {
-		dev_dbg(dev, "usb_bulk_msg_in: count(%zu)\n", count);
+	dev_dbg(dev, "usb_bulk_msg_in: count(%zu)\n", count);
 
-		retval = send_request_dev_dep_msg_in(data, count);
+	retval = send_request_dev_dep_msg_in(data, count);
 
-		if (retval < 0) {
-			if (data->auto_abort)
-				usbtmc_ioctl_abort_bulk_out(data);
-			goto exit;
-		}
+	if (retval < 0) {
+		if (data->auto_abort)
+			usbtmc_ioctl_abort_bulk_out(data);
+		goto exit;
 	}
 
 	/* Loop until we have fetched everything we requested */
@@ -633,23 +605,6 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 	done = 0;
 
 	while (remaining > 0) {
-		if (!data->rigol_quirk) {
-			dev_dbg(dev, "usb_bulk_msg_in: remaining(%zu), count(%zu)\n", remaining, count);
-
-			if (remaining > USBTMC_SIZE_IOBUFFER - USBTMC_HEADER_SIZE - 3)
-				this_part = USBTMC_SIZE_IOBUFFER - USBTMC_HEADER_SIZE - 3;
-			else
-				this_part = remaining;
-
-			retval = send_request_dev_dep_msg_in(data, this_part);
-			if (retval < 0) {
-			dev_err(dev, "usb_bulk_msg returned %d\n", retval);
-				if (data->auto_abort)
-					usbtmc_ioctl_abort_bulk_out(data);
-				goto exit;
-			}
-		}
-
 		/* Send bulk URB */
 		retval = usb_bulk_msg(data->usb_dev,
 				      usb_rcvbulkpipe(data->usb_dev,
@@ -670,7 +625,7 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 		}
 
 		/* Parse header in first packet */
-		if ((done == 0) || !data->rigol_quirk) {
+		if (done == 0) {
 			/* Sanity checks for the header */
 			if (actual < USBTMC_HEADER_SIZE) {
 				dev_err(dev, "Device sent too small first packet: %u < %u\n", actual, USBTMC_HEADER_SIZE);
@@ -710,20 +665,11 @@ static ssize_t usbtmc_read(struct file *filp, char __user *buf,
 			actual -= USBTMC_HEADER_SIZE;
 
 			/* Check if the message is smaller than requested */
-			if (data->rigol_quirk) {
-				if (remaining > n_characters)
-					remaining = n_characters;
-				/* Remove padding if it exists */
-				if (actual > remaining)
-					actual = remaining;
-			}
-			else {
-				if (this_part > n_characters)
-					this_part = n_characters;
-				/* Remove padding if it exists */
-				if (actual > this_part)
-					actual = this_part;
-			}
+			if (remaining > n_characters)
+				remaining = n_characters;
+			/* Remove padding if it exists */
+			if (actual > remaining)
+				actual = remaining;
 
 			dev_dbg(dev, "Bulk-IN header: N_characters(%u), bTransAttr(%u)\n", n_characters, buffer[8]);
 
@@ -1085,7 +1031,7 @@ static struct attribute *capability_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group capability_attr_grp = {
+static const struct attribute_group capability_attr_grp = {
 	.attrs = capability_attrs,
 };
 
@@ -1151,7 +1097,7 @@ static struct attribute *data_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group data_attr_grp = {
+static const struct attribute_group data_attr_grp = {
 	.attrs = data_attrs,
 };
 
@@ -1269,21 +1215,21 @@ static int usbtmc_fasync(int fd, struct file *file, int on)
 	return fasync_helper(fd, file, on, &data->fasync);
 }
 
-static unsigned int usbtmc_poll(struct file *file, poll_table *wait)
+static __poll_t usbtmc_poll(struct file *file, poll_table *wait)
 {
 	struct usbtmc_device_data *data = file->private_data;
-	unsigned int mask;
+	__poll_t mask;
 
 	mutex_lock(&data->io_mutex);
 
 	if (data->zombie) {
-		mask = POLLHUP | POLLERR;
+		mask = EPOLLHUP | EPOLLERR;
 		goto no_poll;
 	}
 
 	poll_wait(file, &data->waitq, wait);
 
-	mask = (atomic_read(&data->srq_asserted)) ? POLLIN | POLLRDNORM : 0;
+	mask = (atomic_read(&data->srq_asserted)) ? EPOLLIN | EPOLLRDNORM : 0;
 
 no_poll:
 	mutex_unlock(&data->io_mutex);
@@ -1343,6 +1289,7 @@ static void usbtmc_interrupt(struct urb *urb)
 	case -EOVERFLOW:
 		dev_err(dev, "overflow with length %d, actual length is %d\n",
 			data->iin_wMaxPacketSize, urb->actual_length);
+		/* fall through */
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
@@ -1375,13 +1322,12 @@ static int usbtmc_probe(struct usb_interface *intf,
 {
 	struct usbtmc_device_data *data;
 	struct usb_host_interface *iface_desc;
-	struct usb_endpoint_descriptor *endpoint;
-	int n;
+	struct usb_endpoint_descriptor *bulk_in, *bulk_out, *int_in;
 	int retcode;
 
 	dev_dbg(&intf->dev, "%s called\n", __func__);
 
-	data = kmalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -1396,20 +1342,6 @@ static int usbtmc_probe(struct usb_interface *intf,
 	atomic_set(&data->srq_asserted, 0);
 	data->zombie = 0;
 
-	/* Determine if it is a Rigol or not */
-	data->rigol_quirk = 0;
-	dev_dbg(&intf->dev, "Trying to find if device Vendor 0x%04X Product 0x%04X has the RIGOL quirk\n",
-		le16_to_cpu(data->usb_dev->descriptor.idVendor),
-		le16_to_cpu(data->usb_dev->descriptor.idProduct));
-	for(n = 0; usbtmc_id_quirk[n].idVendor > 0; n++) {
-		if ((usbtmc_id_quirk[n].idVendor == le16_to_cpu(data->usb_dev->descriptor.idVendor)) &&
-		    (usbtmc_id_quirk[n].idProduct == le16_to_cpu(data->usb_dev->descriptor.idProduct))) {
-			dev_dbg(&intf->dev, "Setting this device as having the RIGOL quirk\n");
-			data->rigol_quirk = 1;
-			break;
-		}
-	}
-
 	/* Initialize USBTMC bTag and other fields */
 	data->bTag	= 1;
 	data->TermCharEnabled = 0;
@@ -1421,42 +1353,29 @@ static int usbtmc_probe(struct usb_interface *intf,
 	iface_desc = data->intf->cur_altsetting;
 	data->ifnum = iface_desc->desc.bInterfaceNumber;
 
-	/* Find bulk in endpoint */
-	for (n = 0; n < iface_desc->desc.bNumEndpoints; n++) {
-		endpoint = &iface_desc->endpoint[n].desc;
-
-		if (usb_endpoint_is_bulk_in(endpoint)) {
-			data->bulk_in = endpoint->bEndpointAddress;
-			dev_dbg(&intf->dev, "Found bulk in endpoint at %u\n",
-				data->bulk_in);
-			break;
-		}
+	/* Find bulk endpoints */
+	retcode = usb_find_common_endpoints(iface_desc,
+			&bulk_in, &bulk_out, NULL, NULL);
+	if (retcode) {
+		dev_err(&intf->dev, "bulk endpoints not found\n");
+		goto err_put;
 	}
 
-	/* Find bulk out endpoint */
-	for (n = 0; n < iface_desc->desc.bNumEndpoints; n++) {
-		endpoint = &iface_desc->endpoint[n].desc;
+	data->bulk_in = bulk_in->bEndpointAddress;
+	dev_dbg(&intf->dev, "Found bulk in endpoint at %u\n", data->bulk_in);
 
-		if (usb_endpoint_is_bulk_out(endpoint)) {
-			data->bulk_out = endpoint->bEndpointAddress;
-			dev_dbg(&intf->dev, "Found Bulk out endpoint at %u\n",
-				data->bulk_out);
-			break;
-		}
-	}
+	data->bulk_out = bulk_out->bEndpointAddress;
+	dev_dbg(&intf->dev, "Found Bulk out endpoint at %u\n", data->bulk_out);
+
 	/* Find int endpoint */
-	for (n = 0; n < iface_desc->desc.bNumEndpoints; n++) {
-		endpoint = &iface_desc->endpoint[n].desc;
-
-		if (usb_endpoint_is_int_in(endpoint)) {
-			data->iin_ep_present = 1;
-			data->iin_ep = endpoint->bEndpointAddress;
-			data->iin_wMaxPacketSize = usb_endpoint_maxp(endpoint);
-			data->iin_interval = endpoint->bInterval;
-			dev_dbg(&intf->dev, "Found Int in endpoint at %u\n",
+	retcode = usb_find_int_in_endpoint(iface_desc, &int_in);
+	if (!retcode) {
+		data->iin_ep_present = 1;
+		data->iin_ep = int_in->bEndpointAddress;
+		data->iin_wMaxPacketSize = usb_endpoint_maxp(int_in);
+		data->iin_interval = int_in->bInterval;
+		dev_dbg(&intf->dev, "Found Int in endpoint at %u\n",
 				data->iin_ep);
-			break;
-		}
 	}
 
 	retcode = get_capabilities(data);
@@ -1469,8 +1388,10 @@ static int usbtmc_probe(struct usb_interface *intf,
 	if (data->iin_ep_present) {
 		/* allocate int urb */
 		data->iin_urb = usb_alloc_urb(0, GFP_KERNEL);
-		if (!data->iin_urb)
+		if (!data->iin_urb) {
+			retcode = -ENOMEM;
 			goto error_register;
+		}
 
 		/* Protect interrupt in endpoint data until iin_urb is freed */
 		kref_get(&data->kref);
@@ -1478,8 +1399,10 @@ static int usbtmc_probe(struct usb_interface *intf,
 		/* allocate buffer for interrupt in */
 		data->iin_buffer = kmalloc(data->iin_wMaxPacketSize,
 					GFP_KERNEL);
-		if (!data->iin_buffer)
+		if (!data->iin_buffer) {
+			retcode = -ENOMEM;
 			goto error_register;
+		}
 
 		/* fill interrupt urb */
 		usb_fill_int_urb(data->iin_urb, data->usb_dev,
@@ -1512,6 +1435,7 @@ error_register:
 	sysfs_remove_group(&intf->dev.kobj, &capability_attr_grp);
 	sysfs_remove_group(&intf->dev.kobj, &data_attr_grp);
 	usbtmc_free_int(data);
+err_put:
 	kref_put(&data->kref, usbtmc_delete);
 	return retcode;
 }

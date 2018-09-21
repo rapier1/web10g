@@ -24,10 +24,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -616,7 +612,7 @@ static void ov534_reg_write(struct gspca_dev *gspca_dev, u16 reg, u8 val)
 	if (gspca_dev->usb_err < 0)
 		return;
 
-	PDEBUG(D_USBO, "SET 01 0000 %04x %02x", reg, val);
+	gspca_dbg(gspca_dev, D_USBO, "SET 01 0000 %04x %02x\n", reg, val);
 	gspca_dev->usb_buf[0] = val;
 	ret = usb_control_msg(udev,
 			      usb_sndctrlpipe(udev, 0),
@@ -641,7 +637,8 @@ static u8 ov534_reg_read(struct gspca_dev *gspca_dev, u16 reg)
 			      0x01,
 			      USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 			      0x00, reg, gspca_dev->usb_buf, 1, CTRL_TIMEOUT);
-	PDEBUG(D_USBI, "GET 01 0000 %04x %02x", reg, gspca_dev->usb_buf[0]);
+	gspca_dbg(gspca_dev, D_USBI, "GET 01 0000 %04x %02x\n",
+		  reg, gspca_dev->usb_buf[0]);
 	if (ret < 0) {
 		pr_err("read failed %d\n", ret);
 		gspca_dev->usb_err = ret;
@@ -655,7 +652,7 @@ static void ov534_set_led(struct gspca_dev *gspca_dev, int status)
 {
 	u8 data;
 
-	PDEBUG(D_CONF, "led status: %d", status);
+	gspca_dbg(gspca_dev, D_CONF, "led status: %d\n", status);
 
 	data = ov534_reg_read(gspca_dev, 0x21);
 	data |= 0x80;
@@ -693,8 +690,8 @@ static int sccb_check_status(struct gspca_dev *gspca_dev)
 		case 0x03:
 			break;
 		default:
-			PERR("sccb status 0x%02x, attempt %d/5",
-			       data, i + 1);
+			gspca_err(gspca_dev, "sccb status 0x%02x, attempt %d/5\n",
+				  data, i + 1);
 		}
 	}
 	return 0;
@@ -702,7 +699,7 @@ static int sccb_check_status(struct gspca_dev *gspca_dev)
 
 static void sccb_reg_write(struct gspca_dev *gspca_dev, u8 reg, u8 val)
 {
-	PDEBUG(D_USBO, "sccb write: %02x %02x", reg, val);
+	gspca_dbg(gspca_dev, D_USBO, "sccb write: %02x %02x\n", reg, val);
 	ov534_reg_write(gspca_dev, OV534_REG_SUBADDR, reg);
 	ov534_reg_write(gspca_dev, OV534_REG_WRITE, val);
 	ov534_reg_write(gspca_dev, OV534_REG_OPERATION, OV534_OP_WRITE_3);
@@ -804,7 +801,7 @@ static void set_frame_rate(struct gspca_dev *gspca_dev)
 	sccb_reg_write(gspca_dev, 0x0d, r->r0d);
 	ov534_reg_write(gspca_dev, 0xe5, r->re5);
 
-	PDEBUG(D_PROBE, "frame_rate: %d", r->fps);
+	gspca_dbg(gspca_dev, D_PROBE, "frame_rate: %d\n", r->fps);
 }
 
 static void sethue(struct gspca_dev *gspca_dev, s32 val)
@@ -1287,7 +1284,7 @@ static int sd_init(struct gspca_dev *gspca_dev)
 	sensor_id = sccb_reg_read(gspca_dev, 0x0a) << 8;
 	sccb_reg_read(gspca_dev, 0x0b);
 	sensor_id |= sccb_reg_read(gspca_dev, 0x0b);
-	PDEBUG(D_PROBE, "Sensor ID: %04x", sensor_id);
+	gspca_dbg(gspca_dev, D_PROBE, "Sensor ID: %04x\n", sensor_id);
 
 	if ((sensor_id & 0xfff0) == 0x7670) {
 		sd->sensor = SENSOR_OV767x;
@@ -1411,19 +1408,19 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 
 		/* Verify UVC header.  Header length is always 12 */
 		if (data[0] != 12 || len < 12) {
-			PDEBUG(D_PACK, "bad header");
+			gspca_dbg(gspca_dev, D_PACK, "bad header\n");
 			goto discard;
 		}
 
 		/* Check errors */
 		if (data[1] & UVC_STREAM_ERR) {
-			PDEBUG(D_PACK, "payload error");
+			gspca_dbg(gspca_dev, D_PACK, "payload error\n");
 			goto discard;
 		}
 
 		/* Extract PTS and FID */
 		if (!(data[1] & UVC_STREAM_PTS)) {
-			PDEBUG(D_PACK, "PTS not present");
+			gspca_dbg(gspca_dev, D_PACK, "PTS not present\n");
 			goto discard;
 		}
 		this_pts = (data[5] << 24) | (data[4] << 16)
@@ -1446,7 +1443,7 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 			 && gspca_dev->image_len + len - 12 !=
 				   gspca_dev->pixfmt.width *
 					gspca_dev->pixfmt.height * 2) {
-				PDEBUG(D_PACK, "wrong sized frame");
+				gspca_dbg(gspca_dev, D_PACK, "wrong sized frame\n");
 				goto discard;
 			}
 			gspca_frame_add(gspca_dev, LAST_PACKET,
@@ -1479,7 +1476,6 @@ static void sd_get_streamparm(struct gspca_dev *gspca_dev,
 	struct v4l2_fract *tpf = &cp->timeperframe;
 	struct sd *sd = (struct sd *) gspca_dev;
 
-	cp->capability |= V4L2_CAP_TIMEPERFRAME;
 	tpf->numerator = 1;
 	tpf->denominator = sd->frame_rate;
 }

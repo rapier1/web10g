@@ -315,11 +315,39 @@ static inline void *__si_bounds_upper(siginfo_t *si)
 	return si->si_upper;
 }
 #else
+
+/*
+ * This deals with old version of _sigfault in some distros:
+ *
+
+old _sigfault:
+        struct {
+            void *si_addr;
+	} _sigfault;
+
+new _sigfault:
+	struct {
+		void __user *_addr;
+		int _trapno;
+		short _addr_lsb;
+		union {
+			struct {
+				void __user *_lower;
+				void __user *_upper;
+			} _addr_bnd;
+			__u32 _pkey;
+		};
+	} _sigfault;
+ *
+ */
+
 static inline void **__si_bounds_hack(siginfo_t *si)
 {
 	void *sigfault = &si->_sifields._sigfault;
 	void *end_sigfault = sigfault + sizeof(si->_sifields._sigfault);
-	void **__si_lower = end_sigfault;
+	int *trapno = (int*)end_sigfault;
+	/* skip _trapno and _addr_lsb */
+	void **__si_lower = (void**)(trapno + 2);
 
 	return __si_lower;
 }
@@ -331,7 +359,7 @@ static inline void *__si_bounds_lower(siginfo_t *si)
 
 static inline void *__si_bounds_upper(siginfo_t *si)
 {
-	return (*__si_bounds_hack(si)) + sizeof(void *);
+	return *(__si_bounds_hack(si) + 1);
 }
 #endif
 
@@ -339,6 +367,11 @@ static int br_count;
 static int expected_bnd_index = -1;
 uint64_t shadow_plb[NR_MPX_BOUNDS_REGISTERS][2]; /* shadow MPX bound registers */
 unsigned long shadow_map[NR_MPX_BOUNDS_REGISTERS];
+
+/* Failed address bound checks: */
+#ifndef SEGV_BNDERR
+# define SEGV_BNDERR	3
+#endif
 
 /*
  * The kernel is supposed to provide some information about the bounds
@@ -391,9 +424,6 @@ void handler(int signum, siginfo_t *si, void *vucontext)
 		br_count++;
 		dprintf1("#BR 0x%jx (total seen: %d)\n", status, br_count);
 
-#define __SI_FAULT      (3 << 16)
-#define SEGV_BNDERR     (__SI_FAULT|3)  /* failed address bound checks */
-
 		dprintf2("Saw a #BR! status 0x%jx at %016lx br_reason: %jx\n",
 				status, ip, br_reason);
 		dprintf2("si_signo: %d\n", si->si_signo);
@@ -403,8 +433,6 @@ void handler(int signum, siginfo_t *si, void *vucontext)
 		dprintf2("info->si_code: %d\n", si->si_code);
 		dprintf2("info->si_lower: %p\n", __si_bounds_lower(si));
 		dprintf2("info->si_upper: %p\n", __si_bounds_upper(si));
-
-		check_siginfo_vs_shadow(si);
 
 		for (i = 0; i < 8; i++)
 			dprintf3("[%d]: %p\n", i, si_addr_ptr[i]);
@@ -416,6 +444,9 @@ void handler(int signum, siginfo_t *si, void *vucontext)
 			exit(5);
 		case 1: /* #BR MPX bounds exception */
 			/* these are normal and we expect to see them */
+
+			check_siginfo_vs_shadow(si);
+
 			dprintf1("bounds exception (normal): status 0x%jx at %p si_addr: %p\n",
 				status, (void *)ip, si->si_addr);
 			num_bnd_chk++;

@@ -1502,14 +1502,9 @@ static ssize_t video_proc_write(struct file *file, const char __user *buf,
 	int ret;
 	u32 video_out;
 
-	cmd = kmalloc(count + 1, GFP_KERNEL);
-	if (!cmd)
-		return -ENOMEM;
-	if (copy_from_user(cmd, buf, count)) {
-		kfree(cmd);
-		return -EFAULT;
-	}
-	cmd[count] = '\0';
+	cmd = memdup_user_nul(buf, count);
+	if (IS_ERR(cmd))
+		return PTR_ERR(cmd);
 
 	buffer = cmd;
 
@@ -1694,19 +1689,6 @@ static int version_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int version_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, version_proc_show, PDE_DATA(inode));
-}
-
-static const struct file_operations version_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= version_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 /*
  * Proc and module init
  */
@@ -1727,8 +1709,8 @@ static void create_toshiba_proc_entries(struct toshiba_acpi_dev *dev)
 	if (dev->hotkey_dev)
 		proc_create_data("keys", S_IRUGO | S_IWUSR, toshiba_proc_dir,
 				 &keys_proc_fops, dev);
-	proc_create_data("version", S_IRUGO, toshiba_proc_dir,
-			 &version_proc_fops, dev);
+	proc_create_single_data("version", S_IRUGO, toshiba_proc_dir,
+			version_proc_show, dev);
 }
 
 static void remove_toshiba_proc_entries(struct toshiba_acpi_dev *dev)
@@ -2424,7 +2406,7 @@ static umode_t toshiba_sysfs_is_visible(struct kobject *kobj,
 	return exists ? attr->mode : 0;
 }
 
-static struct attribute_group toshiba_attr_group = {
+static const struct attribute_group toshiba_attr_group = {
 	.is_visible = toshiba_sysfs_is_visible,
 	.attrs = toshiba_attributes,
 };
@@ -2515,7 +2497,6 @@ static const struct iio_chan_spec toshiba_iio_accel_channels[] = {
 };
 
 static const struct iio_info toshiba_iio_accel_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = &toshiba_iio_accel_read_raw,
 };
 
@@ -2849,7 +2830,7 @@ static int toshiba_acpi_setup_keyboard(struct toshiba_acpi_dev *dev)
 		error = i8042_install_filter(toshiba_acpi_i8042_filter);
 		if (error) {
 			pr_err("Error installing key filter\n");
-			goto err_free_keymap;
+			goto err_free_dev;
 		}
 
 		dev->ntfy_supported = 1;
@@ -2880,8 +2861,6 @@ static int toshiba_acpi_setup_keyboard(struct toshiba_acpi_dev *dev)
  err_remove_filter:
 	if (dev->ntfy_supported)
 		i8042_remove_filter(toshiba_acpi_i8042_filter);
- err_free_keymap:
-	sparse_keymap_free(dev->hotkey_dev);
  err_free_dev:
 	input_free_device(dev->hotkey_dev);
 	dev->hotkey_dev = NULL;
@@ -3018,10 +2997,8 @@ static int toshiba_acpi_remove(struct acpi_device *acpi_dev)
 		cancel_work_sync(&dev->hotkey_work);
 	}
 
-	if (dev->hotkey_dev) {
+	if (dev->hotkey_dev)
 		input_unregister_device(dev->hotkey_dev);
-		sparse_keymap_free(dev->hotkey_dev);
-	}
 
 	backlight_device_unregister(dev->backlight_dev);
 

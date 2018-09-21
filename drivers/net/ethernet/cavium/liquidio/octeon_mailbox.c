@@ -24,6 +24,7 @@
 #include "octeon_device.h"
 #include "octeon_main.h"
 #include "octeon_mailbox.h"
+#include "cn23xx_pf_device.h"
 
 /**
  * octeon_mbox_read:
@@ -87,7 +88,7 @@ int octeon_mbox_read(struct octeon_mbox *mbox)
 	}
 
 	if (mbox->state & OCTEON_MBOX_STATE_REQUEST_RECEIVING) {
-		if (mbox->mbox_req.recv_len < msg.s.len) {
+		if (mbox->mbox_req.recv_len < mbox->mbox_req.msg.s.len) {
 			ret = 0;
 		} else {
 			mbox->state &= ~OCTEON_MBOX_STATE_REQUEST_RECEIVING;
@@ -96,7 +97,8 @@ int octeon_mbox_read(struct octeon_mbox *mbox)
 		}
 	} else {
 		if (mbox->state & OCTEON_MBOX_STATE_RESPONSE_RECEIVING) {
-			if (mbox->mbox_resp.recv_len < msg.s.len) {
+			if (mbox->mbox_resp.recv_len <
+			    mbox->mbox_resp.msg.s.len) {
 				ret = 0;
 			} else {
 				mbox->state &=
@@ -131,6 +133,7 @@ int octeon_mbox_write(struct octeon_device *oct,
 {
 	struct octeon_mbox *mbox = oct->mbox[mbox_cmd->q_no];
 	u32 count, i, ret = OCTEON_MBOX_STATUS_SUCCESS;
+	long timeout = LIO_MBOX_WRITE_WAIT_TIME;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mbox->lock, flags);
@@ -158,7 +161,7 @@ int octeon_mbox_write(struct octeon_device *oct,
 	count = 0;
 
 	while (readq(mbox->mbox_write_reg) != OCTEON_PFVFSIG) {
-		schedule_timeout_uninterruptible(LIO_MBOX_WRITE_WAIT_TIME);
+		schedule_timeout_uninterruptible(timeout);
 		if (count++ == LIO_MBOX_WRITE_WAIT_CNT) {
 			ret = OCTEON_MBOX_STATUS_FAILED;
 			break;
@@ -171,13 +174,16 @@ int octeon_mbox_write(struct octeon_device *oct,
 			count = 0;
 			while (readq(mbox->mbox_write_reg) !=
 			       OCTEON_PFVFACK) {
-				schedule_timeout_uninterruptible(10);
+				schedule_timeout_uninterruptible(timeout);
 				if (count++ == LIO_MBOX_WRITE_WAIT_CNT) {
 					ret = OCTEON_MBOX_STATUS_FAILED;
 					break;
 				}
 			}
-			writeq(mbox_cmd->data[i], mbox->mbox_write_reg);
+			if (ret == OCTEON_MBOX_STATUS_SUCCESS)
+				writeq(mbox_cmd->data[i], mbox->mbox_write_reg);
+			else
+				break;
 		}
 	}
 
@@ -198,6 +204,26 @@ int octeon_mbox_write(struct octeon_device *oct,
 	spin_unlock_irqrestore(&mbox->lock, flags);
 
 	return ret;
+}
+
+static void get_vf_stats(struct octeon_device *oct,
+			 struct oct_vf_stats *stats)
+{
+	int i;
+
+	for (i = 0; i < oct->num_iqs; i++) {
+		if (!oct->instr_queue[i])
+			continue;
+		stats->tx_packets += oct->instr_queue[i]->stats.tx_done;
+		stats->tx_bytes += oct->instr_queue[i]->stats.tx_tot_bytes;
+	}
+
+	for (i = 0; i < oct->num_oqs; i++) {
+		if (!oct->droq[i])
+			continue;
+		stats->rx_packets += oct->droq[i]->stats.rx_pkts_received;
+		stats->rx_bytes += oct->droq[i]->stats.rx_bytes_received;
+	}
 }
 
 /**
@@ -245,6 +271,15 @@ static int octeon_mbox_process_cmd(struct octeon_mbox *mbox,
 						     mbox_cmd->msg.s.params);
 		break;
 
+	case OCTEON_GET_VF_STATS:
+		dev_dbg(&oct->pci_dev->dev, "Got VF stats request. Sending data back\n");
+		mbox_cmd->msg.s.type = OCTEON_MBOX_RESPONSE;
+		mbox_cmd->msg.s.resp_needed = 1;
+		mbox_cmd->msg.s.len = 1 +
+			sizeof(struct oct_vf_stats) / sizeof(u64);
+		get_vf_stats(oct, (struct oct_vf_stats *)mbox_cmd->data);
+		octeon_mbox_write(oct, mbox_cmd);
+		break;
 	default:
 		break;
 	}
@@ -312,7 +347,30 @@ int octeon_mbox_process_message(struct octeon_mbox *mbox)
 		return 0;
 	}
 
+	spin_unlock_irqrestore(&mbox->lock, flags);
 	WARN_ON(1);
+
+	return 0;
+}
+
+int octeon_mbox_cancel(struct octeon_device *oct, int q_no)
+{
+	struct octeon_mbox *mbox = oct->mbox[q_no];
+	struct octeon_mbox_cmd *mbox_cmd;
+	unsigned long flags = 0;
+
+	spin_lock_irqsave(&mbox->lock, flags);
+	mbox_cmd = &mbox->mbox_resp;
+
+	if (!(mbox->state & OCTEON_MBOX_STATE_RESPONSE_PENDING)) {
+		spin_unlock_irqrestore(&mbox->lock, flags);
+		return 1;
+	}
+
+	mbox->state = OCTEON_MBOX_STATE_IDLE;
+	memset(mbox_cmd, 0, sizeof(*mbox_cmd));
+	writeq(OCTEON_PFVFSIG, mbox->mbox_read_reg);
+	spin_unlock_irqrestore(&mbox->lock, flags);
 
 	return 0;
 }

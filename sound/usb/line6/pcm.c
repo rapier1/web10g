@@ -158,8 +158,10 @@ static int line6_buffer_acquire(struct snd_line6_pcm *line6pcm,
 
 	/* Invoked multiple times in a row so allocate once only */
 	if (!test_and_set_bit(type, &pstr->opened) && !pstr->buffer) {
-		pstr->buffer = kmalloc(line6pcm->line6->iso_buffers *
-				       LINE6_ISO_PACKETS * pkt_size, GFP_KERNEL);
+		pstr->buffer =
+			kmalloc(array3_size(line6pcm->line6->iso_buffers,
+					    LINE6_ISO_PACKETS, pkt_size),
+				GFP_KERNEL);
 		if (!pstr->buffer)
 			return -ENOMEM;
 	}
@@ -430,7 +432,7 @@ static int snd_line6_control_playback_put(struct snd_kcontrol *kcontrol,
 }
 
 /* control definition */
-static struct snd_kcontrol_new line6_controls[] = {
+static const struct snd_kcontrol_new line6_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "PCM Playback Volume",

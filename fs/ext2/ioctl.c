@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/ext2/ioctl.c
  *
@@ -29,7 +30,6 @@ long ext2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case EXT2_IOC_GETFLAGS:
-		ext2_get_inode_flags(ei);
 		flags = ei->i_flags & EXT2_FL_USER_VISIBLE;
 		return put_user(flags, (int __user *) arg);
 	case EXT2_IOC_SETFLAGS: {

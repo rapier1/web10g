@@ -115,15 +115,13 @@ static struct cpufreq_freqs freqs;
 static int init_div_table(void)
 {
 	struct cpufreq_frequency_table *pos, *freq_tbl = dvfs_info->freq_table;
-	unsigned int tmp, clk_div, ema_div, freq, volt_id;
+	unsigned int tmp, clk_div, ema_div, freq, volt_id, idx;
 	struct dev_pm_opp *opp;
 
-	rcu_read_lock();
-	cpufreq_for_each_entry(pos, freq_tbl) {
+	cpufreq_for_each_entry_idx(pos, freq_tbl, idx) {
 		opp = dev_pm_opp_find_freq_exact(dvfs_info->dev,
 					pos->frequency * 1000, true);
 		if (IS_ERR(opp)) {
-			rcu_read_unlock();
 			dev_err(dvfs_info->dev,
 				"failed to find valid OPP for %u KHZ\n",
 				pos->frequency);
@@ -140,6 +138,7 @@ static int init_div_table(void)
 
 		/* Calculate EMA */
 		volt_id = dev_pm_opp_get_voltage(opp);
+
 		volt_id = (MAX_VOLTAGE - volt_id) / VOLTAGE_STEP;
 		if (volt_id < PMIC_HIGH_VOLT) {
 			ema_div = (CPUEMA_HIGH << P0_7_CPUEMA_SHIFT) |
@@ -155,11 +154,10 @@ static int init_div_table(void)
 		tmp = (clk_div | ema_div | (volt_id << P0_7_VDD_SHIFT)
 			| ((freq / FREQ_UNIT) << P0_7_FREQ_SHIFT));
 
-		__raw_writel(tmp, dvfs_info->base + XMU_PMU_P0_7 + 4 *
-						(pos - freq_tbl));
+		__raw_writel(tmp, dvfs_info->base + XMU_PMU_P0_7 + 4 * idx);
+		dev_pm_opp_put(opp);
 	}
 
-	rcu_read_unlock();
 	return 0;
 }
 
@@ -174,12 +172,12 @@ static void exynos_enable_dvfs(unsigned int cur_frequency)
 	/* Enable PSTATE Change Event */
 	tmp = __raw_readl(dvfs_info->base + XMU_PMUEVTEN);
 	tmp |= (1 << PSTATE_CHANGED_EVTEN_SHIFT);
-	 __raw_writel(tmp, dvfs_info->base + XMU_PMUEVTEN);
+	__raw_writel(tmp, dvfs_info->base + XMU_PMUEVTEN);
 
 	/* Enable PSTATE Change IRQ */
 	tmp = __raw_readl(dvfs_info->base + XMU_PMUIRQEN);
 	tmp |= (1 << PSTATE_CHANGED_IRQEN_SHIFT);
-	 __raw_writel(tmp, dvfs_info->base + XMU_PMUIRQEN);
+	__raw_writel(tmp, dvfs_info->base + XMU_PMUIRQEN);
 
 	/* Set initial performance index */
 	cpufreq_for_each_entry(pos, freq_table)
@@ -331,7 +329,7 @@ static int exynos_cpufreq_probe(struct platform_device *pdev)
 	struct resource res;
 	unsigned int cur_frequency;
 
-	np =  pdev->dev.of_node;
+	np = pdev->dev.of_node;
 	if (!np)
 		return -ENODEV;
 

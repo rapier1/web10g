@@ -222,7 +222,7 @@ void acpi_table_print_madt_entry(struct acpi_subtable_header *header)
  * acpi_parse_entries_array - for each proc_num find a suitable subtable
  *
  * @id: table id (for debugging purposes)
- * @table_size: single entry size
+ * @table_size: size of the root table
  * @table_header: where does the table start?
  * @proc: array of acpi_subtable_proc struct containing entry id
  *        and associated handler with it
@@ -232,6 +232,11 @@ void acpi_table_print_madt_entry(struct acpi_subtable_header *header)
  * For each proc_num find a subtable with proc->id and run proc->handler
  * on it. Assumption is that there's only single handler for particular
  * entry id.
+ *
+ * The table_size is not the size of the complete ACPI table (the length
+ * field in the header struct), but only the size of the root table; i.e.,
+ * the offset from the very first byte of the complete ACPI table, to the
+ * first byte of the very first subtable.
  *
  * On success returns sum of all matching entries for all proc handlers.
  * Otherwise, -ENODEV or -EINVAL is returned.
@@ -308,22 +313,6 @@ acpi_parse_entries_array(char *id, unsigned long table_size,
 	}
 
 	return errs ? -EINVAL : count;
-}
-
-int __init
-acpi_parse_entries(char *id,
-			unsigned long table_size,
-			acpi_tbl_entry_handler handler,
-			struct acpi_table_header *table_header,
-			int entry_id, unsigned int max_entries)
-{
-	struct acpi_subtable_proc proc = {
-		.id		= entry_id,
-		.handler	= handler,
-	};
-
-	return acpi_parse_entries_array(id, table_size, table_header,
-			&proc, 1, max_entries);
 }
 
 int __init
@@ -416,7 +405,7 @@ int __init acpi_table_parse(char *id, acpi_tbl_table_handler handler)
 		return -ENODEV;
 }
 
-/* 
+/*
  * The BIOS is supposed to supply a single APIC/MADT,
  * but some report two.  Provide a knob to use either.
  * (don't you wish instance 0 and 1 were not the same?)
@@ -472,7 +461,8 @@ static const char * const table_sigs[] = {
 	ACPI_SIG_SLIC, ACPI_SIG_SPCR, ACPI_SIG_SPMI, ACPI_SIG_TCPA,
 	ACPI_SIG_UEFI, ACPI_SIG_WAET, ACPI_SIG_WDAT, ACPI_SIG_WDDT,
 	ACPI_SIG_WDRT, ACPI_SIG_DSDT, ACPI_SIG_FADT, ACPI_SIG_PSDT,
-	ACPI_SIG_RSDT, ACPI_SIG_XSDT, ACPI_SIG_SSDT, NULL };
+	ACPI_SIG_RSDT, ACPI_SIG_XSDT, ACPI_SIG_SSDT, ACPI_SIG_IORT,
+	ACPI_SIG_NFIT, ACPI_SIG_HMAT, ACPI_SIG_PPTT, NULL };
 
 #define ACPI_HEADER_SIZE sizeof(struct acpi_table_header)
 
@@ -556,7 +546,7 @@ void __init acpi_table_upgrade(void)
 	 * But it's not enough on X86 because ioremap will
 	 * complain later (used by acpi_os_map_memory) that the pages
 	 * that should get mapped are not marked "reserved".
-	 * Both memblock_reserve and e820_add_region (via arch_reserve_mem_area)
+	 * Both memblock_reserve and e820__range_add (via arch_reserve_mem_area)
 	 * works fine.
 	 */
 	memblock_reserve(acpi_tables_addr, all_tables_size);
@@ -756,10 +746,10 @@ int __init acpi_table_init(void)
 
 	if (acpi_verify_table_checksum) {
 		pr_info("Early table checksum verification enabled\n");
-		acpi_gbl_verify_table_checksum = TRUE;
+		acpi_gbl_enable_table_validation = TRUE;
 	} else {
 		pr_info("Early table checksum verification disabled\n");
-		acpi_gbl_verify_table_checksum = FALSE;
+		acpi_gbl_enable_table_validation = FALSE;
 	}
 
 	status = acpi_initialize_tables(initial_tables, ACPI_MAX_TABLES, 0);

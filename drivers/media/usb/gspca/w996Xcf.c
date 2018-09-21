@@ -18,10 +18,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 /* Note this is not a stand alone driver, it gets included in ov519.c, this
@@ -249,7 +245,7 @@ static void w9968cf_smbus_read_ack(struct sd *sd)
 	sda = w9968cf_read_sb(sd);
 	w9968cf_write_sb(sd, 0x0012); /* SDE=1, SDA=1, SCL=0 */
 	if (sda >= 0 && (sda & 0x08)) {
-		PDEBUG(D_USBI, "Did not receive i2c ACK");
+		gspca_dbg(gspca_dev, D_USBI, "Did not receive i2c ACK\n");
 		sd->gspca_dev.usb_err = -EIO;
 	}
 }
@@ -301,7 +297,7 @@ static void w9968cf_i2c_w(struct sd *sd, u8 reg, u8 value)
 
 	w9968cf_write_fsb(sd, data);
 
-	PDEBUG(D_USBO, "i2c 0x%02x -> [0x%02x]", value, reg);
+	gspca_dbg(gspca_dev, D_USBO, "i2c 0x%02x -> [0x%02x]\n", value, reg);
 }
 
 /* SMBus protocol: S Addr Wr [A] Subaddr [A] P S Addr+1 Rd [A] [Value] NA P */
@@ -335,9 +331,10 @@ static int w9968cf_i2c_r(struct sd *sd, u8 reg)
 
 	if (sd->gspca_dev.usb_err >= 0) {
 		ret = value;
-		PDEBUG(D_USBI, "i2c [0x%02X] -> 0x%02X", reg, value);
+		gspca_dbg(gspca_dev, D_USBI, "i2c [0x%02X] -> 0x%02X\n",
+			  reg, value);
 	} else
-		PERR("i2c read [0x%02x] failed", reg);
+		gspca_err(gspca_dev, "i2c read [0x%02x] failed\n", reg);
 
 	return ret;
 }

@@ -15,54 +15,6 @@
 
 #include <linux/types.h>
 
-struct nd_cmd_smart {
-	__u32 status;
-	__u8 data[128];
-} __packed;
-
-#define ND_SMART_HEALTH_VALID	(1 << 0)
-#define ND_SMART_SPARES_VALID	(1 << 1)
-#define ND_SMART_USED_VALID	(1 << 2)
-#define ND_SMART_TEMP_VALID 	(1 << 3)
-#define ND_SMART_CTEMP_VALID 	(1 << 4)
-#define ND_SMART_ALARM_VALID	(1 << 9)
-#define ND_SMART_SHUTDOWN_VALID	(1 << 10)
-#define ND_SMART_VENDOR_VALID	(1 << 11)
-#define ND_SMART_SPARE_TRIP	(1 << 0)
-#define ND_SMART_TEMP_TRIP	(1 << 1)
-#define ND_SMART_CTEMP_TRIP	(1 << 2)
-#define ND_SMART_NON_CRITICAL_HEALTH	(1 << 0)
-#define ND_SMART_CRITICAL_HEALTH	(1 << 1)
-#define ND_SMART_FATAL_HEALTH		(1 << 2)
-
-struct nd_smart_payload {
-	__u32 flags;
-	__u8 reserved0[4];
-	__u8 health;
-	__u8 spares;
-	__u8 life_used;
-	__u8 alarm_flags;
-	__u16 temperature;
-	__u16 ctrl_temperature;
-	__u8 reserved1[15];
-	__u8 shutdown_state;
-	__u32 vendor_size;
-	__u8 vendor_data[92];
-} __packed;
-
-struct nd_cmd_smart_threshold {
-	__u32 status;
-	__u8 data[8];
-} __packed;
-
-struct nd_smart_threshold_payload {
-	__u8 alarm_control;
-	__u8 reserved0;
-	__u16 temperature;
-	__u8 spares;
-	__u8 reserved[3];
-} __packed;
-
 struct nd_cmd_dimm_flags {
 	__u32 status;
 	__u32 flags;
@@ -105,7 +57,8 @@ struct nd_cmd_ars_cap {
 	__u32 status;
 	__u32 max_ars_out;
 	__u32 clear_err_unit;
-	__u32 reserved;
+	__u16 flags;
+	__u16 reserved;
 } __packed;
 
 struct nd_cmd_ars_start {
@@ -169,6 +122,8 @@ enum {
 enum {
 	ND_ARS_VOLATILE = 1,
 	ND_ARS_PERSISTENT = 2,
+	ND_ARS_RETURN_PREV_DATA = 1 << 1,
+	ND_CONFIG_LOCKED = 1,
 };
 
 static inline const char *nvdimm_bus_cmd_name(unsigned cmd)
@@ -178,6 +133,7 @@ static inline const char *nvdimm_bus_cmd_name(unsigned cmd)
 		[ND_CMD_ARS_START] = "ars_start",
 		[ND_CMD_ARS_STATUS] = "ars_status",
 		[ND_CMD_CLEAR_ERROR] = "clear_error",
+		[ND_CMD_CALL] = "cmd_call",
 	};
 
 	if (cmd < ARRAY_SIZE(names) && names[cmd])
@@ -206,12 +162,6 @@ static inline const char *nvdimm_cmd_name(unsigned cmd)
 }
 
 #define ND_IOCTL 'N'
-
-#define ND_IOCTL_SMART			_IOWR(ND_IOCTL, ND_CMD_SMART,\
-					struct nd_cmd_smart)
-
-#define ND_IOCTL_SMART_THRESHOLD	_IOWR(ND_IOCTL, ND_CMD_SMART_THRESHOLD,\
-					struct nd_cmd_smart_threshold)
 
 #define ND_IOCTL_DIMM_FLAGS		_IOWR(ND_IOCTL, ND_CMD_DIMM_FLAGS,\
 					struct nd_cmd_dimm_flags)
@@ -259,7 +209,7 @@ enum nd_driver_flags {
 };
 
 enum {
-	ND_MIN_NAMESPACE_SIZE = 0x00400000,
+	ND_MIN_NAMESPACE_SIZE = PAGE_SIZE,
 };
 
 enum ars_masks {

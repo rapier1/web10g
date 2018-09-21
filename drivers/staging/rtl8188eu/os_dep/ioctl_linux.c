@@ -129,11 +129,12 @@ static char *translate_scan(struct adapter *padapter,
 	start = iwe_stream_add_point(info, start, stop, &iwe, pnetwork->network.Ssid.Ssid);
 
 	/* parsing HT_CAP_IE */
-	p = rtw_get_ie(&pnetwork->network.IEs[12], _HT_CAPABILITY_IE_, &ht_ielen, pnetwork->network.IELength-12);
+	p = rtw_get_ie(&pnetwork->network.ies[12], _HT_CAPABILITY_IE_, &ht_ielen, pnetwork->network.ie_length-12);
 
 	if (p && ht_ielen > 0) {
 		struct ieee80211_ht_cap *pht_capie;
 		ht_cap = true;
+
 		pht_capie = (struct ieee80211_ht_cap *)(p + 2);
 		memcpy(&mcs_rate, pht_capie->mcs.rx_mask, 2);
 		bw_40MHz = !!(le16_to_cpu(pht_capie->cap_info) &
@@ -173,7 +174,7 @@ static char *translate_scan(struct adapter *padapter,
 
 	  /* Add mode */
 	iwe.cmd = SIOCGIWMODE;
-	memcpy(&le_tmp, rtw_get_capability_from_ie(pnetwork->network.IEs), 2);
+	memcpy(&le_tmp, rtw_get_capability_from_ie(pnetwork->network.ies), 2);
 
 	cap = le16_to_cpu(le_tmp);
 
@@ -242,7 +243,7 @@ static char *translate_scan(struct adapter *padapter,
 		u16 wpa_len = 0, rsn_len = 0;
 		u8 *p;
 
-		rtw_get_sec_ie(pnetwork->network.IEs, pnetwork->network.IELength, rsn_ie, &rsn_len, wpa_ie, &wpa_len);
+		rtw_get_sec_ie(pnetwork->network.ies, pnetwork->network.ie_length, rsn_ie, &rsn_len, wpa_ie, &wpa_len);
 		RT_TRACE(_module_rtl871x_mlme_c_, _drv_info_, ("rtw_wx_get_scan: ssid =%s\n", pnetwork->network.Ssid.Ssid));
 		RT_TRACE(_module_rtl871x_mlme_c_, _drv_info_, ("rtw_wx_get_scan: wpa_len =%d rsn_len =%d\n", wpa_len, rsn_len));
 
@@ -285,9 +286,9 @@ static char *translate_scan(struct adapter *padapter,
 		uint cnt = 0, total_ielen;
 		u8 *wpsie_ptr = NULL;
 		uint wps_ielen = 0;
+		u8 *ie_ptr = pnetwork->network.ies + _FIXED_IE_LENGTH_;
 
-		u8 *ie_ptr = pnetwork->network.IEs + _FIXED_IE_LENGTH_;
-		total_ielen = pnetwork->network.IELength - _FIXED_IE_LENGTH_;
+		total_ielen = pnetwork->network.ie_length - _FIXED_IE_LENGTH_;
 
 		while (cnt < total_ielen) {
 			if (rtw_is_wps_ie(&ie_ptr[cnt], &wps_ielen) && (wps_ielen > 2)) {
@@ -442,7 +443,7 @@ static int wpa_set_encryption(struct net_device *dev, struct ieee_param *param, 
 		struct sta_info *psta, *pbcmc_sta;
 		struct sta_priv *pstapriv = &padapter->stapriv;
 
-		if (check_fwstate(pmlmepriv, WIFI_STATION_STATE | WIFI_MP_STATE)) { /* sta mode */
+		if (check_fwstate(pmlmepriv, WIFI_STATION_STATE)) { /* sta mode */
 			psta = rtw_get_stainfo(pstapriv, get_bssid(pmlmepriv));
 			if (!psta) {
 				;
@@ -523,6 +524,7 @@ static int rtw_set_wpa_ie(struct adapter *padapter, char *pie, unsigned short ie
 		/* dump */
 		{
 			int i;
+
 			DBG_88E("\n wpa_ie(length:%d):\n", ielen);
 			for (i = 0; i < ielen; i += 8)
 				DBG_88E("0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x 0x%.2x\n", buf[i], buf[i+1], buf[i+2], buf[i+3], buf[i+4], buf[i+5], buf[i+6], buf[i+7]);
@@ -642,7 +644,7 @@ static int rtw_wx_get_name(struct net_device *dev,
 
 	if (check_fwstate(pmlmepriv, _FW_LINKED|WIFI_ADHOC_MASTER_STATE) == true) {
 		/* parsing HT_CAP_IE */
-		p = rtw_get_ie(&pcur_bss->IEs[12], _HT_CAPABILITY_IE_, &ht_ielen, pcur_bss->IELength-12);
+		p = rtw_get_ie(&pcur_bss->ies[12], _HT_CAPABILITY_IE_, &ht_ielen, pcur_bss->ie_length-12);
 		if (p && ht_ielen > 0)
 			ht_cap = true;
 
@@ -1084,14 +1086,9 @@ static int rtw_wx_set_scan(struct net_device *dev, struct iw_request_info *a,
 	struct adapter *padapter = (struct adapter *)rtw_netdev_priv(dev);
 	struct mlme_priv *pmlmepriv = &padapter->mlmepriv;
 	struct ndis_802_11_ssid ssid[RTW_SSID_SCAN_AMOUNT];
+
 	RT_TRACE(_module_rtl871x_mlme_c_, _drv_info_, ("rtw_wx_set_scan\n"));
 
-	if (padapter->registrypriv.mp_mode == 1) {
-		if (check_fwstate(pmlmepriv, WIFI_MP_STATE)) {
-			ret = -1;
-			goto exit;
-		}
-	}
 	if (_FAIL == rtw_pwr_wakeup(padapter)) {
 		ret = -1;
 		goto exit;
@@ -1225,6 +1222,7 @@ static int rtw_wx_get_scan(struct net_device *dev, struct iw_request_info *a,
 	u32 cnt = 0;
 	u32 wait_for_surveydone;
 	int wait_status;
+
 	RT_TRACE(_module_rtl871x_mlme_c_, _drv_info_, ("rtw_wx_get_scan\n"));
 	RT_TRACE(_module_rtl871x_ioctl_os_c, _drv_info_, (" Start of Query SIOCGIWSCAN .\n"));
 
@@ -1397,19 +1395,13 @@ static int rtw_wx_get_essid(struct net_device *dev,
 	if ((check_fwstate(pmlmepriv, _FW_LINKED)) ||
 	    (check_fwstate(pmlmepriv, WIFI_ADHOC_MASTER_STATE))) {
 		len = pcur_bss->Ssid.SsidLength;
-
-		wrqu->essid.length = len;
-
 		memcpy(extra, pcur_bss->Ssid.Ssid, len);
-
-		wrqu->essid.flags = 1;
 	} else {
-		ret = -1;
-		goto exit;
+		len = 0;
+		*extra = 0;
 	}
-
-exit:
-
+	wrqu->essid.length = len;
+	wrqu->essid.flags = 1;
 
 	return ret;
 }
@@ -1613,6 +1605,7 @@ static int rtw_wx_set_enc(struct net_device *dev,
 	struct iw_point *erq = &(wrqu->encoding);
 	struct adapter *padapter = (struct adapter *)rtw_netdev_priv(dev);
 	struct pwrctrl_priv *pwrpriv = &padapter->pwrctrlpriv;
+
 	DBG_88E("+rtw_wx_set_enc, flags = 0x%x\n", erq->flags);
 
 	memset(&wep, 0, sizeof(struct ndis_802_11_wep));
@@ -2166,8 +2159,6 @@ static int set_group_key(struct adapter *padapter, u8 *key, u8 alg, int keyid)
 		res = _FAIL;
 		goto exit;
 	}
-
-	memset(psetkeyparm, 0, sizeof(struct setkey_parm));
 
 	psetkeyparm->keyid = (u8)keyid;
 

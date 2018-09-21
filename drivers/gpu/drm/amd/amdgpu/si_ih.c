@@ -20,10 +20,10 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  */
-#include "drmP.h"
+#include <drm/drmP.h>
 #include "amdgpu.h"
 #include "amdgpu_ih.h"
-#include "si/sid.h"
+#include "sid.h"
 #include "si_ih.h"
 
 static void si_ih_set_interrupt_funcs(struct amdgpu_device *adev);
@@ -118,6 +118,19 @@ static u32 si_ih_get_wptr(struct amdgpu_device *adev)
 	return (wptr & adev->irq.ih.ptr_mask);
 }
 
+/**
+ * si_ih_prescreen_iv - prescreen an interrupt vector
+ *
+ * @adev: amdgpu_device pointer
+ *
+ * Returns true if the interrupt vector should be further processed.
+ */
+static bool si_ih_prescreen_iv(struct amdgpu_device *adev)
+{
+	/* Process all interrupts */
+	return true;
+}
+
 static void si_ih_decode_iv(struct amdgpu_device *adev,
 			     struct amdgpu_iv_entry *entry)
 {
@@ -129,10 +142,11 @@ static void si_ih_decode_iv(struct amdgpu_device *adev,
 	dw[2] = le32_to_cpu(adev->irq.ih.ring[ring_index + 2]);
 	dw[3] = le32_to_cpu(adev->irq.ih.ring[ring_index + 3]);
 
+	entry->client_id = AMDGPU_IH_CLIENTID_LEGACY;
 	entry->src_id = dw[0] & 0xff;
-	entry->src_data = dw[1] & 0xfffffff;
+	entry->src_data[0] = dw[1] & 0xfffffff;
 	entry->ring_id = dw[2] & 0xff;
-	entry->vm_id = (dw[2] >> 8) & 0xff;
+	entry->vmid = (dw[2] >> 8) & 0xff;
 
 	adev->irq.ih.rptr += 16;
 }
@@ -287,6 +301,7 @@ static const struct amd_ip_funcs si_ih_ip_funcs = {
 
 static const struct amdgpu_ih_funcs si_ih_funcs = {
 	.get_wptr = si_ih_get_wptr,
+	.prescreen_iv = si_ih_prescreen_iv,
 	.decode_iv = si_ih_decode_iv,
 	.set_rptr = si_ih_set_rptr
 };

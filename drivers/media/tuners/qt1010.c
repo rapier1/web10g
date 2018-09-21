@@ -13,10 +13,6 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #include "qt1010.h"
 #include "qt1010_priv.h"
@@ -228,7 +224,7 @@ static int qt1010_set_params(struct dvb_frontend *fe)
 static int qt1010_init_meas1(struct qt1010_priv *priv,
 			     u8 oper, u8 reg, u8 reg_init_val, u8 *retval)
 {
-	u8 i, val1, val2;
+	u8 i, val1, uninitialized_var(val2);
 	int err;
 
 	qt1010_i2c_oper_t i2c_data[] = {
@@ -263,7 +259,7 @@ static int qt1010_init_meas1(struct qt1010_priv *priv,
 static int qt1010_init_meas2(struct qt1010_priv *priv,
 			    u8 reg_init_val, u8 *retval)
 {
-	u8 i, val;
+	u8 i, uninitialized_var(val);
 	int err;
 	qt1010_i2c_oper_t i2c_data[] = {
 		{ QT1010_WR, 0x07, reg_init_val },

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright IBM Corp. 1999,2012
  *
@@ -17,7 +18,7 @@
 #define MAX_KMEM_PAGES (sizeof(unsigned long) << 3)
 #define SCLP_CONSOLE_PAGES	6
 
-#define SCLP_EVTYP_MASK(T)	(1U << (32 - (T)))
+#define SCLP_EVTYP_MASK(T) (1UL << (sizeof(sccb_mask_t) * BITS_PER_BYTE - (T)))
 
 #define EVTYP_OPCMD		0x01
 #define EVTYP_MSG		0x02
@@ -27,6 +28,7 @@
 #define EVTYP_PMSGCMD		0x09
 #define EVTYP_ASYNC		0x0A
 #define EVTYP_CTLPROGIDENT	0x0B
+#define EVTYP_STORE_DATA	0x0C
 #define EVTYP_ERRNOTIFY		0x18
 #define EVTYP_VT220MSG		0x1A
 #define EVTYP_SDIAS		0x1C
@@ -41,6 +43,7 @@
 #define EVTYP_PMSGCMD_MASK	SCLP_EVTYP_MASK(EVTYP_PMSGCMD)
 #define EVTYP_ASYNC_MASK	SCLP_EVTYP_MASK(EVTYP_ASYNC)
 #define EVTYP_CTLPROGIDENT_MASK	SCLP_EVTYP_MASK(EVTYP_CTLPROGIDENT)
+#define EVTYP_STORE_DATA_MASK	SCLP_EVTYP_MASK(EVTYP_STORE_DATA)
 #define EVTYP_ERRNOTIFY_MASK	SCLP_EVTYP_MASK(EVTYP_ERRNOTIFY)
 #define EVTYP_VT220MSG_MASK	SCLP_EVTYP_MASK(EVTYP_VT220MSG)
 #define EVTYP_SDIAS_MASK	SCLP_EVTYP_MASK(EVTYP_SDIAS)
@@ -84,7 +87,7 @@ enum sclp_pm_event {
 #define SCLP_PANIC_PRIO		1
 #define SCLP_PANIC_PRIO_CLIENT	0
 
-typedef u32 sccb_mask_t;	/* ATTENTION: assumes 32bit mask !!! */
+typedef u64 sccb_mask_t;
 
 struct sccb_header {
 	u16	length;
@@ -97,11 +100,52 @@ struct init_sccb {
 	struct sccb_header header;
 	u16 _reserved;
 	u16 mask_length;
-	sccb_mask_t receive_mask;
-	sccb_mask_t send_mask;
-	sccb_mask_t sclp_receive_mask;
-	sccb_mask_t sclp_send_mask;
+	u8 masks[4 * 1021];	/* variable length */
+	/*
+	 * u8 receive_mask[mask_length];
+	 * u8 send_mask[mask_length];
+	 * u8 sclp_receive_mask[mask_length];
+	 * u8 sclp_send_mask[mask_length];
+	 */
 } __attribute__((packed));
+
+#define SCLP_MASK_SIZE_COMPAT 4
+
+static inline sccb_mask_t sccb_get_mask(u8 *masks, size_t len, int i)
+{
+	sccb_mask_t res = 0;
+
+	memcpy(&res, masks + i * len, min(sizeof(res), len));
+	return res;
+}
+
+static inline void sccb_set_mask(u8 *masks, size_t len, int i, sccb_mask_t val)
+{
+	memset(masks + i * len, 0, len);
+	memcpy(masks + i * len, &val, min(sizeof(val), len));
+}
+
+#define sccb_get_generic_mask(sccb, i)					\
+({									\
+	__typeof__(sccb) __sccb = sccb;					\
+									\
+	sccb_get_mask(__sccb->masks, __sccb->mask_length, i);		\
+})
+#define sccb_get_recv_mask(sccb)	sccb_get_generic_mask(sccb, 0)
+#define sccb_get_send_mask(sccb)	sccb_get_generic_mask(sccb, 1)
+#define sccb_get_sclp_recv_mask(sccb)	sccb_get_generic_mask(sccb, 2)
+#define sccb_get_sclp_send_mask(sccb)	sccb_get_generic_mask(sccb, 3)
+
+#define sccb_set_generic_mask(sccb, i, val)				\
+({									\
+	__typeof__(sccb) __sccb = sccb;					\
+									\
+	sccb_set_mask(__sccb->masks, __sccb->mask_length, i, val);	\
+})
+#define sccb_set_recv_mask(sccb, val)	    sccb_set_generic_mask(sccb, 0, val)
+#define sccb_set_send_mask(sccb, val)	    sccb_set_generic_mask(sccb, 1, val)
+#define sccb_set_sclp_recv_mask(sccb, val)  sccb_set_generic_mask(sccb, 2, val)
+#define sccb_set_sclp_send_mask(sccb, val)  sccb_set_generic_mask(sccb, 3, val)
 
 struct read_cpu_info_sccb {
 	struct	sccb_header header;
@@ -204,18 +248,58 @@ void sclp_unregister(struct sclp_register *reg);
 int sclp_remove_processed(struct sccb_header *sccb);
 int sclp_deactivate(void);
 int sclp_reactivate(void);
-int sclp_service_call(sclp_cmdw_t command, void *sccb);
 int sclp_sync_request(sclp_cmdw_t command, void *sccb);
 int sclp_sync_request_timeout(sclp_cmdw_t command, void *sccb, int timeout);
 
 int sclp_sdias_init(void);
 void sclp_sdias_exit(void);
 
+enum {
+	sclp_init_state_uninitialized,
+	sclp_init_state_initializing,
+	sclp_init_state_initialized
+};
+
+extern int sclp_init_state;
 extern int sclp_console_pages;
 extern int sclp_console_drop;
 extern unsigned long sclp_console_full;
+extern bool sclp_mask_compat_mode;
+
+extern char sclp_early_sccb[PAGE_SIZE];
+
+void sclp_early_wait_irq(void);
+int sclp_early_cmd(sclp_cmdw_t cmd, void *sccb);
+unsigned int sclp_early_con_check_linemode(struct init_sccb *sccb);
+unsigned int sclp_early_con_check_vt220(struct init_sccb *sccb);
+int sclp_early_set_event_mask(struct init_sccb *sccb,
+			      sccb_mask_t receive_mask,
+			      sccb_mask_t send_mask);
 
 /* useful inlines */
+
+/* Perform service call. Return 0 on success, non-zero otherwise. */
+static inline int sclp_service_call(sclp_cmdw_t command, void *sccb)
+{
+	int cc = 4; /* Initialize for program check handling */
+
+	asm volatile(
+		"0:	.insn	rre,0xb2200000,%1,%2\n"	 /* servc %1,%2 */
+		"1:	ipm	%0\n"
+		"	srl	%0,28\n"
+		"2:\n"
+		EX_TABLE(0b, 2b)
+		EX_TABLE(1b, 2b)
+		: "+&d" (cc) : "d" (command), "a" ((unsigned long)sccb)
+		: "cc", "memory");
+	if (cc == 4)
+		return -EINVAL;
+	if (cc == 3)
+		return -EIO;
+	if (cc == 2)
+		return -EBUSY;
+	return 0;
+}
 
 /* VM uses EBCDIC 037, LPAR+native(SE+HMC) use EBCDIC 500 */
 /* translate single character from ASCII to EBCDIC */

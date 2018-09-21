@@ -18,8 +18,12 @@
 #include "mcdi.h"
 
 enum {
-	EFX_REV_SIENA_A0 = 0,
-	EFX_REV_HUNT_A0 = 1,
+	/* Revisions 0-2 were Falcon A0, A1 and B0 respectively.
+	 * They are not supported by this driver but these revision numbers
+	 * form part of the ethtool API for register dumping.
+	 */
+	EFX_REV_SIENA_A0 = 3,
+	EFX_REV_HUNT_A0 = 4,
 };
 
 static inline int efx_nic_rev(struct efx_nic *efx)
@@ -77,12 +81,23 @@ static struct efx_tx_queue *efx_tx_queue_partner(struct efx_tx_queue *tx_queue)
 static inline bool __efx_nic_tx_is_empty(struct efx_tx_queue *tx_queue,
 					 unsigned int write_count)
 {
-	unsigned int empty_read_count = ACCESS_ONCE(tx_queue->empty_read_count);
+	unsigned int empty_read_count = READ_ONCE(tx_queue->empty_read_count);
 
 	if (empty_read_count == 0)
 		return false;
 
 	return ((empty_read_count ^ write_count) & ~EFX_EMPTY_COUNT_VALID) == 0;
+}
+
+/* Report whether the NIC considers this TX queue empty, using
+ * packet_write_count (the write count recorded for the last completable
+ * doorbell push).  May return false negative.  EF10 only, which is OK
+ * because only EF10 supports PIO.
+ */
+static inline bool efx_nic_tx_is_empty(struct efx_tx_queue *tx_queue)
+{
+	EFX_WARN_ON_ONCE_PARANOID(!tx_queue->efx->type->option_descriptors);
+	return __efx_nic_tx_is_empty(tx_queue, tx_queue->packet_write_count);
 }
 
 /* Decide whether we can use TX PIO, ie. write packet data directly into
@@ -94,9 +109,9 @@ static inline bool __efx_nic_tx_is_empty(struct efx_tx_queue *tx_queue,
 static inline bool efx_nic_may_tx_pio(struct efx_tx_queue *tx_queue)
 {
 	struct efx_tx_queue *partner = efx_tx_queue_partner(tx_queue);
-	return tx_queue->piobuf &&
-	       __efx_nic_tx_is_empty(tx_queue, tx_queue->insert_count) &&
-	       __efx_nic_tx_is_empty(partner, partner->insert_count);
+
+	return tx_queue->piobuf && efx_nic_tx_is_empty(tx_queue) &&
+	       efx_nic_tx_is_empty(partner);
 }
 
 /* Decide whether to push a TX descriptor to the NIC vs merely writing
@@ -310,6 +325,29 @@ enum {
 	EF10_STAT_tx_bad,
 	EF10_STAT_tx_bad_bytes,
 	EF10_STAT_tx_overflow,
+	EF10_STAT_V1_COUNT,
+	EF10_STAT_fec_uncorrected_errors = EF10_STAT_V1_COUNT,
+	EF10_STAT_fec_corrected_errors,
+	EF10_STAT_fec_corrected_symbols_lane0,
+	EF10_STAT_fec_corrected_symbols_lane1,
+	EF10_STAT_fec_corrected_symbols_lane2,
+	EF10_STAT_fec_corrected_symbols_lane3,
+	EF10_STAT_ctpio_vi_busy_fallback,
+	EF10_STAT_ctpio_long_write_success,
+	EF10_STAT_ctpio_missing_dbell_fail,
+	EF10_STAT_ctpio_overflow_fail,
+	EF10_STAT_ctpio_underflow_fail,
+	EF10_STAT_ctpio_timeout_fail,
+	EF10_STAT_ctpio_noncontig_wr_fail,
+	EF10_STAT_ctpio_frm_clobber_fail,
+	EF10_STAT_ctpio_invalid_wr_fail,
+	EF10_STAT_ctpio_vi_clobber_fallback,
+	EF10_STAT_ctpio_unqualified_fallback,
+	EF10_STAT_ctpio_runt_fallback,
+	EF10_STAT_ctpio_success,
+	EF10_STAT_ctpio_fallback,
+	EF10_STAT_ctpio_poison,
+	EF10_STAT_ctpio_erase,
 	EF10_STAT_COUNT
 };
 
@@ -326,15 +364,17 @@ enum {
  * @vi_base: Absolute index of first VI in this function
  * @n_allocated_vis: Number of VIs allocated to this function
  * @must_realloc_vis: Flag: VIs have yet to be reallocated after MC reboot
+ * @must_restore_rss_contexts: Flag: RSS contexts have yet to be restored after
+ *	MC reboot
  * @must_restore_filters: Flag: filters have yet to be restored after MC reboot
  * @n_piobufs: Number of PIO buffers allocated to this function
  * @wc_membase: Base address of write-combining mapping of the memory BAR
  * @pio_write_base: Base address for writing PIO buffers
  * @pio_write_vi_base: Relative VI number for @pio_write_base
  * @piobuf_handle: Handle of each PIO buffer allocated
+ * @piobuf_size: size of a single PIO buffer
  * @must_restore_piobufs: Flag: PIO buffers have yet to be restored after MC
  *	reboot
- * @rx_rss_context: Firmware handle for our RSS context
  * @rx_rss_context_exclusive: Whether our RSS context is exclusive or shared
  * @stats: Hardware statistics
  * @workaround_35388: Flag: firmware supports workaround for bug 35388
@@ -357,6 +397,10 @@ enum {
  * @vport_mac: The MAC address on the vport, only for PFs; VFs will be zero
  * @vlan_list: List of VLANs added over the interface. Serialised by vlan_lock.
  * @vlan_lock: Lock to serialize access to vlan_list.
+ * @udp_tunnels: UDP tunnel port numbers and types.
+ * @udp_tunnels_dirty: flag indicating a reboot occurred while pushing
+ *	@udp_tunnels to hardware and thus the push must be re-done.
+ * @udp_tunnels_lock: Serialises writes to @udp_tunnels and @udp_tunnels_dirty.
  */
 struct efx_ef10_nic_data {
 	struct efx_buffer mcdi_buf;
@@ -364,13 +408,14 @@ struct efx_ef10_nic_data {
 	unsigned int vi_base;
 	unsigned int n_allocated_vis;
 	bool must_realloc_vis;
+	bool must_restore_rss_contexts;
 	bool must_restore_filters;
 	unsigned int n_piobufs;
 	void __iomem *wc_membase, *pio_write_base;
 	unsigned int pio_write_vi_base;
 	unsigned int piobuf_handle[EF10_TX_PIOBUF_COUNT];
+	u16 piobuf_size;
 	bool must_restore_piobufs;
-	u32 rx_rss_context;
 	bool rx_rss_context_exclusive;
 	u64 stats[EF10_STAT_COUNT];
 	bool workaround_35388;
@@ -392,6 +437,10 @@ struct efx_ef10_nic_data {
 	u8 vport_mac[ETH_ALEN];
 	struct list_head vlan_list;
 	struct mutex vlan_lock;
+	struct efx_udp_tunnel udp_tunnels[16];
+	bool udp_tunnels_dirty;
+	struct mutex udp_tunnels_lock;
+	u64 licensed_features;
 };
 
 int efx_init_sriov(void);
@@ -400,6 +449,7 @@ void efx_fini_sriov(void);
 struct ethtool_ts_info;
 int efx_ptp_probe(struct efx_nic *efx, struct efx_channel *channel);
 void efx_ptp_defer_probe_with_channel(struct efx_nic *efx);
+struct efx_channel *efx_ptp_channel(struct efx_nic *efx);
 void efx_ptp_remove(struct efx_nic *efx);
 int efx_ptp_set_ts_config(struct efx_nic *efx, struct ifreq *ifr);
 int efx_ptp_get_ts_config(struct efx_nic *efx, struct ifreq *ifr);
@@ -423,6 +473,8 @@ static inline void efx_rx_skb_attach_timestamp(struct efx_channel *channel,
 }
 void efx_ptp_start_datapath(struct efx_nic *efx);
 void efx_ptp_stop_datapath(struct efx_nic *efx);
+bool efx_ptp_use_mac_tx_timestamps(struct efx_nic *efx);
+ktime_t efx_ptp_nic_to_kernel_time(struct efx_tx_queue *tx_queue);
 
 extern const struct efx_nic_type falcon_a1_nic_type;
 extern const struct efx_nic_type falcon_b0_nic_type;
@@ -551,8 +603,6 @@ s32 efx_farch_filter_get_rx_ids(struct efx_nic *efx,
 				enum efx_filter_priority priority, u32 *buf,
 				u32 size);
 #ifdef CONFIG_RFS_ACCEL
-s32 efx_farch_filter_rfs_insert(struct efx_nic *efx,
-				struct efx_filter_spec *spec);
 bool efx_farch_filter_rfs_expire_one(struct efx_nic *efx, u32 flow_id,
 				     unsigned int index);
 #endif
@@ -593,11 +643,11 @@ irqreturn_t efx_farch_fatal_interrupt(struct efx_nic *efx);
 
 static inline int efx_nic_event_test_irq_cpu(struct efx_channel *channel)
 {
-	return ACCESS_ONCE(channel->event_test_cpu);
+	return READ_ONCE(channel->event_test_cpu);
 }
 static inline int efx_nic_irq_test_irq_cpu(struct efx_nic *efx)
 {
-	return ACCESS_ONCE(efx->last_irq_cpu);
+	return READ_ONCE(efx->last_irq_cpu);
 }
 
 /* Global Resources */
@@ -613,6 +663,7 @@ void efx_farch_dimension_resources(struct efx_nic *efx, unsigned sram_lim_qw);
 void efx_farch_init_common(struct efx_nic *efx);
 void efx_ef10_handle_drain_event(struct efx_nic *efx);
 void efx_farch_rx_push_indir_table(struct efx_nic *efx);
+void efx_farch_rx_pull_indir_table(struct efx_nic *efx);
 
 int efx_nic_alloc_buffer(struct efx_nic *efx, struct efx_buffer *buffer,
 			 unsigned int len, gfp_t gfp_flags);

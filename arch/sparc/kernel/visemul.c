@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* visemul.c: Emulation of VIS instructions.
  *
  * Copyright (C) 2006 David S. Miller (davem@davemloft.net)
@@ -30,7 +31,7 @@
 /* 001001011 - two 32-bit merges */
 #define FPMERGE_OPF	0x04b
 
-/* 000110001 - 8-by-16-bit partitoned product  */
+/* 000110001 - 8-by-16-bit partitioned product  */
 #define FMUL8x16_OPF	0x031
 
 /* 000110011 - 8-by-16-bit upper alpha partitioned product  */

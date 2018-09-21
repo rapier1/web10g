@@ -27,6 +27,8 @@
 #include <linux/pagemap.h>	/* read_mapping_page */
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/coredump.h>
 #include <linux/export.h>
 #include <linux/rmap.h>		/* anon_vma_prepare */
 #include <linux/mmu_notifier.h>	/* set_pte_at_notify */
@@ -153,13 +155,18 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 				struct page *old_page, struct page *new_page)
 {
 	struct mm_struct *mm = vma->vm_mm;
-	spinlock_t *ptl;
-	pte_t *ptep;
+	struct page_vma_mapped_walk pvmw = {
+		.page = old_page,
+		.vma = vma,
+		.address = addr,
+	};
 	int err;
 	/* For mmu_notifiers */
 	const unsigned long mmun_start = addr;
 	const unsigned long mmun_end   = addr + PAGE_SIZE;
 	struct mem_cgroup *memcg;
+
+	VM_BUG_ON_PAGE(PageTransHuge(old_page), old_page);
 
 	err = mem_cgroup_try_charge(new_page, vma->vm_mm, GFP_KERNEL, &memcg,
 			false);
@@ -171,11 +178,11 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 
 	mmu_notifier_invalidate_range_start(mm, mmun_start, mmun_end);
 	err = -EAGAIN;
-	ptep = page_check_address(old_page, mm, addr, &ptl, 0);
-	if (!ptep) {
+	if (!page_vma_mapped_walk(&pvmw)) {
 		mem_cgroup_cancel_charge(new_page, memcg, false);
 		goto unlock;
 	}
+	VM_BUG_ON_PAGE(addr != pvmw.address, old_page);
 
 	get_page(new_page);
 	page_add_new_anon_rmap(new_page, vma, addr, false);
@@ -187,14 +194,15 @@ static int __replace_page(struct vm_area_struct *vma, unsigned long addr,
 		inc_mm_counter(mm, MM_ANONPAGES);
 	}
 
-	flush_cache_page(vma, addr, pte_pfn(*ptep));
-	ptep_clear_flush_notify(vma, addr, ptep);
-	set_pte_at_notify(mm, addr, ptep, mk_pte(new_page, vma->vm_page_prot));
+	flush_cache_page(vma, addr, pte_pfn(*pvmw.pte));
+	ptep_clear_flush_notify(vma, addr, pvmw.pte);
+	set_pte_at_notify(mm, addr, pvmw.pte,
+			mk_pte(new_page, vma->vm_page_prot));
 
 	page_remove_rmap(old_page, false);
 	if (!page_mapped(old_page))
 		try_to_free_swap(old_page);
-	pte_unmap_unlock(ptep, ptl);
+	page_vma_mapped_walk_done(&pvmw);
 
 	if (vma->vm_flags & VM_LOCKED)
 		munlock_vma_page(old_page);
@@ -300,8 +308,8 @@ int uprobe_write_opcode(struct mm_struct *mm, unsigned long vaddr,
 
 retry:
 	/* Read the page with vaddr into memory */
-	ret = get_user_pages_remote(NULL, mm, vaddr, 1, FOLL_FORCE, &old_page,
-			&vma, NULL);
+	ret = get_user_pages_remote(NULL, mm, vaddr, 1,
+			FOLL_FORCE | FOLL_SPLIT, &old_page, &vma, NULL);
 	if (ret <= 0)
 		return ret;
 
@@ -483,7 +491,7 @@ static struct uprobe *alloc_uprobe(struct inode *inode, loff_t offset)
 	if (!uprobe)
 		return NULL;
 
-	uprobe->inode = igrab(inode);
+	uprobe->inode = inode;
 	uprobe->offset = offset;
 	init_rwsem(&uprobe->register_rwsem);
 	init_rwsem(&uprobe->consumer_rwsem);
@@ -494,7 +502,6 @@ static struct uprobe *alloc_uprobe(struct inode *inode, loff_t offset)
 	if (cur_uprobe) {
 		kfree(uprobe);
 		uprobe = cur_uprobe;
-		iput(inode);
 	}
 
 	return uprobe;
@@ -693,7 +700,6 @@ static void delete_uprobe(struct uprobe *uprobe)
 	rb_erase(&uprobe->rb_node, &uprobes_tree);
 	spin_unlock(&uprobes_treelock);
 	RB_CLEAR_NODE(&uprobe->rb_node); /* for uprobe_is_active() */
-	iput(uprobe->inode);
 	put_uprobe(uprobe);
 }
 
@@ -741,7 +747,7 @@ build_map_info(struct address_space *mapping, loff_t offset, bool is_register)
 			continue;
 		}
 
-		if (!atomic_inc_not_zero(&vma->vm_mm->mm_users))
+		if (!mmget_not_zero(vma->vm_mm))
 			continue;
 
 		info = prev;
@@ -865,7 +871,8 @@ static void __uprobe_unregister(struct uprobe *uprobe, struct uprobe_consumer *u
  * tuple).  Creation refcount stops uprobe_unregister from freeing the
  * @uprobe even before the register operation is complete. Creation
  * refcount is released when the last @uc for the @uprobe
- * unregisters.
+ * unregisters. Caller of uprobe_register() is required to keep @inode
+ * (and the containing mount) referenced.
  *
  * Return errno if it cannot successully install probes
  * else return 0 (success)
@@ -1159,8 +1166,8 @@ static int xol_add_vma(struct mm_struct *mm, struct xol_area *area)
 	}
 
 	ret = 0;
-	smp_wmb();	/* pairs with get_xol_area() */
-	mm->uprobes_state.xol_area = area;
+	/* pairs with get_xol_area() */
+	smp_store_release(&mm->uprobes_state.xol_area, area); /* ^^^ */
  fail:
 	up_write(&mm->mmap_sem);
 
@@ -1177,7 +1184,8 @@ static struct xol_area *__create_xol_area(unsigned long vaddr)
 	if (unlikely(!area))
 		goto out;
 
-	area->bitmap = kzalloc(BITS_TO_LONGS(UINSNS_PER_PAGE) * sizeof(long), GFP_KERNEL);
+	area->bitmap = kcalloc(BITS_TO_LONGS(UINSNS_PER_PAGE), sizeof(long),
+			       GFP_KERNEL);
 	if (!area->bitmap)
 		goto free_area;
 
@@ -1222,8 +1230,8 @@ static struct xol_area *get_xol_area(void)
 	if (!mm->uprobes_state.xol_area)
 		__create_xol_area(0);
 
-	area = mm->uprobes_state.xol_area;
-	smp_read_barrier_depends();	/* pairs with wmb in xol_add_vma() */
+	/* Pairs with xol_add_vma() smp_store_release() */
+	area = READ_ONCE(mm->uprobes_state.xol_area); /* ^^^ */
 	return area;
 }
 
@@ -1254,8 +1262,6 @@ void uprobe_end_dup_mmap(void)
 
 void uprobe_dup_mmap(struct mm_struct *oldmm, struct mm_struct *newmm)
 {
-	newmm->uprobes_state.xol_area = NULL;
-
 	if (test_bit(MMF_HAS_UPROBES, &oldmm->flags)) {
 		set_bit(MMF_HAS_UPROBES, &newmm->flags);
 		/* unconditionally, dup_mmap() skips VM_DONTCOPY vmas */
@@ -1522,8 +1528,8 @@ static unsigned long get_trampoline_vaddr(void)
 	struct xol_area *area;
 	unsigned long trampoline_vaddr = -1;
 
-	area = current->mm->uprobes_state.xol_area;
-	smp_read_barrier_depends();
+	/* Pairs with xol_add_vma() smp_store_release() */
+	area = READ_ONCE(current->mm->uprobes_state.xol_area); /* ^^^ */
 	if (area)
 		trampoline_vaddr = area->vaddr;
 

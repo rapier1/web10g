@@ -37,7 +37,7 @@ static int noinline arc_get_timer_clk(struct device_node *node)
 
 	clk = of_clk_get(node, 0);
 	if (IS_ERR(clk)) {
-		pr_err("timer missing clk");
+		pr_err("timer missing clk\n");
 		return PTR_ERR(clk);
 	}
 
@@ -61,6 +61,20 @@ static u64 arc_read_gfrc(struct clocksource *cs)
 	unsigned long flags;
 	u32 l, h;
 
+	/*
+	 * From a programming model pov, there seems to be just one instance of
+	 * MCIP_CMD/MCIP_READBACK however micro-architecturally there's
+	 * an instance PER ARC CORE (not per cluster), and there are dedicated
+	 * hardware decode logic (per core) inside ARConnect to handle
+	 * simultaneous read/write accesses from cores via those two registers.
+	 * So several concurrent commands to ARConnect are OK if they are
+	 * trying to access two different sub-components (like GFRC,
+	 * inter-core interrupt, etc...). HW also supports simultaneously
+	 * accessing GFRC by multiple cores.
+	 * That's why it is safe to disable hard interrupts on the local CPU
+	 * before access to GFRC instead of taking global MCIP spinlock
+	 * defined in arch/arc/kernel/mcip.c
+	 */
 	local_irq_save(flags);
 
 	__mcip_cmd(CMD_GFRC_READ_LO, 0);
@@ -89,7 +103,7 @@ static int __init arc_cs_setup_gfrc(struct device_node *node)
 
 	READ_BCR(ARC_REG_MCIP_BCR, mp);
 	if (!mp.gfrc) {
-		pr_warn("Global-64-bit-Ctr clocksource not detected");
+		pr_warn("Global-64-bit-Ctr clocksource not detected\n");
 		return -ENXIO;
 	}
 
@@ -99,7 +113,7 @@ static int __init arc_cs_setup_gfrc(struct device_node *node)
 
 	return clocksource_register_hz(&arc_counter_gfrc, arc_timer_freq);
 }
-CLOCKSOURCE_OF_DECLARE(arc_gfrc, "snps,archs-timer-gfrc", arc_cs_setup_gfrc);
+TIMER_OF_DECLARE(arc_gfrc, "snps,archs-timer-gfrc", arc_cs_setup_gfrc);
 
 #define AUX_RTC_CTRL	0x103
 #define AUX_RTC_LOW	0x104
@@ -140,13 +154,13 @@ static int __init arc_cs_setup_rtc(struct device_node *node)
 
 	READ_BCR(ARC_REG_TIMERS_BCR, timer);
 	if (!timer.rtc) {
-		pr_warn("Local-64-bit-Ctr clocksource not detected");
+		pr_warn("Local-64-bit-Ctr clocksource not detected\n");
 		return -ENXIO;
 	}
 
 	/* Local to CPU hence not usable in SMP */
 	if (IS_ENABLED(CONFIG_SMP)) {
-		pr_warn("Local-64-bit-Ctr not usable in SMP");
+		pr_warn("Local-64-bit-Ctr not usable in SMP\n");
 		return -EINVAL;
 	}
 
@@ -158,7 +172,7 @@ static int __init arc_cs_setup_rtc(struct device_node *node)
 
 	return clocksource_register_hz(&arc_counter_rtc, arc_timer_freq);
 }
-CLOCKSOURCE_OF_DECLARE(arc_rtc, "snps,archs-timer-rtc", arc_cs_setup_rtc);
+TIMER_OF_DECLARE(arc_rtc, "snps,archs-timer-rtc", arc_cs_setup_rtc);
 
 #endif
 
@@ -251,9 +265,14 @@ static irqreturn_t timer_irq_handler(int irq, void *dev_id)
 	int irq_reenable = clockevent_state_periodic(evt);
 
 	/*
-	 * Any write to CTRL reg ACks the interrupt, we rewrite the
-	 * Count when [N]ot [H]alted bit.
-	 * And re-arm it if perioid by [I]nterrupt [E]nable bit
+	 * 1. ACK the interrupt
+	 *    - For ARC700, any write to CTRL reg ACKs it, so just rewrite
+	 *      Count when [N]ot [H]alted bit.
+	 *    - For HS3x, it is a bit subtle. On taken count-down interrupt,
+	 *      IP bit [3] is set, which needs to be cleared for ACK'ing.
+	 *      The write below can only update the other two bits, hence
+	 *      explicitly clears IP bit
+	 * 2. Re-arm interrupt if periodic by writing to IE bit [0]
 	 */
 	write_aux_reg(ARC_REG_TIMER0_CTRL, irq_reenable | TIMER_CTRL_NH);
 
@@ -290,13 +309,13 @@ static int __init arc_clockevent_setup(struct device_node *node)
 
 	arc_timer_irq = irq_of_parse_and_map(node, 0);
 	if (arc_timer_irq <= 0) {
-		pr_err("clockevent: missing irq");
+		pr_err("clockevent: missing irq\n");
 		return -EINVAL;
 	}
 
 	ret = arc_get_timer_clk(node);
 	if (ret) {
-		pr_err("clockevent: missing clk");
+		pr_err("clockevent: missing clk\n");
 		return ret;
 	}
 
@@ -313,7 +332,7 @@ static int __init arc_clockevent_setup(struct device_node *node)
 				arc_timer_starting_cpu,
 				arc_timer_dying_cpu);
 	if (ret) {
-		pr_err("Failed to setup hotplug state");
+		pr_err("Failed to setup hotplug state\n");
 		return ret;
 	}
 	return 0;
@@ -333,4 +352,4 @@ static int __init arc_of_timer_init(struct device_node *np)
 
 	return ret;
 }
-CLOCKSOURCE_OF_DECLARE(arc_clkevt, "snps,arc-timer", arc_of_timer_init);
+TIMER_OF_DECLARE(arc_clkevt, "snps,arc-timer", arc_of_timer_init);

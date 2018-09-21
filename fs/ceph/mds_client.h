@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _FS_CEPH_MDS_CLIENT_H
 #define _FS_CEPH_MDS_CLIENT_H
 
@@ -7,6 +8,8 @@
 #include <linux/mutex.h>
 #include <linux/rbtree.h>
 #include <linux/spinlock.h>
+#include <linux/refcount.h>
+#include <linux/utsname.h>
 
 #include <linux/ceph/types.h>
 #include <linux/ceph/messenger.h>
@@ -46,6 +49,8 @@ struct ceph_mds_reply_info_in {
 	char *inline_data;
 	u32 pool_ns_len;
 	char *pool_ns_data;
+	u64 max_bytes;
+	u64 max_files;
 };
 
 struct ceph_mds_reply_dir_entry {
@@ -82,9 +87,10 @@ struct ceph_mds_reply_info_parsed {
 			struct ceph_mds_reply_dirfrag *dir_dir;
 			size_t			      dir_buf_size;
 			int                           dir_nr;
-			bool			      dir_complete;
 			bool			      dir_end;
+			bool			      dir_complete;
 			bool			      hash_order;
+			bool			      offset_hash;
 			struct ceph_mds_reply_dir_entry  *dir_entries;
 		};
 
@@ -104,10 +110,13 @@ struct ceph_mds_reply_info_parsed {
 
 /*
  * cap releases are batched and sent to the MDS en masse.
+ *
+ * Account for per-message overhead of mds_cap_release header
+ * and __le32 for osd epoch barrier trailing field.
  */
-#define CEPH_CAPS_PER_RELEASE ((PAGE_SIZE -			\
+#define CEPH_CAPS_PER_RELEASE ((PAGE_SIZE - sizeof(u32) -		\
 				sizeof(struct ceph_mds_cap_release)) /	\
-			       sizeof(struct ceph_mds_cap_item))
+			        sizeof(struct ceph_mds_cap_item))
 
 
 /*
@@ -156,7 +165,7 @@ struct ceph_mds_session {
 	unsigned long     s_renew_requested; /* last time we sent a renew req */
 	u64               s_renew_seq;
 
-	atomic_t          s_ref;
+	refcount_t          s_ref;
 	struct list_head  s_waiting;  /* waiting requests */
 	struct list_head  s_unsafe;   /* unsafe requests */
 };
@@ -202,8 +211,17 @@ struct ceph_mds_request {
 	char *r_path1, *r_path2;
 	struct ceph_vino r_ino1, r_ino2;
 
-	struct inode *r_locked_dir; /* dir (if any) i_mutex locked by vfs */
+	struct inode *r_parent;		    /* parent dir inode */
 	struct inode *r_target_inode;       /* resulting inode */
+
+#define CEPH_MDS_R_DIRECT_IS_HASH	(1) /* r_direct_hash is valid */
+#define CEPH_MDS_R_ABORTED		(2) /* call was aborted */
+#define CEPH_MDS_R_GOT_UNSAFE		(3) /* got an unsafe reply */
+#define CEPH_MDS_R_GOT_SAFE		(4) /* got a safe reply */
+#define CEPH_MDS_R_GOT_RESULT		(5) /* got a result */
+#define CEPH_MDS_R_DID_PREPOPULATE	(6) /* prepopulated readdir */
+#define CEPH_MDS_R_PARENT_LOCKED	(7) /* is r_parent->i_rwsem wlocked? */
+	unsigned long	r_req_flags;
 
 	struct mutex r_fill_mutex;
 
@@ -216,7 +234,6 @@ struct ceph_mds_request {
 	/* for choosing which mds to send this request to */
 	int r_direct_mode;
 	u32 r_direct_hash;      /* choose dir frag based on this dentry hash */
-	bool r_direct_is_hash;  /* true if r_direct_hash is valid */
 
 	/* data payload is used for xattr ops */
 	struct ceph_pagelist *r_pagelist;
@@ -234,7 +251,6 @@ struct ceph_mds_request {
 	struct ceph_mds_reply_info_parsed r_reply_info;
 	struct page *r_locked_page;
 	int r_err;
-	bool r_aborted;
 
 	unsigned long r_timeout;  /* optional.  jiffies, 0 is "wait forever" */
 	unsigned long r_started;  /* start time to measure timeout against */
@@ -262,9 +278,7 @@ struct ceph_mds_request {
 	ceph_mds_request_callback_t r_callback;
 	ceph_mds_request_wait_callback_t r_wait_for_completion;
 	struct list_head  r_unsafe_item;  /* per-session unsafe list item */
-	bool		  r_got_unsafe, r_got_safe, r_got_result;
 
-	bool              r_did_prepopulate;
 	long long	  r_dir_release_cnt;
 	long long	  r_dir_ordered_cnt;
 	int		  r_readdir_cache_idx;
@@ -299,6 +313,8 @@ struct ceph_mds_client {
 	atomic_t		num_sessions;
 	int                     max_sessions;  /* len of s_mds_sessions */
 	int                     stopping;      /* true if shutting down */
+
+	atomic64_t		quotarealms_count; /* # realms with quota */
 
 	/*
 	 * snap_rwsem will cover cap linkage into snaprealms, and
@@ -358,6 +374,8 @@ struct ceph_mds_client {
 
 	struct rw_semaphore     pool_perm_rwsem;
 	struct rb_root		pool_perm_tree;
+
+	char nodename[__NEW_UTS_LEN + 1];
 };
 
 extern const char *ceph_mds_op_name(int op);
@@ -368,7 +386,7 @@ __ceph_lookup_mds_session(struct ceph_mds_client *, int mds);
 static inline struct ceph_mds_session *
 ceph_get_mds_session(struct ceph_mds_session *s)
 {
-	atomic_inc(&s->s_ref);
+	refcount_inc(&s->s_ref);
 	return s;
 }
 
@@ -430,4 +448,7 @@ ceph_mdsc_open_export_target_session(struct ceph_mds_client *mdsc, int target);
 extern void ceph_mdsc_open_export_target_sessions(struct ceph_mds_client *mdsc,
 					  struct ceph_mds_session *session);
 
+extern int ceph_trim_caps(struct ceph_mds_client *mdsc,
+			  struct ceph_mds_session *session,
+			  int max_caps);
 #endif

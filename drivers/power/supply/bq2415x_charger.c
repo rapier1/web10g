@@ -1037,7 +1037,10 @@ static int bq2415x_power_supply_init(struct bq2415x_device *bq)
 	int ret;
 	int chip;
 	char revstr[8];
-	struct power_supply_config psy_cfg = { .drv_data = bq, };
+	struct power_supply_config psy_cfg = {
+		.drv_data = bq,
+		.of_node = bq->dev->of_node,
+	};
 
 	bq->charger_desc.name = bq->name;
 	bq->charger_desc.type = POWER_SUPPLY_TYPE_USB;
@@ -1569,6 +1572,11 @@ static int bq2415x_probe(struct i2c_client *client,
 		acpi_id =
 			acpi_match_device(client->dev.driver->acpi_match_table,
 					  &client->dev);
+		if (!acpi_id) {
+			dev_err(&client->dev, "failed to match device name\n");
+			ret = -ENODEV;
+			goto error_1;
+		}
 		name = kasprintf(GFP_KERNEL, "%s-%d", acpi_id->id, num);
 	}
 	if (!name) {

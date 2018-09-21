@@ -70,21 +70,42 @@ static unsigned long ccu_nm_recalc_rate(struct clk_hw *hw,
 					unsigned long parent_rate)
 {
 	struct ccu_nm *nm = hw_to_ccu_nm(hw);
+	unsigned long rate;
 	unsigned long n, m;
 	u32 reg;
 
-	if (ccu_frac_helper_is_enabled(&nm->common, &nm->frac))
-		return ccu_frac_helper_read_rate(&nm->common, &nm->frac);
+	if (ccu_frac_helper_is_enabled(&nm->common, &nm->frac)) {
+		rate = ccu_frac_helper_read_rate(&nm->common, &nm->frac);
+
+		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+			rate /= nm->fixed_post_div;
+
+		return rate;
+	}
 
 	reg = readl(nm->common.base + nm->common.reg);
 
 	n = reg >> nm->n.shift;
 	n &= (1 << nm->n.width) - 1;
+	n += nm->n.offset;
+	if (!n)
+		n++;
 
 	m = reg >> nm->m.shift;
 	m &= (1 << nm->m.width) - 1;
+	m += nm->m.offset;
+	if (!m)
+		m++;
 
-	return parent_rate * (n + 1) / (m + 1);
+	if (ccu_sdm_helper_is_enabled(&nm->common, &nm->sdm))
+		rate = ccu_sdm_helper_read_rate(&nm->common, &nm->sdm, m, n);
+	else
+		rate = parent_rate * n / m;
+
+	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+		rate /= nm->fixed_post_div;
+
+	return rate;
 }
 
 static long ccu_nm_round_rate(struct clk_hw *hw, unsigned long rate,
@@ -93,14 +114,40 @@ static long ccu_nm_round_rate(struct clk_hw *hw, unsigned long rate,
 	struct ccu_nm *nm = hw_to_ccu_nm(hw);
 	struct _ccu_nm _nm;
 
-	_nm.min_n = nm->n.min;
-	_nm.max_n = 1 << nm->n.width;
+	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+		rate *= nm->fixed_post_div;
+
+	if (rate < nm->min_rate) {
+		rate = nm->min_rate;
+		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+			rate /= nm->fixed_post_div;
+		return rate;
+	}
+
+	if (ccu_frac_helper_has_rate(&nm->common, &nm->frac, rate)) {
+		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+			rate /= nm->fixed_post_div;
+		return rate;
+	}
+
+	if (ccu_sdm_helper_has_rate(&nm->common, &nm->sdm, rate)) {
+		if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+			rate /= nm->fixed_post_div;
+		return rate;
+	}
+
+	_nm.min_n = nm->n.min ?: 1;
+	_nm.max_n = nm->n.max ?: 1 << nm->n.width;
 	_nm.min_m = 1;
 	_nm.max_m = nm->m.max ?: 1 << nm->m.width;
 
 	ccu_nm_find_best(*parent_rate, rate, &_nm);
+	rate = *parent_rate * _nm.n / _nm.m;
 
-	return *parent_rate * _nm.n / _nm.m;
+	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+		rate /= nm->fixed_post_div;
+
+	return rate;
 }
 
 static int ccu_nm_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -111,17 +158,43 @@ static int ccu_nm_set_rate(struct clk_hw *hw, unsigned long rate,
 	unsigned long flags;
 	u32 reg;
 
-	if (ccu_frac_helper_has_rate(&nm->common, &nm->frac, rate))
-		return ccu_frac_helper_set_rate(&nm->common, &nm->frac, rate);
-	else
-		ccu_frac_helper_disable(&nm->common, &nm->frac);
+	/* Adjust target rate according to post-dividers */
+	if (nm->common.features & CCU_FEATURE_FIXED_POSTDIV)
+		rate = rate * nm->fixed_post_div;
 
-	_nm.min_n = 1;
-	_nm.max_n = 1 << nm->n.width;
+	if (ccu_frac_helper_has_rate(&nm->common, &nm->frac, rate)) {
+		spin_lock_irqsave(nm->common.lock, flags);
+
+		/* most SoCs require M to be 0 if fractional mode is used */
+		reg = readl(nm->common.base + nm->common.reg);
+		reg &= ~GENMASK(nm->m.width + nm->m.shift - 1, nm->m.shift);
+		writel(reg, nm->common.base + nm->common.reg);
+
+		spin_unlock_irqrestore(nm->common.lock, flags);
+
+		ccu_frac_helper_enable(&nm->common, &nm->frac);
+
+		return ccu_frac_helper_set_rate(&nm->common, &nm->frac,
+						rate, nm->lock);
+	} else {
+		ccu_frac_helper_disable(&nm->common, &nm->frac);
+	}
+
+	_nm.min_n = nm->n.min ?: 1;
+	_nm.max_n = nm->n.max ?: 1 << nm->n.width;
 	_nm.min_m = 1;
 	_nm.max_m = nm->m.max ?: 1 << nm->m.width;
 
-	ccu_nm_find_best(parent_rate, rate, &_nm);
+	if (ccu_sdm_helper_has_rate(&nm->common, &nm->sdm, rate)) {
+		ccu_sdm_helper_enable(&nm->common, &nm->sdm, rate);
+
+		/* Sigma delta modulation requires specific N and M factors */
+		ccu_sdm_helper_get_factors(&nm->common, &nm->sdm, rate,
+					   &_nm.m, &_nm.n);
+	} else {
+		ccu_sdm_helper_disable(&nm->common, &nm->sdm);
+		ccu_nm_find_best(parent_rate, rate, &_nm);
+	}
 
 	spin_lock_irqsave(nm->common.lock, flags);
 
@@ -129,8 +202,9 @@ static int ccu_nm_set_rate(struct clk_hw *hw, unsigned long rate,
 	reg &= ~GENMASK(nm->n.width + nm->n.shift - 1, nm->n.shift);
 	reg &= ~GENMASK(nm->m.width + nm->m.shift - 1, nm->m.shift);
 
-	writel(reg | ((_nm.m - 1) << nm->m.shift) | ((_nm.n - 1) << nm->n.shift),
-	       nm->common.base + nm->common.reg);
+	reg |= (_nm.n - nm->n.offset) << nm->n.shift;
+	reg |= (_nm.m - nm->m.offset) << nm->m.shift;
+	writel(reg, nm->common.base + nm->common.reg);
 
 	spin_unlock_irqrestore(nm->common.lock, flags);
 

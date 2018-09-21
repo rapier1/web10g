@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * security/tomoyo/domain.c
  *
@@ -5,8 +6,10 @@
  */
 
 #include "common.h"
+
 #include <linux/binfmts.h>
 #include <linux/slab.h>
+#include <linux/rculist.h>
 
 /* Variables definitions.*/
 

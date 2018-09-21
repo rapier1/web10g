@@ -84,6 +84,7 @@ HYPERCALL1(tmem_op);
 HYPERCALL1(platform_op_raw);
 HYPERCALL2(multicall);
 HYPERCALL2(vm_assist);
+HYPERCALL3(dm_op);
 
 ENTRY(privcmd_call)
 	mov x16, x0
@@ -100,12 +101,12 @@ ENTRY(privcmd_call)
 	 * need the explicit uaccess_enable/disable if the TTBR0 PAN emulation
 	 * is enabled (it implies that hardware UAO and PAN disabled).
 	 */
-	uaccess_ttbr0_enable x6, x7
+	uaccess_ttbr0_enable x6, x7, x8
 	hvc XEN_IMM
 
 	/*
 	 * Disable userspace access from kernel once the hyp call completed.
 	 */
-	uaccess_ttbr0_disable x6
+	uaccess_ttbr0_disable x6, x7
 	ret
 ENDPROC(privcmd_call);

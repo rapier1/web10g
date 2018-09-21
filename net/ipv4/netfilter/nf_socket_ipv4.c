@@ -108,10 +108,12 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 	int doff = 0;
 
 	if (iph->protocol == IPPROTO_UDP || iph->protocol == IPPROTO_TCP) {
-		struct udphdr _hdr, *hp;
+		struct tcphdr _hdr;
+		struct udphdr *hp;
 
 		hp = skb_header_pointer(skb, ip_hdrlen(skb),
-					sizeof(_hdr), &_hdr);
+					iph->protocol == IPPROTO_UDP ?
+					sizeof(*hp) : sizeof(_hdr), &_hdr);
 		if (hp == NULL)
 			return NULL;
 
@@ -139,7 +141,7 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 	 * SNAT-ted connection.
 	 */
 	ct = nf_ct_get(skb, &ctinfo);
-	if (ct && !nf_ct_is_untracked(ct) &&
+	if (ct &&
 	    ((iph->protocol != IPPROTO_ICMP &&
 	      ctinfo == IP_CT_ESTABLISHED_REPLY) ||
 	     (iph->protocol == IPPROTO_ICMP &&

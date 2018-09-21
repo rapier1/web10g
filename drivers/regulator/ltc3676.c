@@ -52,6 +52,7 @@
 #define LTC3676_CLIRQ     0x1F
 
 #define LTC3676_DVBxA_REF_SELECT	BIT(5)
+#define LTC3676_DVBxB_PGOOD_MASK	BIT(5)
 
 #define LTC3676_IRQSTAT_PGOOD_TIMEOUT	BIT(3)
 #define LTC3676_IRQSTAT_UNDERVOLT_WARN	BIT(4)
@@ -123,6 +124,23 @@ static int ltc3676_set_suspend_mode(struct regulator_dev *rdev,
 				  mask, val);
 }
 
+static int ltc3676_set_voltage_sel(struct regulator_dev *rdev, unsigned selector)
+{
+	struct ltc3676 *ltc3676 = rdev_get_drvdata(rdev);
+	struct device *dev = ltc3676->dev;
+	int ret, dcdc = rdev_get_id(rdev);
+
+	dev_dbg(dev, "%s id=%d selector=%d\n", __func__, dcdc, selector);
+
+	ret = regmap_update_bits(ltc3676->regmap, rdev->desc->vsel_reg + 1,
+				 LTC3676_DVBxB_PGOOD_MASK,
+				 LTC3676_DVBxB_PGOOD_MASK);
+	if (ret)
+		return ret;
+
+	return regulator_set_voltage_sel_regmap(rdev, selector);
+}
+
 static inline unsigned int ltc3676_scale(unsigned int uV, u32 r1, u32 r2)
 {
 	uint64_t tmp;
@@ -161,23 +179,23 @@ static int ltc3676_of_parse_cb(struct device_node *np,
 }
 
 /* SW1, SW2, SW3, SW4 linear 0.8V-3.3V with scalar via R1/R2 feeback res */
-static struct regulator_ops ltc3676_linear_regulator_ops = {
+static const struct regulator_ops ltc3676_linear_regulator_ops = {
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
 	.list_voltage = regulator_list_voltage_linear,
-	.set_voltage_sel = regulator_set_voltage_sel_regmap,
+	.set_voltage_sel = ltc3676_set_voltage_sel,
 	.get_voltage_sel = regulator_get_voltage_sel_regmap,
 	.set_suspend_voltage = ltc3676_set_suspend_voltage,
 	.set_suspend_mode = ltc3676_set_suspend_mode,
 };
 
 /* LDO1 always on fixed 0.8V-3.3V via scalar via R1/R2 feeback res */
-static struct regulator_ops ltc3676_fixed_standby_regulator_ops = {
+static const struct regulator_ops ltc3676_fixed_standby_regulator_ops = {
 };
 
 /* LDO2, LDO3 fixed (LDO2 has external scalar via R1/R2 feedback res) */
-static struct regulator_ops ltc3676_fixed_regulator_ops = {
+static const struct regulator_ops ltc3676_fixed_regulator_ops = {
 	.enable = regulator_enable_regmap,
 	.disable = regulator_disable_regmap,
 	.is_enabled = regulator_is_enabled_regmap,
@@ -406,9 +424,16 @@ static const struct i2c_device_id ltc3676_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, ltc3676_i2c_id);
 
+static const struct of_device_id ltc3676_of_match[] = {
+	{ .compatible = "lltc,ltc3676" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, ltc3676_of_match);
+
 static struct i2c_driver ltc3676_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.of_match_table = of_match_ptr(ltc3676_of_match),
 	},
 	.probe = ltc3676_regulator_probe,
 	.id_table = ltc3676_i2c_id,

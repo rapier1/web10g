@@ -1,10 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <stdio.h>
+#include <linux/string.h>
 
 #include "../../util/util.h"
 #include "../../util/hist.h"
 #include "../../util/sort.h"
 #include "../../util/evsel.h"
-
+#include "../../util/srcline.h"
+#include "../../util/string2.h"
+#include "../../util/thread.h"
+#include "../../util/sane_ctype.h"
 
 static size_t callchain__fprintf_left_margin(FILE *fp, int left_margin)
 {
@@ -62,12 +67,8 @@ static size_t ipchain__fprintf_graph(FILE *fp, struct callchain_node *node,
 	str = callchain_list__sym_name(chain, bf, sizeof(bf), false);
 
 	if (symbol_conf.show_branchflag_count) {
-		if (!period)
-			callchain_list_counts__printf_value(node, chain, NULL,
-							    buf, sizeof(buf));
-		else
-			callchain_list_counts__printf_value(NULL, chain, NULL,
-							    buf, sizeof(buf));
+		callchain_list_counts__printf_value(chain, NULL,
+						    buf, sizeof(buf));
 
 		if (asprintf(&alloc_str, "%s%s", str, buf) < 0)
 			str = "Not enough memory!";
@@ -78,6 +79,7 @@ static size_t ipchain__fprintf_graph(FILE *fp, struct callchain_node *node,
 	fputs(str, fp);
 	fputc('\n', fp);
 	free(alloc_str);
+
 	return ret;
 }
 
@@ -227,8 +229,9 @@ static size_t callchain__fprintf_graph(FILE *fp, struct rb_root *root,
 			 * displayed twice.
 			 */
 			if (!i++ && field_order == NULL &&
-			    sort_order && !prefixcmp(sort_order, "sym"))
+			    sort_order && strstarts(sort_order, "sym"))
 				continue;
+
 			if (!printed) {
 				ret += callchain__fprintf_left_margin(fp, left_margin);
 				ret += fprintf(fp, "|\n");
@@ -246,7 +249,7 @@ static size_t callchain__fprintf_graph(FILE *fp, struct rb_root *root,
 
 			if (symbol_conf.show_branchflag_count)
 				ret += callchain_list_counts__printf_value(
-						NULL, chain, fp, NULL, 0);
+						chain, fp, NULL, 0);
 			ret += fprintf(fp, "\n");
 
 			if (++entries_printed == callchain_param.print_limit)
@@ -513,7 +516,7 @@ static int hist_entry__hierarchy_fprintf(struct hist_entry *he,
 	}
 	printed += putc('\n', fp);
 
-	if (symbol_conf.use_callchain && he->leaf) {
+	if (he->leaf && hist_entry__has_callchains(he) && symbol_conf.use_callchain) {
 		u64 total = hists__total_period(hists);
 
 		printed += hist_entry_callchain__fprintf(he, total, 0, fp);
@@ -529,6 +532,7 @@ static int hist_entry__fprintf(struct hist_entry *he, size_t size,
 			       bool use_callchain)
 {
 	int ret;
+	int callchain_ret = 0;
 	struct perf_hpp hpp = {
 		.buf		= bf,
 		.size		= size,
@@ -546,8 +550,11 @@ static int hist_entry__fprintf(struct hist_entry *he, size_t size,
 
 	ret = fprintf(fp, "%s\n", bf);
 
-	if (use_callchain)
-		ret += hist_entry_callchain__fprintf(he, total_period, 0, fp);
+	if (hist_entry__has_callchains(he) && use_callchain)
+		callchain_ret = hist_entry_callchain__fprintf(he, total_period,
+							      0, fp);
+
+	ret += callchain_ret;
 
 	return ret;
 }
@@ -812,8 +819,7 @@ size_t hists__fprintf(struct hists *hists, bool show_header, int max_rows,
 		}
 
 		if (h->ms.map == NULL && verbose > 1) {
-			__map_groups__fprintf_maps(h->thread->mg,
-						   MAP__FUNCTION, fp);
+			map_groups__fprintf(h->thread->mg, fp);
 			fprintf(fp, "%.10s end\n", graph_dotted_line);
 		}
 	}
@@ -833,15 +839,11 @@ size_t events_stats__fprintf(struct events_stats *stats, FILE *fp)
 	for (i = 0; i < PERF_RECORD_HEADER_MAX; ++i) {
 		const char *name;
 
-		if (stats->nr_events[i] == 0)
-			continue;
-
 		name = perf_event__name(i);
 		if (!strcmp(name, "UNKNOWN"))
 			continue;
 
-		ret += fprintf(fp, "%16s events: %10d\n", name,
-			       stats->nr_events[i]);
+		ret += fprintf(fp, "%16s events: %10d\n", name, stats->nr_events[i]);
 	}
 
 	return ret;

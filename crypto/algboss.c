@@ -19,7 +19,7 @@
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/rtnetlink.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 
@@ -122,7 +122,6 @@ static int cryptomgr_schedule_probe(struct crypto_larval *larval)
 		int notnum = 0;
 
 		name = ++p;
-		len = 0;
 
 		for (; isalnum(*p) || *p == '-' || *p == '_'; p++)
 			notnum |= !isdigit(*p);

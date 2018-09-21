@@ -4,7 +4,8 @@
  * Copyright 2006-2007	Jiri Benc <jbenc@suse.cz>
  * Copyright 2007	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2013-2014  Intel Mobile Communications GmbH
- * Copyright (C) 2015-2016	Intel Deutschland GmbH
+ * Copyright (C) 2015-2017	Intel Deutschland GmbH
+ * Copyright (C) 2018 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -828,6 +829,7 @@ u32 ieee802_11_parse_elems_crc(const u8 *start, size_t len, bool action,
 		case WLAN_EID_EXT_CAPABILITY:
 		case WLAN_EID_CHAN_SWITCH_TIMING:
 		case WLAN_EID_LINK_ID:
+		case WLAN_EID_BSS_MAX_IDLE_PERIOD:
 		/*
 		 * not listing WLAN_EID_CHANNEL_SWITCH_WRAPPER -- it seems possible
 		 * that if the content gets bigger it might be needed more than once
@@ -1089,6 +1091,10 @@ u32 ieee802_11_parse_elems_crc(const u8 *start, size_t len, bool action,
 			else
 				elem_parse_failed = true;
 			break;
+		case WLAN_EID_BSS_MAX_IDLE_PERIOD:
+			if (elen >= sizeof(*elems->max_idle_period_ie))
+				elems->max_idle_period_ie = (void *)pos;
+			break;
 		default:
 			break;
 		}
@@ -1106,6 +1112,48 @@ u32 ieee802_11_parse_elems_crc(const u8 *start, size_t len, bool action,
 		elems->parse_error = true;
 
 	return crc;
+}
+
+void ieee80211_regulatory_limit_wmm_params(struct ieee80211_sub_if_data *sdata,
+					   struct ieee80211_tx_queue_params
+					   *qparam, int ac)
+{
+	struct ieee80211_chanctx_conf *chanctx_conf;
+	const struct ieee80211_reg_rule *rrule;
+	struct ieee80211_wmm_ac *wmm_ac;
+	u16 center_freq = 0;
+
+	if (sdata->vif.type != NL80211_IFTYPE_AP &&
+	    sdata->vif.type != NL80211_IFTYPE_STATION)
+		return;
+
+	rcu_read_lock();
+	chanctx_conf = rcu_dereference(sdata->vif.chanctx_conf);
+	if (chanctx_conf)
+		center_freq = chanctx_conf->def.chan->center_freq;
+
+	if (!center_freq) {
+		rcu_read_unlock();
+		return;
+	}
+
+	rrule = freq_reg_info(sdata->wdev.wiphy, MHZ_TO_KHZ(center_freq));
+
+	if (IS_ERR_OR_NULL(rrule) || !rrule->wmm_rule) {
+		rcu_read_unlock();
+		return;
+	}
+
+	if (sdata->vif.type == NL80211_IFTYPE_AP)
+		wmm_ac = &rrule->wmm_rule->ap[ac];
+	else
+		wmm_ac = &rrule->wmm_rule->client[ac];
+	qparam->cw_min = max_t(u16, qparam->cw_min, wmm_ac->cw_min);
+	qparam->cw_max = max_t(u16, qparam->cw_max, wmm_ac->cw_max);
+	qparam->aifs = max_t(u8, qparam->aifs, wmm_ac->aifsn);
+	qparam->txop = !qparam->txop ? wmm_ac->cot / 32 :
+		min_t(u16, qparam->txop, wmm_ac->cot / 32);
+	rcu_read_unlock();
 }
 
 void ieee80211_set_wmm_default(struct ieee80211_sub_if_data *sdata,
@@ -1201,6 +1249,7 @@ void ieee80211_set_wmm_default(struct ieee80211_sub_if_data *sdata,
 				break;
 			}
 		}
+		ieee80211_regulatory_limit_wmm_params(sdata, &qparam, ac);
 
 		qparam.uapsd = false;
 
@@ -1237,8 +1286,7 @@ void ieee80211_send_auth(struct ieee80211_sub_if_data *sdata,
 
 	skb_reserve(skb, local->hw.extra_tx_headroom + IEEE80211_WEP_IV_LEN);
 
-	mgmt = (struct ieee80211_mgmt *) skb_put(skb, 24 + 6);
-	memset(mgmt, 0, 24 + 6);
+	mgmt = skb_put_zero(skb, 24 + 6);
 	mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
 					  IEEE80211_STYPE_AUTH);
 	memcpy(mgmt->da, da, ETH_ALEN);
@@ -1248,7 +1296,7 @@ void ieee80211_send_auth(struct ieee80211_sub_if_data *sdata,
 	mgmt->u.auth.auth_transaction = cpu_to_le16(transaction);
 	mgmt->u.auth.status_code = cpu_to_le16(status);
 	if (extra)
-		memcpy(skb_put(skb, extra_len), extra, extra_len);
+		skb_put_data(skb, extra, extra_len);
 
 	if (auth_alg == WLAN_AUTH_SHARED_KEY && transaction == 3) {
 		mgmt->frame_control |= cpu_to_le16(IEEE80211_FCTL_PROTECTED);
@@ -1288,8 +1336,7 @@ void ieee80211_send_deauth_disassoc(struct ieee80211_sub_if_data *sdata,
 		skb_reserve(skb, local->hw.extra_tx_headroom);
 
 		/* copy in frame */
-		memcpy(skb_put(skb, IEEE80211_DEAUTH_FRAME_LEN),
-		       mgmt, IEEE80211_DEAUTH_FRAME_LEN);
+		skb_put_data(skb, mgmt, IEEE80211_DEAUTH_FRAME_LEN);
 
 		if (sdata->vif.type != NL80211_IFTYPE_STATION ||
 		    !(sdata->u.mgd.flags & IEEE80211_STA_MFP_ENABLED))
@@ -1389,10 +1436,10 @@ static int ieee80211_build_preq_ies_band(struct ieee80211_local *local,
 	/* insert custom IEs that go before HT */
 	if (ie && ie_len) {
 		static const u8 before_ht[] = {
-			WLAN_EID_SSID,
-			WLAN_EID_SUPP_RATES,
-			WLAN_EID_REQUEST,
-			WLAN_EID_EXT_SUPP_RATES,
+			/*
+			 * no need to list the ones split off already
+			 * (or generated here)
+			 */
 			WLAN_EID_DS_PARAMS,
 			WLAN_EID_SUPPORTED_REGULATORY_CLASSES,
 		};
@@ -1421,20 +1468,17 @@ static int ieee80211_build_preq_ies_band(struct ieee80211_local *local,
 	/* insert custom IEs that go before VHT */
 	if (ie && ie_len) {
 		static const u8 before_vht[] = {
-			WLAN_EID_SSID,
-			WLAN_EID_SUPP_RATES,
-			WLAN_EID_REQUEST,
-			WLAN_EID_EXT_SUPP_RATES,
-			WLAN_EID_DS_PARAMS,
-			WLAN_EID_SUPPORTED_REGULATORY_CLASSES,
-			WLAN_EID_HT_CAPABILITY,
+			/*
+			 * no need to list the ones split off already
+			 * (or generated here)
+			 */
 			WLAN_EID_BSS_COEX_2040,
 			WLAN_EID_EXT_CAPABILITY,
 			WLAN_EID_SSID_LIST,
 			WLAN_EID_CHANNEL_USAGE,
 			WLAN_EID_INTERWORKING,
-			/* mesh ID can't happen here */
-			/* 60 GHz can't happen here right now */
+			WLAN_EID_MESH_ID,
+			/* 60 GHz (Multi-band, DMG, MMS) can't happen */
 		};
 		noffset = ieee80211_ie_split(ie, ie_len,
 					     before_vht, ARRAY_SIZE(before_vht),
@@ -1590,13 +1634,13 @@ u32 ieee80211_sta_get_rates(struct ieee80211_sub_if_data *sdata,
 	size_t num_rates;
 	u32 supp_rates, rate_flags;
 	int i, j, shift;
+
 	sband = sdata->local->hw.wiphy->bands[band];
+	if (WARN_ON(!sband))
+		return 1;
 
 	rate_flags = ieee80211_chandef_rate_flags(&sdata->vif.bss_conf.chandef);
 	shift = ieee80211_vif_get_shift(&sdata->vif);
-
-	if (WARN_ON(!sband))
-		return 1;
 
 	num_rates = sband->n_bitrates;
 	supp_rates = 0;
@@ -1759,8 +1803,9 @@ static int ieee80211_reconfig_nan(struct ieee80211_sub_if_data *sdata)
 	if (WARN_ON(res))
 		return res;
 
-	funcs = kzalloc((sdata->local->hw.max_nan_de_entries + 1) *
-			sizeof(*funcs), GFP_KERNEL);
+	funcs = kcalloc(sdata->local->hw.max_nan_de_entries + 1,
+			sizeof(*funcs),
+			GFP_KERNEL);
 	if (!funcs)
 		return -ENOMEM;
 
@@ -1968,7 +2013,8 @@ int ieee80211_reconfig(struct ieee80211_local *local)
 			  BSS_CHANGED_CQM |
 			  BSS_CHANGED_QOS |
 			  BSS_CHANGED_IDLE |
-			  BSS_CHANGED_TXPOWER;
+			  BSS_CHANGED_TXPOWER |
+			  BSS_CHANGED_MCAST_RATE;
 
 		if (sdata->vif.mu_mimo_owner)
 			changed |= BSS_CHANGED_MU_GROUPS;
@@ -1982,6 +2028,10 @@ int ieee80211_reconfig(struct ieee80211_local *local)
 			/* Re-send beacon info report to the driver */
 			if (sdata->u.mgd.have_beacon)
 				changed |= BSS_CHANGED_BEACON_INFO;
+
+			if (sdata->vif.bss_conf.max_idle_period ||
+			    sdata->vif.bss_conf.protected_keep_alive)
+				changed |= BSS_CHANGED_KEEP_ALIVE;
 
 			sdata_lock(sdata);
 			ieee80211_bss_info_change_notify(sdata, changed);
@@ -2061,7 +2111,8 @@ int ieee80211_reconfig(struct ieee80211_local *local)
 		if (!sta->uploaded)
 			continue;
 
-		if (sta->sdata->vif.type != NL80211_IFTYPE_AP)
+		if (sta->sdata->vif.type != NL80211_IFTYPE_AP &&
+		    sta->sdata->vif.type != NL80211_IFTYPE_AP_VLAN)
 			continue;
 
 		for (state = IEEE80211_STA_NOTEXIST;
@@ -2103,18 +2154,9 @@ int ieee80211_reconfig(struct ieee80211_local *local)
 	mutex_unlock(&local->mtx);
 
 	if (sched_scan_stopped)
-		cfg80211_sched_scan_stopped_rtnl(local->hw.wiphy);
+		cfg80211_sched_scan_stopped_rtnl(local->hw.wiphy, 0);
 
  wake_up:
-	if (local->in_reconfig) {
-		local->in_reconfig = false;
-		barrier();
-
-		/* Restart deferred ROCs */
-		mutex_lock(&local->mtx);
-		ieee80211_start_next_roc(local);
-		mutex_unlock(&local->mtx);
-	}
 
 	if (local->monitors == local->open_count && local->monitors > 0)
 		ieee80211_add_virtual_monitor(local);
@@ -2140,6 +2182,16 @@ int ieee80211_reconfig(struct ieee80211_local *local)
 		}
 
 		mutex_unlock(&local->sta_mtx);
+	}
+
+	if (local->in_reconfig) {
+		local->in_reconfig = false;
+		barrier();
+
+		/* Restart deferred ROCs */
+		mutex_lock(&local->mtx);
+		ieee80211_start_next_roc(local);
+		mutex_unlock(&local->mtx);
 	}
 
 	ieee80211_wake_queues_by_reason(hw, IEEE80211_MAX_QUEUE_MAP,
@@ -2405,6 +2457,35 @@ u8 *ieee80211_ie_build_ht_oper(u8 *pos, struct ieee80211_sta_ht_cap *ht_cap,
 	return pos + sizeof(struct ieee80211_ht_operation);
 }
 
+void ieee80211_ie_build_wide_bw_cs(u8 *pos,
+				   const struct cfg80211_chan_def *chandef)
+{
+	*pos++ = WLAN_EID_WIDE_BW_CHANNEL_SWITCH;	/* EID */
+	*pos++ = 3;					/* IE length */
+	/* New channel width */
+	switch (chandef->width) {
+	case NL80211_CHAN_WIDTH_80:
+		*pos++ = IEEE80211_VHT_CHANWIDTH_80MHZ;
+		break;
+	case NL80211_CHAN_WIDTH_160:
+		*pos++ = IEEE80211_VHT_CHANWIDTH_160MHZ;
+		break;
+	case NL80211_CHAN_WIDTH_80P80:
+		*pos++ = IEEE80211_VHT_CHANWIDTH_80P80MHZ;
+		break;
+	default:
+		*pos++ = IEEE80211_VHT_CHANWIDTH_USE_HT;
+	}
+
+	/* new center frequency segment 0 */
+	*pos++ = ieee80211_frequency_to_channel(chandef->center_freq1);
+	/* new center frequency segment 1 */
+	if (chandef->center_freq2)
+		*pos++ = ieee80211_frequency_to_channel(chandef->center_freq2);
+	else
+		*pos++ = 0;
+}
+
 u8 *ieee80211_ie_build_vht_oper(u8 *pos, struct ieee80211_sta_vht_cap *vht_cap,
 				const struct cfg80211_chan_def *chandef)
 {
@@ -2413,13 +2494,13 @@ u8 *ieee80211_ie_build_vht_oper(u8 *pos, struct ieee80211_sta_vht_cap *vht_cap,
 	*pos++ = WLAN_EID_VHT_OPERATION;
 	*pos++ = sizeof(struct ieee80211_vht_operation);
 	vht_oper = (struct ieee80211_vht_operation *)pos;
-	vht_oper->center_freq_seg1_idx = ieee80211_frequency_to_channel(
+	vht_oper->center_freq_seg0_idx = ieee80211_frequency_to_channel(
 							chandef->center_freq1);
 	if (chandef->center_freq2)
-		vht_oper->center_freq_seg2_idx =
+		vht_oper->center_freq_seg1_idx =
 			ieee80211_frequency_to_channel(chandef->center_freq2);
 	else
-		vht_oper->center_freq_seg2_idx = 0x00;
+		vht_oper->center_freq_seg1_idx = 0x00;
 
 	switch (chandef->width) {
 	case NL80211_CHAN_WIDTH_160:
@@ -2428,11 +2509,11 @@ u8 *ieee80211_ie_build_vht_oper(u8 *pos, struct ieee80211_sta_vht_cap *vht_cap,
 		 * workaround.
 		 */
 		vht_oper->chan_width = IEEE80211_VHT_CHANWIDTH_80MHZ;
-		vht_oper->center_freq_seg2_idx = vht_oper->center_freq_seg1_idx;
+		vht_oper->center_freq_seg1_idx = vht_oper->center_freq_seg0_idx;
 		if (chandef->chan->center_freq < chandef->center_freq1)
-			vht_oper->center_freq_seg1_idx -= 8;
+			vht_oper->center_freq_seg0_idx -= 8;
 		else
-			vht_oper->center_freq_seg1_idx += 8;
+			vht_oper->center_freq_seg0_idx += 8;
 		break;
 	case NL80211_CHAN_WIDTH_80P80:
 		/*
@@ -2491,9 +2572,9 @@ bool ieee80211_chandef_vht_oper(const struct ieee80211_vht_operation *oper,
 	if (!oper)
 		return false;
 
-	cf1 = ieee80211_channel_to_frequency(oper->center_freq_seg1_idx,
+	cf1 = ieee80211_channel_to_frequency(oper->center_freq_seg0_idx,
 					     chandef->chan->band);
-	cf2 = ieee80211_channel_to_frequency(oper->center_freq_seg2_idx,
+	cf2 = ieee80211_channel_to_frequency(oper->center_freq_seg1_idx,
 					     chandef->chan->band);
 
 	switch (oper->chan_width) {
@@ -2503,11 +2584,11 @@ bool ieee80211_chandef_vht_oper(const struct ieee80211_vht_operation *oper,
 		new.width = NL80211_CHAN_WIDTH_80;
 		new.center_freq1 = cf1;
 		/* If needed, adjust based on the newer interop workaround. */
-		if (oper->center_freq_seg2_idx) {
+		if (oper->center_freq_seg1_idx) {
 			unsigned int diff;
 
-			diff = abs(oper->center_freq_seg2_idx -
-				   oper->center_freq_seg1_idx);
+			diff = abs(oper->center_freq_seg1_idx -
+				   oper->center_freq_seg0_idx);
 			if (diff == 8) {
 				new.width = NL80211_CHAN_WIDTH_160;
 				new.center_freq1 = cf2;
@@ -2714,43 +2795,38 @@ u64 ieee80211_calculate_rx_timestamp(struct ieee80211_local *local,
 
 	memset(&ri, 0, sizeof(ri));
 
+	ri.bw = status->bw;
+
 	/* Fill cfg80211 rate info */
-	if (status->flag & RX_FLAG_HT) {
+	switch (status->encoding) {
+	case RX_ENC_HT:
 		ri.mcs = status->rate_idx;
 		ri.flags |= RATE_INFO_FLAGS_MCS;
-		if (status->flag & RX_FLAG_40MHZ)
-			ri.bw = RATE_INFO_BW_40;
-		else
-			ri.bw = RATE_INFO_BW_20;
-		if (status->flag & RX_FLAG_SHORT_GI)
+		if (status->enc_flags & RX_ENC_FLAG_SHORT_GI)
 			ri.flags |= RATE_INFO_FLAGS_SHORT_GI;
-	} else if (status->flag & RX_FLAG_VHT) {
+		break;
+	case RX_ENC_VHT:
 		ri.flags |= RATE_INFO_FLAGS_VHT_MCS;
 		ri.mcs = status->rate_idx;
-		ri.nss = status->vht_nss;
-		if (status->flag & RX_FLAG_40MHZ)
-			ri.bw = RATE_INFO_BW_40;
-		else if (status->vht_flag & RX_VHT_FLAG_80MHZ)
-			ri.bw = RATE_INFO_BW_80;
-		else if (status->vht_flag & RX_VHT_FLAG_160MHZ)
-			ri.bw = RATE_INFO_BW_160;
-		else
-			ri.bw = RATE_INFO_BW_20;
-		if (status->flag & RX_FLAG_SHORT_GI)
+		ri.nss = status->nss;
+		if (status->enc_flags & RX_ENC_FLAG_SHORT_GI)
 			ri.flags |= RATE_INFO_FLAGS_SHORT_GI;
-	} else {
+		break;
+	default:
+		WARN_ON(1);
+		/* fall through */
+	case RX_ENC_LEGACY: {
 		struct ieee80211_supported_band *sband;
 		int shift = 0;
 		int bitrate;
 
-		if (status->flag & RX_FLAG_10MHZ) {
+		switch (status->bw) {
+		case RATE_INFO_BW_10:
 			shift = 1;
-			ri.bw = RATE_INFO_BW_10;
-		} else if (status->flag & RX_FLAG_5MHZ) {
+			break;
+		case RATE_INFO_BW_5:
 			shift = 2;
-			ri.bw = RATE_INFO_BW_5;
-		} else {
-			ri.bw = RATE_INFO_BW_20;
+			break;
 		}
 
 		sband = local->hw.wiphy->bands[status->band];
@@ -2762,11 +2838,13 @@ u64 ieee80211_calculate_rx_timestamp(struct ieee80211_local *local,
 			if (status->band == NL80211_BAND_5GHZ) {
 				ts += 20 << shift;
 				mpdu_offset += 2;
-			} else if (status->flag & RX_FLAG_SHORTPRE) {
+			} else if (status->enc_flags & RX_ENC_FLAG_SHORTPRE) {
 				ts += 96;
 			} else {
 				ts += 192;
 			}
+		}
+		break;
 		}
 	}
 
@@ -2774,7 +2852,7 @@ u64 ieee80211_calculate_rx_timestamp(struct ieee80211_local *local,
 	if (WARN_ONCE(!rate,
 		      "Invalid bitrate: flags=0x%llx, idx=%d, vht_nss=%d\n",
 		      (unsigned long long)status->flag, status->rate_idx,
-		      status->vht_nss))
+		      status->nss))
 		return 0;
 
 	/* rewind from end of MPDU */
@@ -2791,8 +2869,10 @@ void ieee80211_dfs_cac_cancel(struct ieee80211_local *local)
 	struct ieee80211_sub_if_data *sdata;
 	struct cfg80211_chan_def chandef;
 
+	/* for interface list, to avoid linking iflist_mtx and chanctx_mtx */
+	ASSERT_RTNL();
+
 	mutex_lock(&local->mtx);
-	mutex_lock(&local->iflist_mtx);
 	list_for_each_entry(sdata, &local->interfaces, list) {
 		/* it might be waiting for the local->mtx, but then
 		 * by the time it gets it, sdata->wdev.cac_started
@@ -2809,7 +2889,6 @@ void ieee80211_dfs_cac_cancel(struct ieee80211_local *local)
 					   GFP_KERNEL);
 		}
 	}
-	mutex_unlock(&local->iflist_mtx);
 	mutex_unlock(&local->mtx);
 }
 
@@ -2831,7 +2910,9 @@ void ieee80211_dfs_radar_detected_work(struct work_struct *work)
 	}
 	mutex_unlock(&local->chanctx_mtx);
 
+	rtnl_lock();
 	ieee80211_dfs_cac_cancel(local);
+	rtnl_unlock();
 
 	if (num_chanctx > 1)
 		/* XXX: multi-channel is not supported yet */
@@ -2846,7 +2927,7 @@ void ieee80211_radar_detected(struct ieee80211_hw *hw)
 
 	trace_api_radar_detected(local);
 
-	ieee80211_queue_work(hw, &local->radar_detected_work);
+	schedule_work(&local->radar_detected_work);
 }
 EXPORT_SYMBOL(ieee80211_radar_detected);
 
@@ -2942,8 +3023,8 @@ int ieee80211_send_action_csa(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_mgmt *mgmt;
 	struct ieee80211_local *local = sdata->local;
 	int freq;
-	int hdr_len = offsetof(struct ieee80211_mgmt, u.action.u.chan_switch) +
-			       sizeof(mgmt->u.action.u.chan_switch);
+	int hdr_len = offsetofend(struct ieee80211_mgmt,
+				  u.action.u.chan_switch);
 	u8 *pos;
 
 	if (sdata->vif.type != NL80211_IFTYPE_ADHOC &&
@@ -2953,13 +3034,13 @@ int ieee80211_send_action_csa(struct ieee80211_sub_if_data *sdata,
 	skb = dev_alloc_skb(local->tx_headroom + hdr_len +
 			    5 + /* channel switch announcement element */
 			    3 + /* secondary channel offset element */
+			    5 + /* wide bandwidth channel switch announcement */
 			    8); /* mesh channel switch parameters element */
 	if (!skb)
 		return -ENOMEM;
 
 	skb_reserve(skb, local->tx_headroom);
-	mgmt = (struct ieee80211_mgmt *)skb_put(skb, hdr_len);
-	memset(mgmt, 0, hdr_len);
+	mgmt = skb_put_zero(skb, hdr_len);
 	mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
 					  IEEE80211_STYPE_ACTION);
 
@@ -3009,6 +3090,13 @@ int ieee80211_send_action_csa(struct ieee80211_sub_if_data *sdata,
 		pos += 2;
 		put_unaligned_le16(ifmsh->pre_value, pos);/* Precedence Value */
 		pos += 2;
+	}
+
+	if (csa_settings->chandef.width == NL80211_CHAN_WIDTH_80 ||
+	    csa_settings->chandef.width == NL80211_CHAN_WIDTH_80P80 ||
+	    csa_settings->chandef.width == NL80211_CHAN_WIDTH_160) {
+		skb_put(skb, 5);
+		ieee80211_ie_build_wide_bw_cs(pos, &csa_settings->chandef);
 	}
 
 	ieee80211_tx_skb(sdata, skb);

@@ -70,6 +70,7 @@ s32 iol_execute(struct adapter *padapter, u8 control)
 static s32 iol_InitLLTTable(struct adapter *padapter, u8 txpktbuf_bndy)
 {
 	s32 rst = _SUCCESS;
+
 	iol_mode_enable(padapter, 1);
 	usb_write8(padapter, REG_TDECTRL+1, txpktbuf_bndy);
 	rst = iol_execute(padapter, CMD_INIT_LLT);
@@ -220,13 +221,13 @@ s32 InitLLTTable(struct adapter *padapter, u8 txpktbuf_bndy)
 	} else {
 		for (i = 0; i < (txpktbuf_bndy - 1); i++) {
 			status = _LLTWrite(padapter, i, i + 1);
-			if (_SUCCESS != status)
+			if (status != _SUCCESS)
 				return status;
 		}
 
 		/*  end of list */
 		status = _LLTWrite(padapter, (txpktbuf_bndy - 1), 0xFF);
-		if (_SUCCESS != status)
+		if (status != _SUCCESS)
 			return status;
 
 		/*  Make the other pages as ring buffer */
@@ -234,13 +235,13 @@ s32 InitLLTTable(struct adapter *padapter, u8 txpktbuf_bndy)
 		/*  Otherwise used as local loopback buffer. */
 		for (i = txpktbuf_bndy; i < Last_Entry_Of_TxPktBuf; i++) {
 			status = _LLTWrite(padapter, i, (i + 1));
-			if (_SUCCESS != status)
+			if (status != _SUCCESS)
 				return status;
 		}
 
 		/*  Let last entry point to the start entry of ring buffer */
 		status = _LLTWrite(padapter, Last_Entry_Of_TxPktBuf, txpktbuf_bndy);
-		if (_SUCCESS != status) {
+		if (status != _SUCCESS) {
 			return status;
 		}
 	}
@@ -459,7 +460,7 @@ void Hal_ReadPowerSavingMode88E(struct adapter *padapter, u8 *hwinfo, bool AutoL
 		padapter->pwrctrlpriv.bSupportRemoteWakeup = (hwinfo[EEPROM_USB_OPTIONAL_FUNCTION0] & BIT(1)) ? true : false;
 
 		DBG_88E("%s...bHWPwrPindetect(%x)-bHWPowerdown(%x) , bSupportRemoteWakeup(%x)\n", __func__,
-		padapter->pwrctrlpriv.bHWPwrPindetect, padapter->pwrctrlpriv.bHWPowerdown , padapter->pwrctrlpriv.bSupportRemoteWakeup);
+		padapter->pwrctrlpriv.bHWPwrPindetect, padapter->pwrctrlpriv.bHWPowerdown, padapter->pwrctrlpriv.bSupportRemoteWakeup);
 
 		DBG_88E("### PS params =>  power_mgnt(%x), usbss_enable(%x) ###\n", padapter->registrypriv.power_mgnt, padapter->registrypriv.usbss_enable);
 	}

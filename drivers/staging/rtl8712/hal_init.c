@@ -117,16 +117,16 @@ static void fill_fwpriv(struct _adapter *padapter, struct fw_priv *pfwpriv)
 
 static void update_fwhdr(struct fw_hdr	*pfwhdr, const u8 *pmappedfw)
 {
-	pfwhdr->signature = le16_to_cpu(*(u16 *)pmappedfw);
-	pfwhdr->version = le16_to_cpu(*(u16 *)(pmappedfw + 2));
+	pfwhdr->signature = le16_to_cpu(*(__le16 *)pmappedfw);
+	pfwhdr->version = le16_to_cpu(*(__le16 *)(pmappedfw + 2));
 	/* define the size of boot loader */
-	pfwhdr->dmem_size = le32_to_cpu(*(uint *)(pmappedfw + 4));
+	pfwhdr->dmem_size = le32_to_cpu(*(__le32 *)(pmappedfw + 4));
 	/* define the size of FW in IMEM */
-	pfwhdr->img_IMEM_size = le32_to_cpu(*(uint *)(pmappedfw + 8));
+	pfwhdr->img_IMEM_size = le32_to_cpu(*(__le32 *)(pmappedfw + 8));
 	/* define the size of FW in SRAM */
-	pfwhdr->img_SRAM_size = le32_to_cpu(*(uint *)(pmappedfw + 12));
+	pfwhdr->img_SRAM_size = le32_to_cpu(*(__le32 *)(pmappedfw + 12));
 	/* define the size of DMEM variable */
-	pfwhdr->fw_priv_sz = le32_to_cpu(*(uint *)(pmappedfw + 16));
+	pfwhdr->fw_priv_sz = le32_to_cpu(*(__le32 *)(pmappedfw + 16));
 }
 
 static u8 chk_fwhdr(struct fw_hdr *pfwhdr, u32 ulfilelength)
@@ -216,9 +216,9 @@ static u8 rtl8712_dl_fw(struct _adapter *padapter)
 		emem_sz = fwhdr.img_SRAM_size;
 		do {
 			memset(ptx_desc, 0, TXDESC_SIZE);
-			if (emem_sz >  MAX_DUMP_FWSZ) /* max=48k */
+			if (emem_sz >  MAX_DUMP_FWSZ) { /* max=48k */
 				dump_emem_sz = MAX_DUMP_FWSZ;
-			else {
+			} else {
 				dump_emem_sz = emem_sz;
 				ptx_desc->txdw0 |= cpu_to_le32(BIT(28));
 			}
@@ -336,7 +336,6 @@ uint rtl8712_hal_init(struct _adapter *padapter)
 		    r8712_read32(padapter, RCR));
 	val32 = r8712_read32(padapter, RCR);
 	r8712_write32(padapter, RCR, (val32 | BIT(25))); /* Append PHY status */
-	val32 = 0;
 	val32 = r8712_read32(padapter, 0x10250040);
 	r8712_write32(padapter,  0x10250040, (val32 & 0x00FFFFFF));
 	/* for usb rx aggregation */

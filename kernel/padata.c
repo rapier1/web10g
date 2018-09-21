@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * padata.c - generic interface to process data streams in parallel
  *
@@ -131,6 +132,7 @@ int padata_do_parallel(struct padata_instance *pinst,
 	padata->cb_cpu = cb_cpu;
 
 	target_cpu = padata_cpu_hash(pd);
+	padata->cpu = target_cpu;
 	queue = per_cpu_ptr(pd->pqueue, target_cpu);
 
 	spin_lock(&queue->parallel.lock);
@@ -153,8 +155,6 @@ EXPORT_SYMBOL(padata_do_parallel);
  *
  * A pointer to the control struct of the next object that needs
  * serialization, if present in one of the percpu reorder queues.
- *
- * NULL, if all percpu reorder queues are empty.
  *
  * -EINPROGRESS, if the next object that needs serialization will
  *  be parallel processed by another cpu and is not yet present in
@@ -182,23 +182,22 @@ static struct padata_priv *padata_get_next(struct parallel_data *pd)
 	cpu = padata_index_to_cpu(pd, next_index);
 	next_queue = per_cpu_ptr(pd->pqueue, cpu);
 
-	padata = NULL;
-
 	reorder = &next_queue->reorder;
 
+	spin_lock(&reorder->lock);
 	if (!list_empty(&reorder->list)) {
 		padata = list_entry(reorder->list.next,
 				    struct padata_priv, list);
 
-		spin_lock(&reorder->lock);
 		list_del_init(&padata->list);
 		atomic_dec(&pd->reorder_objects);
-		spin_unlock(&reorder->lock);
 
 		pd->processed++;
 
+		spin_unlock(&reorder->lock);
 		goto out;
 	}
+	spin_unlock(&reorder->lock);
 
 	if (__this_cpu_read(pd->pqueue->cpu_index) == next_queue->cpu_index) {
 		padata = ERR_PTR(-ENODATA);
@@ -234,12 +233,11 @@ static void padata_reorder(struct parallel_data *pd)
 		padata = padata_get_next(pd);
 
 		/*
-		 * All reorder queues are empty, or the next object that needs
-		 * serialization is parallel processed by another cpu and is
-		 * still on it's way to the cpu's reorder queue, nothing to
-		 * do for now.
+		 * If the next object that needs serialization is parallel
+		 * processed by another cpu and is still on it's way to the
+		 * cpu's reorder queue, nothing to do for now.
 		 */
-		if (!padata || PTR_ERR(padata) == -EINPROGRESS)
+		if (PTR_ERR(padata) == -EINPROGRESS)
 			break;
 
 		/*
@@ -279,11 +277,51 @@ static void padata_reorder(struct parallel_data *pd)
 	return;
 }
 
-static void padata_reorder_timer(unsigned long arg)
+static void invoke_padata_reorder(struct work_struct *work)
 {
-	struct parallel_data *pd = (struct parallel_data *)arg;
+	struct padata_parallel_queue *pqueue;
+	struct parallel_data *pd;
 
+	local_bh_disable();
+	pqueue = container_of(work, struct padata_parallel_queue, reorder_work);
+	pd = pqueue->pd;
 	padata_reorder(pd);
+	local_bh_enable();
+}
+
+static void padata_reorder_timer(struct timer_list *t)
+{
+	struct parallel_data *pd = from_timer(pd, t, timer);
+	unsigned int weight;
+	int target_cpu, cpu;
+
+	cpu = get_cpu();
+
+	/* We don't lock pd here to not interfere with parallel processing
+	 * padata_reorder() calls on other CPUs. We just need any CPU out of
+	 * the cpumask.pcpu set. It would be nice if it's the right one but
+	 * it doesn't matter if we're off to the next one by using an outdated
+	 * pd->processed value.
+	 */
+	weight = cpumask_weight(pd->cpumask.pcpu);
+	target_cpu = padata_index_to_cpu(pd, pd->processed % weight);
+
+	/* ensure to call the reorder callback on the correct CPU */
+	if (cpu != target_cpu) {
+		struct padata_parallel_queue *pqueue;
+		struct padata_instance *pinst;
+
+		/* The timer function is serialized wrt itself -- no locking
+		 * needed.
+		 */
+		pinst = pd->pinst;
+		pqueue = per_cpu_ptr(pd->pqueue, target_cpu);
+		queue_work_on(target_cpu, pinst->wq, &pqueue->reorder_work);
+	} else {
+		padata_reorder(pd);
+	}
+
+	put_cpu();
 }
 
 static void padata_serial_worker(struct work_struct *serial_work)
@@ -327,10 +365,21 @@ void padata_do_serial(struct padata_priv *padata)
 	int cpu;
 	struct padata_parallel_queue *pqueue;
 	struct parallel_data *pd;
+	int reorder_via_wq = 0;
 
 	pd = padata->pd;
 
 	cpu = get_cpu();
+
+	/* We need to run on the same CPU padata_do_parallel(.., padata, ..)
+	 * was called on -- or, at least, enqueue the padata object into the
+	 * correct per-cpu queue.
+	 */
+	if (cpu != padata->cpu) {
+		reorder_via_wq = 1;
+		cpu = padata->cpu;
+	}
+
 	pqueue = per_cpu_ptr(pd->pqueue, cpu);
 
 	spin_lock(&pqueue->reorder.lock);
@@ -340,7 +389,13 @@ void padata_do_serial(struct padata_priv *padata)
 
 	put_cpu();
 
-	padata_reorder(pd);
+	/* If we're running on the wrong CPU, call padata_reorder() via a
+	 * kernel worker.
+	 */
+	if (reorder_via_wq)
+		queue_work_on(cpu, pd->pinst->wq, &pqueue->reorder_work);
+	else
+		padata_reorder(pd);
 }
 EXPORT_SYMBOL(padata_do_serial);
 
@@ -353,7 +408,7 @@ static int padata_setup_cpumasks(struct parallel_data *pd,
 
 	cpumask_and(pd->cpumask.pcpu, pcpumask, cpu_online_mask);
 	if (!alloc_cpumask_var(&pd->cpumask.cbcpu, GFP_KERNEL)) {
-		free_cpumask_var(pd->cpumask.cbcpu);
+		free_cpumask_var(pd->cpumask.pcpu);
 		return -ENOMEM;
 	}
 
@@ -388,8 +443,14 @@ static void padata_init_pqueues(struct parallel_data *pd)
 	struct padata_parallel_queue *pqueue;
 
 	cpu_index = 0;
-	for_each_cpu(cpu, pd->cpumask.pcpu) {
+	for_each_possible_cpu(cpu) {
 		pqueue = per_cpu_ptr(pd->pqueue, cpu);
+
+		if (!cpumask_test_cpu(cpu, pd->cpumask.pcpu)) {
+			pqueue->cpu_index = -1;
+			continue;
+		}
+
 		pqueue->pd = pd;
 		pqueue->cpu_index = cpu_index;
 		cpu_index++;
@@ -397,6 +458,7 @@ static void padata_init_pqueues(struct parallel_data *pd)
 		__padata_list_init(&pqueue->reorder);
 		__padata_list_init(&pqueue->parallel);
 		INIT_WORK(&pqueue->work, padata_parallel_worker);
+		INIT_WORK(&pqueue->reorder_work, invoke_padata_reorder);
 		atomic_set(&pqueue->num_obj, 0);
 	}
 }
@@ -424,7 +486,7 @@ static struct parallel_data *padata_alloc_pd(struct padata_instance *pinst,
 
 	padata_init_pqueues(pd);
 	padata_init_squeues(pd);
-	setup_timer(&pd->timer, padata_reorder_timer, (unsigned long)pd);
+	timer_setup(&pd->timer, padata_reorder_timer, 0);
 	atomic_set(&pd->seq_nr, -1);
 	atomic_set(&pd->reorder_objects, 0);
 	atomic_set(&pd->refcnt, 0);
@@ -938,29 +1000,18 @@ static struct kobj_type padata_attr_type = {
 };
 
 /**
- * padata_alloc_possible - Allocate and initialize padata instance.
- *                         Use the cpu_possible_mask for serial and
- *                         parallel workers.
- *
- * @wq: workqueue to use for the allocated padata instance
- */
-struct padata_instance *padata_alloc_possible(struct workqueue_struct *wq)
-{
-	return padata_alloc(wq, cpu_possible_mask, cpu_possible_mask);
-}
-EXPORT_SYMBOL(padata_alloc_possible);
-
-/**
  * padata_alloc - allocate and initialize a padata instance and specify
  *                cpumasks for serial and parallel workers.
  *
  * @wq: workqueue to use for the allocated padata instance
  * @pcpumask: cpumask that will be used for padata parallelization
  * @cbcpumask: cpumask that will be used for padata serialization
+ *
+ * Must be called from a cpus_read_lock() protected region
  */
-struct padata_instance *padata_alloc(struct workqueue_struct *wq,
-				     const struct cpumask *pcpumask,
-				     const struct cpumask *cbcpumask)
+static struct padata_instance *padata_alloc(struct workqueue_struct *wq,
+					    const struct cpumask *pcpumask,
+					    const struct cpumask *cbcpumask)
 {
 	struct padata_instance *pinst;
 	struct parallel_data *pd = NULL;
@@ -969,7 +1020,6 @@ struct padata_instance *padata_alloc(struct workqueue_struct *wq,
 	if (!pinst)
 		goto err;
 
-	get_online_cpus();
 	if (!alloc_cpumask_var(&pinst->cpumask.pcpu, GFP_KERNEL))
 		goto err_free_inst;
 	if (!alloc_cpumask_var(&pinst->cpumask.cbcpu, GFP_KERNEL)) {
@@ -993,14 +1043,12 @@ struct padata_instance *padata_alloc(struct workqueue_struct *wq,
 
 	pinst->flags = 0;
 
-	put_online_cpus();
-
 	BLOCKING_INIT_NOTIFIER_HEAD(&pinst->cpumask_change_notifier);
 	kobject_init(&pinst->kobj, &padata_attr_type);
 	mutex_init(&pinst->lock);
 
 #ifdef CONFIG_HOTPLUG_CPU
-	cpuhp_state_add_instance_nocalls(hp_online, &pinst->node);
+	cpuhp_state_add_instance_nocalls_cpuslocked(hp_online, &pinst->node);
 #endif
 	return pinst;
 
@@ -1009,10 +1057,25 @@ err_free_masks:
 	free_cpumask_var(pinst->cpumask.cbcpu);
 err_free_inst:
 	kfree(pinst);
-	put_online_cpus();
 err:
 	return NULL;
 }
+
+/**
+ * padata_alloc_possible - Allocate and initialize padata instance.
+ *                         Use the cpu_possible_mask for serial and
+ *                         parallel workers.
+ *
+ * @wq: workqueue to use for the allocated padata instance
+ *
+ * Must be called from a cpus_read_lock() protected region
+ */
+struct padata_instance *padata_alloc_possible(struct workqueue_struct *wq)
+{
+	lockdep_assert_cpus_held();
+	return padata_alloc(wq, cpu_possible_mask, cpu_possible_mask);
+}
+EXPORT_SYMBOL(padata_alloc_possible);
 
 /**
  * padata_free - free a padata instance

@@ -11,10 +11,11 @@
 #include <linux/slab.h>
 #include <linux/file.h>
 #include <misc/cxl.h>
-#include <asm/pnv-pci.h>
 #include <linux/msi.h>
 #include <linux/module.h>
 #include <linux/mount.h>
+#include <linux/sched/mm.h>
+#include <linux/mmu_context.h>
 
 #include "cxl.h"
 
@@ -102,15 +103,15 @@ static struct file *cxl_getfile(const char *name,
 	d_instantiate(path.dentry, inode);
 
 	file = alloc_file(&path, OPEN_FMODE(flags), fops);
-	if (IS_ERR(file))
-		goto err_dput;
+	if (IS_ERR(file)) {
+		path_put(&path);
+		goto err_fs;
+	}
 	file->f_flags = flags & (O_ACCMODE | O_NONBLOCK);
 	file->private_data = priv;
 
 	return file;
 
-err_dput:
-	path_put(&path);
 err_inode:
 	iput(inode);
 err_fs:
@@ -322,19 +323,42 @@ int cxl_start_context(struct cxl_context *ctx, u64 wed,
 
 	if (task) {
 		ctx->pid = get_task_pid(task, PIDTYPE_PID);
-		ctx->glpid = get_task_pid(task->group_leader, PIDTYPE_PID);
 		kernel = false;
 		ctx->real_mode = false;
+
+		/* acquire a reference to the task's mm */
+		ctx->mm = get_task_mm(current);
+
+		/* ensure this mm_struct can't be freed */
+		cxl_context_mm_count_get(ctx);
+
+		if (ctx->mm) {
+			/* decrement the use count from above */
+			mmput(ctx->mm);
+			/* make TLBIs for this context global */
+			mm_context_add_copro(ctx->mm);
+		}
 	}
 
+	/*
+	 * Increment driver use count. Enables global TLBIs for hash
+	 * and callbacks to handle the segment table
+	 */
 	cxl_ctx_get();
 
+	/* See the comment in afu_ioctl_start_work() */
+	smp_mb();
+
 	if ((rc = cxl_ops->attach_process(ctx, kernel, wed, 0))) {
-		put_pid(ctx->glpid);
 		put_pid(ctx->pid);
-		ctx->glpid = ctx->pid = NULL;
+		ctx->pid = NULL;
 		cxl_adapter_context_put(ctx->afu->adapter);
 		cxl_ctx_put();
+		if (task) {
+			cxl_context_mm_count_put(ctx);
+			if (ctx->mm)
+				mm_context_remove_copro(ctx->mm);
+		}
 		goto out;
 	}
 
@@ -403,7 +427,7 @@ int cxl_fd_mmap(struct file *file, struct vm_area_struct *vm)
 	return afu_mmap(file, vm);
 }
 EXPORT_SYMBOL_GPL(cxl_fd_mmap);
-unsigned int cxl_fd_poll(struct file *file, struct poll_table_struct *poll)
+__poll_t cxl_fd_poll(struct file *file, struct poll_table_struct *poll)
 {
 	return afu_poll(file, poll);
 }

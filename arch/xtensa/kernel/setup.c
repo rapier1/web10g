@@ -20,7 +20,6 @@
 #include <linux/mm.h>
 #include <linux/proc_fs.h>
 #include <linux/screen_info.h>
-#include <linux/bootmem.h>
 #include <linux/kernel.h>
 #include <linux/percpu.h>
 #include <linux/cpu.h>
@@ -36,6 +35,7 @@
 #endif
 
 #include <asm/bootparam.h>
+#include <asm/kasan.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/processor.h>
@@ -126,6 +126,8 @@ static int __init parse_tag_initrd(const bp_tag_t* tag)
 
 __tagtable(BP_TAG_INITRD, parse_tag_initrd);
 
+#endif /* CONFIG_BLK_DEV_INITRD */
+
 #ifdef CONFIG_OF
 
 static int __init parse_tag_fdt(const bp_tag_t *tag)
@@ -137,8 +139,6 @@ static int __init parse_tag_fdt(const bp_tag_t *tag)
 __tagtable(BP_TAG_FDT, parse_tag_fdt);
 
 #endif /* CONFIG_OF */
-
-#endif /* CONFIG_BLK_DEV_INITRD */
 
 static int __init parse_tag_cmdline(const bp_tag_t* tag)
 {
@@ -156,7 +156,7 @@ static int __init parse_bootparam(const bp_tag_t* tag)
 	/* Boot parameters must start with a BP_TAG_FIRST tag. */
 
 	if (tag->id != BP_TAG_FIRST) {
-		printk(KERN_WARNING "Invalid boot parameters!\n");
+		pr_warn("Invalid boot parameters!\n");
 		return 0;
 	}
 
@@ -165,15 +165,14 @@ static int __init parse_bootparam(const bp_tag_t* tag)
 	/* Parse all tags. */
 
 	while (tag != NULL && tag->id != BP_TAG_LAST) {
-	 	for (t = &__tagtable_begin; t < &__tagtable_end; t++) {
+		for (t = &__tagtable_begin; t < &__tagtable_end; t++) {
 			if (tag->id == t->tag) {
 				t->parse(tag);
 				break;
 			}
 		}
 		if (t == &__tagtable_end)
-			printk(KERN_WARNING "Ignoring tag "
-			       "0x%08x\n", tag->id);
+			pr_warn("Ignoring tag 0x%08x\n", tag->id);
 		tag = (bp_tag_t*)((unsigned long)(tag + 1) + tag->size);
 	}
 
@@ -208,6 +207,8 @@ static int __init xtensa_dt_io_area(unsigned long node, const char *uname,
 	/* round down to nearest 256MB boundary */
 	xtensa_kio_paddr &= 0xf0000000;
 
+	init_kio();
+
 	return 1;
 }
 #else
@@ -217,17 +218,6 @@ static int __init xtensa_dt_io_area(unsigned long node, const char *uname,
 	return 1;
 }
 #endif
-
-void __init early_init_dt_add_memory_arch(u64 base, u64 size)
-{
-	size &= PAGE_MASK;
-	memblock_add(base, size);
-}
-
-void * __init early_init_dt_alloc_memory_arch(u64 size, u64 align)
-{
-	return __alloc_bootmem(size, align, 0);
-}
 
 void __init early_init_devtree(void *params)
 {
@@ -246,6 +236,14 @@ void __init early_init_devtree(void *params)
 
 void __init init_arch(bp_tag_t *bp_start)
 {
+	/* Initialize MMU. */
+
+	init_mmu();
+
+	/* Initialize initial KASAN shadow map */
+
+	kasan_early_init();
+
 	/* Parse boot parameters */
 
 	if (bp_start)
@@ -263,27 +261,23 @@ void __init init_arch(bp_tag_t *bp_start)
 	/* Early hook for platforms */
 
 	platform_init(bp_start);
-
-	/* Initialize MMU. */
-
-	init_mmu();
 }
 
 /*
  * Initialize system. Setup memory and reserve regions.
  */
 
-extern char _end;
-extern char _stext;
+extern char _end[];
+extern char _stext[];
 extern char _WindowVectors_text_start;
 extern char _WindowVectors_text_end;
-extern char _DebugInterruptVector_literal_start;
+extern char _DebugInterruptVector_text_start;
 extern char _DebugInterruptVector_text_end;
-extern char _KernelExceptionVector_literal_start;
+extern char _KernelExceptionVector_text_start;
 extern char _KernelExceptionVector_text_end;
-extern char _UserExceptionVector_literal_start;
+extern char _UserExceptionVector_text_start;
 extern char _UserExceptionVector_text_end;
-extern char _DoubleExceptionVector_literal_start;
+extern char _DoubleExceptionVector_text_start;
 extern char _DoubleExceptionVector_text_end;
 #if XCHAL_EXCM_LEVEL >= 2
 extern char _Level2InterruptVector_text_start;
@@ -317,8 +311,16 @@ static inline int mem_reserve(unsigned long start, unsigned long end)
 
 void __init setup_arch(char **cmdline_p)
 {
-	strlcpy(boot_command_line, command_line, COMMAND_LINE_SIZE);
+	pr_info("config ID: %08x:%08x\n",
+		get_sr(SREG_EPC), get_sr(SREG_EXCSAVE));
+	if (get_sr(SREG_EPC) != XCHAL_HW_CONFIGID0 ||
+	    get_sr(SREG_EXCSAVE) != XCHAL_HW_CONFIGID1)
+		pr_info("built for config ID: %08x:%08x\n",
+			XCHAL_HW_CONFIGID0, XCHAL_HW_CONFIGID1);
+
 	*cmdline_p = command_line;
+	platform_setup(cmdline_p);
+	strlcpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
 
 	/* Reserve some memory regions */
 
@@ -332,21 +334,22 @@ void __init setup_arch(char **cmdline_p)
 	}
 #endif
 
-	mem_reserve(__pa(&_stext), __pa(&_end));
+	mem_reserve(__pa(_stext), __pa(_end));
 
+#ifdef CONFIG_VECTORS_OFFSET
 	mem_reserve(__pa(&_WindowVectors_text_start),
 		    __pa(&_WindowVectors_text_end));
 
-	mem_reserve(__pa(&_DebugInterruptVector_literal_start),
+	mem_reserve(__pa(&_DebugInterruptVector_text_start),
 		    __pa(&_DebugInterruptVector_text_end));
 
-	mem_reserve(__pa(&_KernelExceptionVector_literal_start),
+	mem_reserve(__pa(&_KernelExceptionVector_text_start),
 		    __pa(&_KernelExceptionVector_text_end));
 
-	mem_reserve(__pa(&_UserExceptionVector_literal_start),
+	mem_reserve(__pa(&_UserExceptionVector_text_start),
 		    __pa(&_UserExceptionVector_text_end));
 
-	mem_reserve(__pa(&_DoubleExceptionVector_literal_start),
+	mem_reserve(__pa(&_DoubleExceptionVector_text_start),
 		    __pa(&_DoubleExceptionVector_text_end));
 
 #if XCHAL_EXCM_LEVEL >= 2
@@ -370,16 +373,16 @@ void __init setup_arch(char **cmdline_p)
 		    __pa(&_Level6InterruptVector_text_end));
 #endif
 
+#endif /* CONFIG_VECTORS_OFFSET */
+
 #ifdef CONFIG_SMP
 	mem_reserve(__pa(&_SecondaryResetVector_text_start),
 		    __pa(&_SecondaryResetVector_text_end));
 #endif
 	parse_early_param();
 	bootmem_init();
-
+	kasan_init();
 	unflatten_and_copy_device_tree();
-
-	platform_setup(cmdline_p);
 
 #ifdef CONFIG_SMP
 	smp_init_cpus();
@@ -450,9 +453,9 @@ void cpu_reset(void)
 			tmpaddr += SZ_512M;
 
 		/* Invalidate mapping in the selected temporary area */
-		if (itlb_probe(tmpaddr) & 0x8)
+		if (itlb_probe(tmpaddr) & BIT(ITLB_HIT_BIT))
 			invalidate_itlb_entry(itlb_probe(tmpaddr));
-		if (itlb_probe(tmpaddr + PAGE_SIZE) & 0x8)
+		if (itlb_probe(tmpaddr + PAGE_SIZE) & BIT(ITLB_HIT_BIT))
 			invalidate_itlb_entry(itlb_probe(tmpaddr + PAGE_SIZE));
 
 		/*
@@ -580,19 +583,20 @@ c_show(struct seq_file *f, void *slot)
 		      "model\t\t: Xtensa " XCHAL_HW_VERSION_NAME "\n"
 		      "core ID\t\t: " XCHAL_CORE_ID "\n"
 		      "build ID\t: 0x%x\n"
+		      "config ID\t: %08x:%08x\n"
 		      "byte order\t: %s\n"
 		      "cpu MHz\t\t: %lu.%02lu\n"
 		      "bogomips\t: %lu.%02lu\n",
 		      num_online_cpus(),
 		      cpumask_pr_args(cpu_online_mask),
 		      XCHAL_BUILD_UNIQUE_ID,
+		      get_sr(SREG_EPC), get_sr(SREG_EXCSAVE),
 		      XCHAL_HAVE_BE ?  "big" : "little",
 		      ccount_freq/1000000,
 		      (ccount_freq/10000) % 100,
 		      loops_per_jiffy/(500000/HZ),
 		      (loops_per_jiffy/(5000/HZ)) % 100);
-
-	seq_printf(f,"flags\t\t: "
+	seq_puts(f, "flags\t\t: "
 #if XCHAL_HAVE_NMI
 		     "nmi "
 #endif

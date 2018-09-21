@@ -16,11 +16,11 @@
 #include <linux/pm_opp.h>
 #include <linux/export.h>
 #include <linux/suspend.h>
+#include <linux/clk.h>
 #include <linux/cpu.h>
 
 #include <asm/system_misc.h>
 
-#include "omap-pm.h"
 #include "omap_device.h"
 #include "common.h"
 
@@ -71,7 +71,7 @@ void omap_pm_get_oscillator(u32 *tstart, u32 *tshut)
 }
 #endif
 
-int __init omap_pm_clkdms_setup(struct clockdomain *clkdm, void *unused)
+int omap_pm_clkdms_setup(struct clockdomain *clkdm, void *unused)
 {
 	clkdm_allow_idle(clkdm);
 	return 0;
@@ -130,17 +130,16 @@ static int __init omap2_set_init_voltage(char *vdd_name, char *clk_name,
 	freq = clk_get_rate(clk);
 	clk_put(clk);
 
-	rcu_read_lock();
 	opp = dev_pm_opp_find_freq_ceil(dev, &freq);
 	if (IS_ERR(opp)) {
-		rcu_read_unlock();
 		pr_err("%s: unable to find boot up OPP for vdd_%s\n",
 			__func__, vdd_name);
 		goto exit;
 	}
 
 	bootup_volt = dev_pm_opp_get_voltage(opp);
-	rcu_read_unlock();
+	dev_pm_opp_put(opp);
+
 	if (!bootup_volt) {
 		pr_err("%s: unable to find voltage corresponding to the bootup OPP for vdd_%s\n",
 		       __func__, vdd_name);
@@ -164,7 +163,6 @@ static int omap_pm_enter(suspend_state_t suspend_state)
 		return -ENOENT; /* XXX doublecheck */
 
 	switch (suspend_state) {
-	case PM_SUSPEND_STANDBY:
 	case PM_SUSPEND_MEM:
 		ret = omap_pm_suspend();
 		break;
@@ -188,7 +186,7 @@ static void omap_pm_end(void)
 	cpu_idle_poll_ctrl(false);
 }
 
-static void omap_pm_finish(void)
+static void omap_pm_wake(void)
 {
 	if (soc_is_omap34xx())
 		omap_prcm_irq_complete();
@@ -198,7 +196,7 @@ static const struct platform_suspend_ops omap_pm_ops = {
 	.begin		= omap_pm_begin,
 	.end		= omap_pm_end,
 	.enter		= omap_pm_enter,
-	.finish		= omap_pm_finish,
+	.wake		= omap_pm_wake,
 	.valid		= suspend_valid_only_mem,
 };
 
@@ -232,16 +230,20 @@ static void __init omap4_init_voltages(void)
 	omap2_set_init_voltage("iva", "dpll_iva_m5x2_ck", "iva");
 }
 
-static int __init omap2_common_pm_init(void)
+int __maybe_unused omap_pm_nop_init(void)
 {
-	omap_pm_if_init();
-
 	return 0;
 }
-omap_postcore_initcall(omap2_common_pm_init);
+
+int (*omap_pm_soc_init)(void);
 
 int __init omap2_common_pm_late_init(void)
 {
+	int error;
+
+	if (!omap_pm_soc_init)
+		return 0;
+
 	/* Init the voltage layer */
 	omap3_twl_init();
 	omap4_twl_init();
@@ -254,5 +256,12 @@ int __init omap2_common_pm_late_init(void)
 	/* Smartreflex device init */
 	omap_devinit_smartreflex();
 
+	error = omap_pm_soc_init();
+	if (error)
+		pr_warn("%s: pm soc init failed: %i\n", __func__, error);
+
+	omap2_clk_enable_autoidle_all();
+
 	return 0;
 }
+omap_late_initcall(omap2_common_pm_late_init);

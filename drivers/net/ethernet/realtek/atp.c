@@ -151,8 +151,8 @@ MODULE_LICENSE("GPL");
 
 module_param(max_interrupt_work, int, 0);
 module_param(debug, int, 0);
-module_param_array(io, int, NULL, 0);
-module_param_array(irq, int, NULL, 0);
+module_param_hw_array(io, int, ioport, NULL, 0);
+module_param_hw_array(irq, int, irq, NULL, 0);
 module_param_array(xcvr, int, NULL, 0);
 MODULE_PARM_DESC(max_interrupt_work, "ATP maximum events handled per interrupt");
 MODULE_PARM_DESC(debug, "ATP debug level (0-7)");
@@ -170,7 +170,8 @@ struct net_local {
     spinlock_t lock;
     struct net_device *next_module;
     struct timer_list timer;	/* Media selection timer. */
-    long last_rx_time;		/* Last Rx, in jiffies, to handle Rx hang. */
+    struct net_device *dev;	/* Timer dev. */
+    unsigned long last_rx_time;	/* Last Rx, in jiffies, to handle Rx hang. */
     int saved_tx_size;
     unsigned int tx_unit_busy:1;
     unsigned char re_tx,	/* Number of packet retransmissions. */
@@ -184,7 +185,7 @@ struct net_local {
 #define TIMED_CHECKER (HZ/4)
 #ifdef TIMED_CHECKER
 #include <linux/timer.h>
-static void atp_timed_checker(unsigned long ignored);
+static void atp_timed_checker(struct timer_list *t);
 #endif
 
 /* Index to functions, as function prototypes. */
@@ -438,10 +439,9 @@ static int net_open(struct net_device *dev)
 
 	hardware_init(dev);
 
-	init_timer(&lp->timer);
+	lp->dev = dev;
+	timer_setup(&lp->timer, atp_timed_checker, 0);
 	lp->timer.expires = jiffies + TIMED_CHECKER;
-	lp->timer.data = (unsigned long)dev;
-	lp->timer.function = atp_timed_checker;    /* timer handler */
 	add_timer(&lp->timer);
 
 	netif_start_queue(dev);
@@ -668,11 +668,11 @@ static irqreturn_t atp_interrupt(int irq, void *dev_instance)
 			}
 			num_tx_since_rx++;
 		} else if (num_tx_since_rx > 8 &&
-			   time_after(jiffies, dev->last_rx + HZ)) {
+			   time_after(jiffies, lp->last_rx_time + HZ)) {
 			if (net_debug > 2)
 				printk(KERN_DEBUG "%s: Missed packet? No Rx after %d Tx and "
 					   "%ld jiffies status %02x  CMR1 %02x.\n", dev->name,
-					   num_tx_since_rx, jiffies - dev->last_rx, status,
+					   num_tx_since_rx, jiffies - lp->last_rx_time, status,
 					   (read_nibble(ioaddr, CMR1) >> 3) & 15);
 			dev->stats.rx_missed_errors++;
 			hardware_init(dev);
@@ -710,11 +710,11 @@ static irqreturn_t atp_interrupt(int irq, void *dev_instance)
 #ifdef TIMED_CHECKER
 /* This following code fixes a rare (and very difficult to track down)
    problem where the adapter forgets its ethernet address. */
-static void atp_timed_checker(unsigned long data)
+static void atp_timed_checker(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
+	struct net_local *lp = from_timer(lp, t, timer);
+	struct net_device *dev = lp->dev;
 	long ioaddr = dev->base_addr;
-	struct net_local *lp = netdev_priv(dev);
 	int tickssofar = jiffies - lp->last_rx_time;
 	int i;
 
@@ -789,7 +789,6 @@ static void net_rx(struct net_device *dev)
 		read_block(ioaddr, pkt_len, skb_put(skb,pkt_len), dev->if_port);
 		skb->protocol = eth_type_trans(skb, dev);
 		netif_rx(skb);
-		dev->last_rx = jiffies;
 		dev->stats.rx_packets++;
 		dev->stats.rx_bytes += pkt_len;
 	}

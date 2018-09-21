@@ -123,7 +123,6 @@
  * @phy_node:		pointer to the PHY device node
  * @mii_bus:		pointer to the MII bus
  * @last_link:		last link status
- * @has_mdio:		indicates whether MDIO is included in the HW
  */
 struct net_local {
 
@@ -144,7 +143,6 @@ struct net_local {
 	struct mii_bus *mii_bus;
 
 	int last_link;
-	bool has_mdio;
 };
 
 
@@ -863,13 +861,13 @@ static int xemaclite_mdio_setup(struct net_local *lp, struct device *dev)
 	bus->write = xemaclite_mdio_write;
 	bus->parent = dev;
 
-	lp->mii_bus = bus;
-
 	rc = of_mdiobus_register(bus, np);
 	if (rc) {
 		dev_err(dev, "Failed to register mdio bus.\n");
 		goto err_register;
 	}
+
+	lp->mii_bus = bus;
 
 	return 0;
 
@@ -1041,20 +1039,6 @@ static int xemaclite_send(struct sk_buff *orig_skb, struct net_device *dev)
 }
 
 /**
- * xemaclite_remove_ndev - Free the network device
- * @ndev:	Pointer to the network device to be freed
- *
- * This function un maps the IO region of the Emaclite device and frees the net
- * device.
- */
-static void xemaclite_remove_ndev(struct net_device *ndev)
-{
-	if (ndev) {
-		free_netdev(ndev);
-	}
-}
-
-/**
  * get_bool - Get a parameter from the OF device
  * @ofdev:	Pointer to OF device structure
  * @s:		Property to be retrieved
@@ -1077,7 +1061,7 @@ static bool get_bool(struct platform_device *ofdev, const char *s)
 	}
 }
 
-static struct net_device_ops xemaclite_netdev_ops;
+static const struct net_device_ops xemaclite_netdev_ops;
 
 /**
  * xemaclite_of_probe - Probe method for the Emaclite device.
@@ -1159,9 +1143,7 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	xemaclite_update_address(lp, ndev->dev_addr);
 
 	lp->phy_node = of_parse_phandle(ofdev->dev.of_node, "phy-handle", 0);
-	rc = xemaclite_mdio_setup(lp, &ofdev->dev);
-	if (rc)
-		dev_warn(&ofdev->dev, "error registering MDIO bus\n");
+	xemaclite_mdio_setup(lp, &ofdev->dev);
 
 	dev_info(dev, "MAC address is now %pM\n", ndev->dev_addr);
 
@@ -1184,7 +1166,7 @@ static int xemaclite_of_probe(struct platform_device *ofdev)
 	return 0;
 
 error:
-	xemaclite_remove_ndev(ndev);
+	free_netdev(ndev);
 	return rc;
 }
 
@@ -1205,7 +1187,7 @@ static int xemaclite_of_remove(struct platform_device *of_dev)
 	struct net_local *lp = netdev_priv(ndev);
 
 	/* Un-register the mii_bus, if configured */
-	if (lp->has_mdio) {
+	if (lp->mii_bus) {
 		mdiobus_unregister(lp->mii_bus);
 		mdiobus_free(lp->mii_bus);
 		lp->mii_bus = NULL;
@@ -1216,7 +1198,7 @@ static int xemaclite_of_remove(struct platform_device *of_dev)
 	of_node_put(lp->phy_node);
 	lp->phy_node = NULL;
 
-	xemaclite_remove_ndev(ndev);
+	free_netdev(ndev);
 
 	return 0;
 }
@@ -1231,7 +1213,7 @@ xemaclite_poll_controller(struct net_device *ndev)
 }
 #endif
 
-static struct net_device_ops xemaclite_netdev_ops = {
+static const struct net_device_ops xemaclite_netdev_ops = {
 	.ndo_open		= xemaclite_open,
 	.ndo_stop		= xemaclite_close,
 	.ndo_start_xmit		= xemaclite_send,

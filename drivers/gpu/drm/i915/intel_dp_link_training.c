@@ -139,6 +139,11 @@ intel_dp_link_training_clock_recovery(struct intel_dp *intel_dp)
 	intel_dp_compute_rate(intel_dp, intel_dp->link_rate,
 			      &link_bw, &rate_select);
 
+	if (link_bw)
+		DRM_DEBUG_KMS("Using LINK_BW_SET value %02x\n", link_bw);
+	else
+		DRM_DEBUG_KMS("Using LINK_RATE_SET value %02x\n", rate_select);
+
 	/* Write the link configuration data */
 	link_config[0] = link_bw;
 	link_config[1] = intel_dp->lane_count;
@@ -146,7 +151,8 @@ intel_dp_link_training_clock_recovery(struct intel_dp *intel_dp)
 		link_config[1] |= DP_LANE_COUNT_ENHANCED_FRAME_EN;
 	drm_dp_dpcd_write(&intel_dp->aux, DP_LINK_BW_SET, link_config, 2);
 
-	if (intel_dp->num_sink_rates)
+	/* eDP 1.4 rate select method. */
+	if (!link_bw)
 		drm_dp_dpcd_write(&intel_dp->aux, DP_LINK_RATE_SET,
 				  &rate_select, 1);
 
@@ -247,6 +253,7 @@ intel_dp_link_training_channel_equalization(struct intel_dp *intel_dp)
 	int tries;
 	u32 training_pattern;
 	uint8_t link_status[DP_LINK_STATUS_SIZE];
+	bool channel_eq = false;
 
 	training_pattern = intel_dp_training_pattern(intel_dp);
 
@@ -258,7 +265,6 @@ intel_dp_link_training_channel_equalization(struct intel_dp *intel_dp)
 		return false;
 	}
 
-	intel_dp->channel_eq_status = false;
 	for (tries = 0; tries < 5; tries++) {
 
 		drm_dp_link_train_channel_eq_delay(intel_dp->dpcd);
@@ -278,7 +284,7 @@ intel_dp_link_training_channel_equalization(struct intel_dp *intel_dp)
 
 		if (drm_dp_channel_eq_ok(link_status,
 					 intel_dp->lane_count)) {
-			intel_dp->channel_eq_status = true;
+			channel_eq = true;
 			DRM_DEBUG_KMS("Channel EQ done. DP Training "
 				      "successful\n");
 			break;
@@ -300,12 +306,14 @@ intel_dp_link_training_channel_equalization(struct intel_dp *intel_dp)
 
 	intel_dp_set_idle_link_train(intel_dp);
 
-	return intel_dp->channel_eq_status;
+	return channel_eq;
 
 }
 
 void intel_dp_stop_link_train(struct intel_dp *intel_dp)
 {
+	intel_dp->link_trained = true;
+
 	intel_dp_set_link_train(intel_dp,
 				DP_TRAINING_PATTERN_DISABLE);
 }
@@ -313,6 +321,36 @@ void intel_dp_stop_link_train(struct intel_dp *intel_dp)
 void
 intel_dp_start_link_train(struct intel_dp *intel_dp)
 {
-	intel_dp_link_training_clock_recovery(intel_dp);
-	intel_dp_link_training_channel_equalization(intel_dp);
+	struct intel_connector *intel_connector = intel_dp->attached_connector;
+
+	if (!intel_dp_link_training_clock_recovery(intel_dp))
+		goto failure_handling;
+	if (!intel_dp_link_training_channel_equalization(intel_dp))
+		goto failure_handling;
+
+	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] Link Training Passed at Link Rate = %d, Lane count = %d",
+		      intel_connector->base.base.id,
+		      intel_connector->base.name,
+		      intel_dp->link_rate, intel_dp->lane_count);
+	return;
+
+ failure_handling:
+	/* Dont fallback and prune modes if its eDP */
+	if (!intel_dp_is_edp(intel_dp)) {
+		DRM_DEBUG_KMS("[CONNECTOR:%d:%s] Link Training failed at link rate = %d, lane count = %d",
+			      intel_connector->base.base.id,
+			      intel_connector->base.name,
+			      intel_dp->link_rate, intel_dp->lane_count);
+		if (!intel_dp_get_link_train_fallback_values(intel_dp,
+							     intel_dp->link_rate,
+							     intel_dp->lane_count))
+			/* Schedule a Hotplug Uevent to userspace to start modeset */
+			schedule_work(&intel_connector->modeset_retry_work);
+	} else {
+		DRM_ERROR("[CONNECTOR:%d:%s] Link Training failed at link rate = %d, lane count = %d",
+			  intel_connector->base.base.id,
+			  intel_connector->base.name,
+			  intel_dp->link_rate, intel_dp->lane_count);
+	}
+	return;
 }

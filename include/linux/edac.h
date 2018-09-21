@@ -28,40 +28,16 @@ struct device;
 #define EDAC_OPSTATE_INT	2
 
 extern int edac_op_state;
-extern int edac_err_assert;
-extern atomic_t edac_handlers;
 
-extern int edac_handler_set(void);
-extern void edac_atomic_assert_error(void);
-extern struct bus_type *edac_get_sysfs_subsys(void);
+struct bus_type *edac_get_sysfs_subsys(void);
+int edac_get_report_status(void);
+void edac_set_report_status(int new);
 
 enum {
 	EDAC_REPORTING_ENABLED,
 	EDAC_REPORTING_DISABLED,
 	EDAC_REPORTING_FORCE
 };
-
-extern int edac_report_status;
-#ifdef CONFIG_EDAC
-static inline int get_edac_report_status(void)
-{
-	return edac_report_status;
-}
-
-static inline void set_edac_report_status(int new)
-{
-	edac_report_status = new;
-}
-#else
-static inline int get_edac_report_status(void)
-{
-	return EDAC_REPORTING_DISABLED;
-}
-
-static inline void set_edac_report_status(int new)
-{
-}
-#endif
 
 static inline void opstate_init(void)
 {
@@ -190,8 +166,8 @@ static inline char *mc_event_error_type(const unsigned int err_type)
  *			part of the memory details to the memory controller.
  * @MEM_RMBS:		Rambus DRAM, used on a few Pentium III/IV controllers.
  * @MEM_DDR2:		DDR2 RAM, as described at JEDEC JESD79-2F.
- *			Those memories are labed as "PC2-" instead of "PC" to
- *			differenciate from DDR.
+ *			Those memories are labeled as "PC2-" instead of "PC" to
+ *			differentiate from DDR.
  * @MEM_FB_DDR2:	Fully-Buffered DDR2, as described at JEDEC Std No. 205
  *			and JESD206.
  *			Those memories are accessed per DIMM slot, and not by
@@ -210,6 +186,7 @@ static inline char *mc_event_error_type(const unsigned int err_type)
  * @MEM_RDDR4:		Registered DDR4 RAM
  *			This is a variant of the DDR4 memories.
  * @MEM_LRDDR4:		Load-Reduced DDR4 memory.
+ * @MEM_NVDIMM:		Non-volatile RAM
  */
 enum mem_type {
 	MEM_EMPTY = 0,
@@ -233,6 +210,7 @@ enum mem_type {
 	MEM_DDR4,
 	MEM_RDDR4,
 	MEM_LRDDR4,
+	MEM_NVDIMM,
 };
 
 #define MEM_FLAG_EMPTY		BIT(MEM_EMPTY)
@@ -255,6 +233,7 @@ enum mem_type {
 #define MEM_FLAG_DDR4           BIT(MEM_DDR4)
 #define MEM_FLAG_RDDR4          BIT(MEM_RDDR4)
 #define MEM_FLAG_LRDDR4         BIT(MEM_LRDDR4)
+#define MEM_FLAG_NVDIMM         BIT(MEM_NVDIMM)
 
 /**
  * enum edac-type - Error Detection and Correction capabilities and mode
@@ -643,7 +622,6 @@ struct mem_ctl_info {
 	 */
 	struct device *pdev;
 	const char *mod_name;
-	const char *mod_ver;
 	const char *ctl_name;
 	const char *dev_name;
 	void *pvt_info;

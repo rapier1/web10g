@@ -28,17 +28,19 @@
 #include <linux/qcom_scm.h>
 #include <linux/regulator/consumer.h>
 #include <linux/remoteproc.h>
+#include <linux/soc/qcom/mdt_loader.h>
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
 #include <linux/rpmsg/qcom_smd.h>
 
-#include "qcom_mdt_loader.h"
+#include "qcom_common.h"
 #include "remoteproc_internal.h"
 #include "qcom_wcnss.h"
 
 #define WCNSS_CRASH_REASON_SMEM		422
 #define WCNSS_FIRMWARE_NAME		"wcnss.mdt"
 #define WCNSS_PAS_ID			6
+#define WCNSS_SSCTL_ID			0x13
 
 #define WCNSS_SPARE_NVBIN_DLND		BIT(25)
 
@@ -96,9 +98,8 @@ struct qcom_wcnss {
 	void *mem_region;
 	size_t mem_size;
 
-	struct device_node *smd_node;
-	struct qcom_smd_edge *smd_edge;
-	struct rproc_subdev smd_subdev;
+	struct qcom_rproc_subdev smd_subdev;
+	struct qcom_sysmon *sysmon;
 };
 
 static const struct wcnss_data riva_data = {
@@ -152,40 +153,11 @@ void qcom_wcnss_assign_iris(struct qcom_wcnss *wcnss,
 static int wcnss_load(struct rproc *rproc, const struct firmware *fw)
 {
 	struct qcom_wcnss *wcnss = (struct qcom_wcnss *)rproc->priv;
-	phys_addr_t fw_addr;
-	size_t fw_size;
-	bool relocate;
-	int ret;
 
-	ret = qcom_scm_pas_init_image(WCNSS_PAS_ID, fw->data, fw->size);
-	if (ret) {
-		dev_err(&rproc->dev, "invalid firmware metadata\n");
-		return ret;
-	}
-
-	ret = qcom_mdt_parse(fw, &fw_addr, &fw_size, &relocate);
-	if (ret) {
-		dev_err(&rproc->dev, "failed to parse mdt header\n");
-		return ret;
-	}
-
-	if (relocate) {
-		wcnss->mem_reloc = fw_addr;
-
-		ret = qcom_scm_pas_mem_setup(WCNSS_PAS_ID, wcnss->mem_phys, fw_size);
-		if (ret) {
-			dev_err(&rproc->dev, "unable to setup memory for image\n");
-			return ret;
-		}
-	}
-
-	return qcom_mdt_load(rproc, fw, rproc->firmware);
+	return qcom_mdt_load(wcnss->dev, fw, rproc->firmware, WCNSS_PAS_ID,
+			     wcnss->mem_region, wcnss->mem_phys,
+			     wcnss->mem_size, &wcnss->mem_reloc);
 }
-
-static const struct rproc_fw_ops wcnss_fw_ops = {
-	.find_rsc_table = qcom_mdt_find_rsc_table,
-	.load = wcnss_load,
-};
 
 static void wcnss_indicate_nv_download(struct qcom_wcnss *wcnss)
 {
@@ -339,6 +311,8 @@ static const struct rproc_ops wcnss_ops = {
 	.start = wcnss_start,
 	.stop = wcnss_stop,
 	.da_to_va = wcnss_da_to_va,
+	.parse_fw = qcom_register_dump_segments,
+	.load = wcnss_load,
 };
 
 static irqreturn_t wcnss_wdog_interrupt(int irq, void *dev)
@@ -361,9 +335,6 @@ static irqreturn_t wcnss_fatal_interrupt(int irq, void *dev)
 		dev_err(wcnss->dev, "fatal error received: %s\n", msg);
 
 	rproc_report_crash(wcnss->rproc, RPROC_FATAL_ERROR);
-
-	if (!IS_ERR(msg))
-		msg[0] = '\0';
 
 	return IRQ_HANDLED;
 }
@@ -398,23 +369,6 @@ static irqreturn_t wcnss_stop_ack_interrupt(int irq, void *dev)
 	complete(&wcnss->stop_done);
 
 	return IRQ_HANDLED;
-}
-
-static int wcnss_smd_probe(struct rproc_subdev *subdev)
-{
-	struct qcom_wcnss *wcnss = container_of(subdev, struct qcom_wcnss, smd_subdev);
-
-	wcnss->smd_edge = qcom_smd_register_edge(wcnss->dev, wcnss->smd_node);
-
-	return IS_ERR(wcnss->smd_edge) ? PTR_ERR(wcnss->smd_edge) : 0;
-}
-
-static void wcnss_smd_remove(struct rproc_subdev *subdev)
-{
-	struct qcom_wcnss *wcnss = container_of(subdev, struct qcom_wcnss, smd_subdev);
-
-	qcom_smd_unregister_edge(wcnss->smd_edge);
-	wcnss->smd_edge = NULL;
 }
 
 static int wcnss_init_regulators(struct qcom_wcnss *wcnss,
@@ -535,8 +489,6 @@ static int wcnss_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	rproc->fw_ops = &wcnss_fw_ops;
-
 	wcnss = (struct qcom_wcnss *)rproc->priv;
 	wcnss->dev = &pdev->dev;
 	wcnss->rproc = rproc;
@@ -599,9 +551,8 @@ static int wcnss_probe(struct platform_device *pdev)
 		}
 	}
 
-	wcnss->smd_node = of_get_child_by_name(pdev->dev.of_node, "smd-edge");
-	if (wcnss->smd_node)
-		rproc_add_subdev(rproc, &wcnss->smd_subdev, wcnss_smd_probe, wcnss_smd_remove);
+	qcom_add_smd_subdev(rproc, &wcnss->smd_subdev);
+	wcnss->sysmon = qcom_add_sysmon_subdev(rproc, "wcnss", WCNSS_SSCTL_ID);
 
 	ret = rproc_add(rproc);
 	if (ret)
@@ -621,9 +572,11 @@ static int wcnss_remove(struct platform_device *pdev)
 
 	of_platform_depopulate(&pdev->dev);
 
-	of_node_put(wcnss->smd_node);
 	qcom_smem_state_put(wcnss->state);
 	rproc_del(wcnss->rproc);
+
+	qcom_remove_sysmon_subdev(wcnss->sysmon);
+	qcom_remove_smd_subdev(wcnss->rproc, &wcnss->smd_subdev);
 	rproc_free(wcnss->rproc);
 
 	return 0;

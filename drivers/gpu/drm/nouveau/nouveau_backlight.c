@@ -65,7 +65,7 @@ static int
 nv40_get_intensity(struct backlight_device *bd)
 {
 	struct nouveau_drm *drm = bl_get_data(bd);
-	struct nvif_object *device = &drm->device.object;
+	struct nvif_object *device = &drm->client.device.object;
 	int val = (nvif_rd32(device, NV40_PMC_BACKLIGHT) &
 				   NV40_PMC_BACKLIGHT_MASK) >> 16;
 
@@ -76,7 +76,7 @@ static int
 nv40_set_intensity(struct backlight_device *bd)
 {
 	struct nouveau_drm *drm = bl_get_data(bd);
-	struct nvif_object *device = &drm->device.object;
+	struct nvif_object *device = &drm->client.device.object;
 	int val = bd->props.brightness;
 	int reg = nvif_rd32(device, NV40_PMC_BACKLIGHT);
 
@@ -96,7 +96,7 @@ static int
 nv40_backlight_init(struct drm_connector *connector)
 {
 	struct nouveau_drm *drm = nouveau_drm(connector->dev);
-	struct nvif_object *device = &drm->device.object;
+	struct nvif_object *device = &drm->client.device.object;
 	struct backlight_properties props;
 	struct backlight_device *bd;
 	struct backlight_connector bl_connector;
@@ -133,8 +133,8 @@ nv50_get_intensity(struct backlight_device *bd)
 {
 	struct nouveau_encoder *nv_encoder = bl_get_data(bd);
 	struct nouveau_drm *drm = nouveau_drm(nv_encoder->base.base.dev);
-	struct nvif_object *device = &drm->device.object;
-	int or = nv_encoder->or;
+	struct nvif_object *device = &drm->client.device.object;
+	int or = ffs(nv_encoder->dcb->or) - 1;
 	u32 div = 1025;
 	u32 val;
 
@@ -148,8 +148,8 @@ nv50_set_intensity(struct backlight_device *bd)
 {
 	struct nouveau_encoder *nv_encoder = bl_get_data(bd);
 	struct nouveau_drm *drm = nouveau_drm(nv_encoder->base.base.dev);
-	struct nvif_object *device = &drm->device.object;
-	int or = nv_encoder->or;
+	struct nvif_object *device = &drm->client.device.object;
+	int or = ffs(nv_encoder->dcb->or) - 1;
 	u32 div = 1025;
 	u32 val = (bd->props.brightness * div) / 100;
 
@@ -169,8 +169,8 @@ nva3_get_intensity(struct backlight_device *bd)
 {
 	struct nouveau_encoder *nv_encoder = bl_get_data(bd);
 	struct nouveau_drm *drm = nouveau_drm(nv_encoder->base.base.dev);
-	struct nvif_object *device = &drm->device.object;
-	int or = nv_encoder->or;
+	struct nvif_object *device = &drm->client.device.object;
+	int or = ffs(nv_encoder->dcb->or) - 1;
 	u32 div, val;
 
 	div  = nvif_rd32(device, NV50_PDISP_SOR_PWM_DIV(or));
@@ -187,8 +187,8 @@ nva3_set_intensity(struct backlight_device *bd)
 {
 	struct nouveau_encoder *nv_encoder = bl_get_data(bd);
 	struct nouveau_drm *drm = nouveau_drm(nv_encoder->base.base.dev);
-	struct nvif_object *device = &drm->device.object;
-	int or = nv_encoder->or;
+	struct nvif_object *device = &drm->client.device.object;
+	int or = ffs(nv_encoder->dcb->or) - 1;
 	u32 div, val;
 
 	div = nvif_rd32(device, NV50_PDISP_SOR_PWM_DIV(or));
@@ -213,7 +213,7 @@ static int
 nv50_backlight_init(struct drm_connector *connector)
 {
 	struct nouveau_drm *drm = nouveau_drm(connector->dev);
-	struct nvif_object *device = &drm->device.object;
+	struct nvif_object *device = &drm->client.device.object;
 	struct nouveau_encoder *nv_encoder;
 	struct backlight_properties props;
 	struct backlight_device *bd;
@@ -228,12 +228,12 @@ nv50_backlight_init(struct drm_connector *connector)
 			return -ENODEV;
 	}
 
-	if (!nvif_rd32(device, NV50_PDISP_SOR_PWM_CTL(nv_encoder->or)))
+	if (!nvif_rd32(device, NV50_PDISP_SOR_PWM_CTL(ffs(nv_encoder->dcb->or) - 1)))
 		return 0;
 
-	if (drm->device.info.chipset <= 0xa0 ||
-	    drm->device.info.chipset == 0xaa ||
-	    drm->device.info.chipset == 0xac)
+	if (drm->client.device.info.chipset <= 0xa0 ||
+	    drm->client.device.info.chipset == 0xaa ||
+	    drm->client.device.info.chipset == 0xac)
 		ops = &nv50_bl_ops;
 	else
 		ops = &nva3_bl_ops;
@@ -265,17 +265,19 @@ int
 nouveau_backlight_init(struct drm_device *dev)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvif_device *device = &drm->device;
+	struct nvif_device *device = &drm->client.device;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
+
+	INIT_LIST_HEAD(&drm->bl_connectors);
 
 	if (apple_gmux_present()) {
 		NV_INFO(drm, "Apple GMUX detected: not registering Nouveau backlight interface\n");
 		return 0;
 	}
 
-	INIT_LIST_HEAD(&drm->bl_connectors);
-
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->connector_type != DRM_MODE_CONNECTOR_LVDS &&
 		    connector->connector_type != DRM_MODE_CONNECTOR_eDP)
 			continue;
@@ -292,7 +294,7 @@ nouveau_backlight_init(struct drm_device *dev)
 			break;
 		}
 	}
-
+	drm_connector_list_iter_end(&conn_iter);
 
 	return 0;
 }

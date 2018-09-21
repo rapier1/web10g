@@ -30,7 +30,7 @@
 /**
  * struct drm_property_enum - symbolic values for enumerations
  * @value: numeric property value for this enum entry
- * @head: list of enum values, linked to enum_list in &drm_property
+ * @head: list of enum values, linked to &drm_property.enum_list
  * @name: symbolic name for the enum
  *
  * For enumeration and bitmask properties this structure stores the symbolic
@@ -191,18 +191,17 @@ struct drm_property {
  * struct drm_property_blob - Blob data for &drm_property
  * @base: base KMS object
  * @dev: DRM device
- * @head_global: entry on the global blob list in &drm_mode_config
- *	property_blob_list.
- * @head_file: entry on the per-file blob list in &drm_file blobs list.
+ * @head_global: entry on the global blob list in
+ * 	&drm_mode_config.property_blob_list.
+ * @head_file: entry on the per-file blob list in &drm_file.blobs list.
  * @length: size of the blob in bytes, invariant over the lifetime of the object
  * @data: actual data, embedded at the end of this structure
  *
  * Blobs are used to store bigger values than what fits directly into the 64
  * bits available for a &drm_property.
  *
- * Blobs are reference counted using drm_property_reference_blob() and
- * drm_property_unreference_blob(). They are created using
- * drm_property_create_blob().
+ * Blobs are reference counted using drm_property_blob_get() and
+ * drm_property_blob_put(). They are created using drm_property_create_blob().
  */
 struct drm_property_blob {
 	struct drm_mode_object base;
@@ -210,12 +209,12 @@ struct drm_property_blob {
 	struct list_head head_global;
 	struct list_head head_file;
 	size_t length;
-	unsigned char data[];
+	void *data;
 };
 
 struct drm_prop_enum_list {
 	int type;
-	char *name;
+	const char *name;
 };
 
 #define obj_to_property(x) container_of(x, struct drm_property, base)
@@ -238,28 +237,30 @@ static inline bool drm_property_type_is(struct drm_property *property,
 	return property->flags & type;
 }
 
-struct drm_property *drm_property_create(struct drm_device *dev, int flags,
-					 const char *name, int num_values);
-struct drm_property *drm_property_create_enum(struct drm_device *dev, int flags,
-					      const char *name,
+struct drm_property *drm_property_create(struct drm_device *dev,
+					 u32 flags, const char *name,
+					 int num_values);
+struct drm_property *drm_property_create_enum(struct drm_device *dev,
+					      u32 flags, const char *name,
 					      const struct drm_prop_enum_list *props,
 					      int num_values);
 struct drm_property *drm_property_create_bitmask(struct drm_device *dev,
-						 int flags, const char *name,
+						 u32 flags, const char *name,
 						 const struct drm_prop_enum_list *props,
 						 int num_props,
 						 uint64_t supported_bits);
-struct drm_property *drm_property_create_range(struct drm_device *dev, int flags,
-					       const char *name,
+struct drm_property *drm_property_create_range(struct drm_device *dev,
+					       u32 flags, const char *name,
 					       uint64_t min, uint64_t max);
 struct drm_property *drm_property_create_signed_range(struct drm_device *dev,
-						      int flags, const char *name,
+						      u32 flags, const char *name,
 						      int64_t min, int64_t max);
 struct drm_property *drm_property_create_object(struct drm_device *dev,
-						int flags, const char *name, uint32_t type);
-struct drm_property *drm_property_create_bool(struct drm_device *dev, int flags,
-					      const char *name);
-int drm_property_add_enum(struct drm_property *property, int index,
+						u32 flags, const char *name,
+						uint32_t type);
+struct drm_property *drm_property_create_bool(struct drm_device *dev,
+					      u32 flags, const char *name);
+int drm_property_add_enum(struct drm_property *property,
 			  uint64_t value, const char *name);
 void drm_property_destroy(struct drm_device *dev, struct drm_property *property);
 
@@ -274,21 +275,25 @@ int drm_property_replace_global_blob(struct drm_device *dev,
 				     const void *data,
 				     struct drm_mode_object *obj_holds_id,
 				     struct drm_property *prop_holds_id);
-struct drm_property_blob *drm_property_reference_blob(struct drm_property_blob *blob);
-void drm_property_unreference_blob(struct drm_property_blob *blob);
+bool drm_property_replace_blob(struct drm_property_blob **blob,
+			       struct drm_property_blob *new_blob);
+struct drm_property_blob *drm_property_blob_get(struct drm_property_blob *blob);
+void drm_property_blob_put(struct drm_property_blob *blob);
 
 /**
- * drm_connector_find - find property object
+ * drm_property_find - find property object
  * @dev: DRM device
+ * @file_priv: drm file to check for lease against.
  * @id: property object id
  *
  * This function looks up the property object specified by id and returns it.
  */
 static inline struct drm_property *drm_property_find(struct drm_device *dev,
+						     struct drm_file *file_priv,
 						     uint32_t id)
 {
 	struct drm_mode_object *mo;
-	mo = drm_mode_object_find(dev, id, DRM_MODE_OBJECT_PROPERTY);
+	mo = drm_mode_object_find(dev, file_priv, id, DRM_MODE_OBJECT_PROPERTY);
 	return mo ? obj_to_property(mo) : NULL;
 }
 

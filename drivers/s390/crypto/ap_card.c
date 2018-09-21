@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright IBM Corp. 2016
  * Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
@@ -56,11 +57,11 @@ static ssize_t ap_functions_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "0x%08X\n", ac->functions);
 }
 
-static DEVICE_ATTR(ap_functions, 0444, ap_functions_show, NULL);
+static DEVICE_ATTR_RO(ap_functions);
 
-static ssize_t ap_request_count_show(struct device *dev,
-				     struct device_attribute *attr,
-				     char *buf)
+static ssize_t ap_req_count_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf)
 {
 	struct ap_card *ac = to_ap_card(dev);
 	unsigned int req_cnt;
@@ -72,7 +73,23 @@ static ssize_t ap_request_count_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", req_cnt);
 }
 
-static DEVICE_ATTR(request_count, 0444, ap_request_count_show, NULL);
+static ssize_t ap_req_count_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct ap_card *ac = to_ap_card(dev);
+	struct ap_queue *aq;
+
+	spin_lock_bh(&ap_list_lock);
+	for_each_ap_queue(aq, ac)
+		aq->total_request_count = 0;
+	spin_unlock_bh(&ap_list_lock);
+	atomic_set(&ac->total_request_count, 0);
+
+	return count;
+}
+
+static DEVICE_ATTR(request_count, 0644, ap_req_count_show, ap_req_count_store);
 
 static ssize_t ap_requestq_count_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
@@ -137,32 +154,37 @@ static const struct attribute_group *ap_card_dev_attr_groups[] = {
 	NULL
 };
 
-struct device_type ap_card_type = {
+static struct device_type ap_card_type = {
 	.name = "ap_card",
 	.groups = ap_card_dev_attr_groups,
 };
 
 static void ap_card_device_release(struct device *dev)
 {
-	kfree(to_ap_card(dev));
+	struct ap_card *ac = to_ap_card(dev);
+
+	if (!list_empty(&ac->list)) {
+		spin_lock_bh(&ap_list_lock);
+		list_del_init(&ac->list);
+		spin_unlock_bh(&ap_list_lock);
+	}
+	kfree(ac);
 }
 
-struct ap_card *ap_card_create(int id, int queue_depth, int device_type,
-			       unsigned int functions)
+struct ap_card *ap_card_create(int id, int queue_depth, int raw_type,
+			       int comp_type, unsigned int functions)
 {
 	struct ap_card *ac;
 
 	ac = kzalloc(sizeof(*ac), GFP_KERNEL);
 	if (!ac)
 		return NULL;
+	INIT_LIST_HEAD(&ac->list);
 	INIT_LIST_HEAD(&ac->queues);
 	ac->ap_dev.device.release = ap_card_device_release;
 	ac->ap_dev.device.type = &ap_card_type;
-	ac->ap_dev.device_type = device_type;
-	/* CEX6 toleration: map to CEX5 */
-	if (device_type == AP_DEVICE_TYPE_CEX6)
-		ac->ap_dev.device_type = AP_DEVICE_TYPE_CEX5;
-	ac->raw_hwtype = device_type;
+	ac->ap_dev.device_type = comp_type;
+	ac->raw_hwtype = raw_type;
 	ac->queue_depth = queue_depth;
 	ac->functions = functions;
 	ac->id = id;

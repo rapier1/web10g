@@ -40,12 +40,14 @@
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
 
-#include <linux/i2c/i2c-hid.h>
+#include <linux/platform_data/i2c-hid.h>
 
 #include "../hid-ids.h"
 
 /* quirks to control the device */
 #define I2C_HID_QUIRK_SET_PWR_WAKEUP_DEV	BIT(0)
+#define I2C_HID_QUIRK_NO_IRQ_AFTER_RESET	BIT(1)
+#define I2C_HID_QUIRK_RESEND_REPORT_DESCR	BIT(2)
 
 /* flags */
 #define I2C_HID_STARTED		0
@@ -129,8 +131,6 @@ static const struct i2c_hid_cmd hid_no_cmd =		{ .length = 0 };
  * static const struct i2c_hid_cmd hid_set_protocol_cmd = { I2C_HID_CMD(0x07) };
  */
 
-static DEFINE_MUTEX(i2c_hid_open_mut);
-
 /* The main device structure */
 struct i2c_hid {
 	struct i2c_client	*client;	/* i2c client */
@@ -143,10 +143,10 @@ struct i2c_hid {
 						   * register of the HID
 						   * descriptor. */
 	unsigned int		bufsize;	/* i2c buffer size */
-	char			*inbuf;		/* Input buffer */
-	char			*rawbuf;	/* Raw Input buffer */
-	char			*cmdbuf;	/* Command buffer */
-	char			*argsbuf;	/* Command arguments buffer */
+	u8			*inbuf;		/* Input buffer */
+	u8			*rawbuf;	/* Raw Input buffer */
+	u8			*cmdbuf;	/* Command buffer */
+	u8			*argsbuf;	/* Command arguments buffer */
 
 	unsigned long		flags;		/* device flags */
 	unsigned long		quirks;		/* Various quirks */
@@ -168,6 +168,12 @@ static const struct i2c_hid_quirks {
 		I2C_HID_QUIRK_SET_PWR_WAKEUP_DEV },
 	{ USB_VENDOR_ID_WEIDA, USB_DEVICE_ID_WEIDA_8755,
 		I2C_HID_QUIRK_SET_PWR_WAKEUP_DEV },
+	{ I2C_VENDOR_ID_HANTICK, I2C_PRODUCT_ID_HANTICK_5288,
+		I2C_HID_QUIRK_NO_IRQ_AFTER_RESET },
+	{ I2C_VENDOR_ID_RAYD, I2C_PRODUCT_ID_RAYD_3118,
+		I2C_HID_QUIRK_RESEND_REPORT_DESCR },
+	{ USB_VENDOR_ID_SIS_TOUCH, USB_DEVICE_ID_SIS10FB_TOUCH,
+		I2C_HID_QUIRK_RESEND_REPORT_DESCR },
 	{ 0, 0 }
 };
 
@@ -252,7 +258,9 @@ static int __i2c_hid_command(struct i2c_client *client,
 
 	ret = 0;
 
-	if (wait) {
+	if (wait && (ihid->quirks & I2C_HID_QUIRK_NO_IRQ_AFTER_RESET)) {
+		msleep(100);
+	} else if (wait) {
 		i2c_hid_dbg(ihid, "%s: waiting...\n", __func__);
 		if (!wait_event_timeout(ihid->wait,
 				!test_bit(I2C_HID_RESET_PENDING, &ihid->flags),
@@ -450,7 +458,8 @@ out_unlock:
 
 static void i2c_hid_get_input(struct i2c_hid *ihid)
 {
-	int ret, ret_size;
+	int ret;
+	u32 ret_size;
 	int size = le16_to_cpu(ihid->hdesc.wMaxInputLength);
 
 	if (size > ihid->bufsize)
@@ -475,7 +484,7 @@ static void i2c_hid_get_input(struct i2c_hid *ihid)
 		return;
 	}
 
-	if (ret_size > size) {
+	if ((ret_size > size) || (ret_size < 2)) {
 		dev_err(&ihid->client->dev, "%s: incomplete report (%d/%d)\n",
 			__func__, size, ret_size);
 		return;
@@ -506,66 +515,6 @@ static int i2c_hid_get_report_length(struct hid_report *report)
 {
 	return ((report->size - 1) >> 3) + 1 +
 		report->device->report_enum[report->type].numbered + 2;
-}
-
-static void i2c_hid_init_report(struct hid_report *report, u8 *buffer,
-	size_t bufsize)
-{
-	struct hid_device *hid = report->device;
-	struct i2c_client *client = hid->driver_data;
-	struct i2c_hid *ihid = i2c_get_clientdata(client);
-	unsigned int size, ret_size;
-
-	size = i2c_hid_get_report_length(report);
-	if (i2c_hid_get_report(client,
-			report->type == HID_FEATURE_REPORT ? 0x03 : 0x01,
-			report->id, buffer, size))
-		return;
-
-	i2c_hid_dbg(ihid, "report (len=%d): %*ph\n", size, size, buffer);
-
-	ret_size = buffer[0] | (buffer[1] << 8);
-
-	if (ret_size != size) {
-		dev_err(&client->dev, "error in %s size:%d / ret_size:%d\n",
-			__func__, size, ret_size);
-		return;
-	}
-
-	/* hid->driver_lock is held as we are in probe function,
-	 * we just need to setup the input fields, so using
-	 * hid_report_raw_event is safe. */
-	hid_report_raw_event(hid, report->type, buffer + 2, size - 2, 1);
-}
-
-/*
- * Initialize all reports
- */
-static void i2c_hid_init_reports(struct hid_device *hid)
-{
-	struct hid_report *report;
-	struct i2c_client *client = hid->driver_data;
-	struct i2c_hid *ihid = i2c_get_clientdata(client);
-	u8 *inbuf = kzalloc(ihid->bufsize, GFP_KERNEL);
-
-	if (!inbuf) {
-		dev_err(&client->dev, "can not retrieve initial reports\n");
-		return;
-	}
-
-	/*
-	 * The device must be powered on while we fetch initial reports
-	 * from it.
-	 */
-	pm_runtime_get_sync(&client->dev);
-
-	list_for_each_entry(report,
-		&hid->report_enum[HID_FEATURE_REPORT].report_list, list)
-		i2c_hid_init_report(report, inbuf, ihid->bufsize);
-
-	pm_runtime_put(&client->dev);
-
-	kfree(inbuf);
 }
 
 /*
@@ -603,7 +552,8 @@ static int i2c_hid_alloc_buffers(struct i2c_hid *ihid, size_t report_size)
 {
 	/* the worst case is computed from the set_report command with a
 	 * reportID > 15 and the maximum report length */
-	int args_len = sizeof(__u8) + /* optional ReportID byte */
+	int args_len = sizeof(__u8) + /* ReportID */
+		       sizeof(__u8) + /* optional ReportID byte */
 		       sizeof(__u16) + /* data register */
 		       sizeof(__u16) + /* size of the report */
 		       report_size; /* report */
@@ -789,9 +739,6 @@ static int i2c_hid_start(struct hid_device *hid)
 			return ret;
 	}
 
-	if (!(hid->quirks & HID_QUIRK_NO_INIT_REPORTS))
-		i2c_hid_init_reports(hid);
-
 	return 0;
 }
 
@@ -806,18 +753,12 @@ static int i2c_hid_open(struct hid_device *hid)
 	struct i2c_hid *ihid = i2c_get_clientdata(client);
 	int ret = 0;
 
-	mutex_lock(&i2c_hid_open_mut);
-	if (!hid->open++) {
-		ret = pm_runtime_get_sync(&client->dev);
-		if (ret < 0) {
-			hid->open--;
-			goto done;
-		}
-		set_bit(I2C_HID_STARTED, &ihid->flags);
-	}
-done:
-	mutex_unlock(&i2c_hid_open_mut);
-	return ret < 0 ? ret : 0;
+	ret = pm_runtime_get_sync(&client->dev);
+	if (ret < 0)
+		return ret;
+
+	set_bit(I2C_HID_STARTED, &ihid->flags);
+	return 0;
 }
 
 static void i2c_hid_close(struct hid_device *hid)
@@ -825,18 +766,10 @@ static void i2c_hid_close(struct hid_device *hid)
 	struct i2c_client *client = hid->driver_data;
 	struct i2c_hid *ihid = i2c_get_clientdata(client);
 
-	/* protecting hid->open to make sure we don't restart
-	 * data acquistion due to a resumption we no longer
-	 * care about
-	 */
-	mutex_lock(&i2c_hid_open_mut);
-	if (!--hid->open) {
-		clear_bit(I2C_HID_STARTED, &ihid->flags);
+	clear_bit(I2C_HID_STARTED, &ihid->flags);
 
-		/* Save some power */
-		pm_runtime_put(&client->dev);
-	}
-	mutex_unlock(&i2c_hid_open_mut);
+	/* Save some power */
+	pm_runtime_put(&client->dev);
 }
 
 static int i2c_hid_power(struct hid_device *hid, int lvl)
@@ -857,7 +790,7 @@ static int i2c_hid_power(struct hid_device *hid, int lvl)
 	return 0;
 }
 
-static struct hid_ll_driver i2c_hid_ll_driver = {
+struct hid_ll_driver i2c_hid_ll_driver = {
 	.parse = i2c_hid_parse,
 	.start = i2c_hid_start,
 	.stop = i2c_hid_stop,
@@ -867,6 +800,7 @@ static struct hid_ll_driver i2c_hid_ll_driver = {
 	.output_report = i2c_hid_output_report,
 	.raw_request = i2c_hid_raw_request,
 };
+EXPORT_SYMBOL_GPL(i2c_hid_ll_driver);
 
 static int i2c_hid_init_irq(struct i2c_client *client)
 {
@@ -932,25 +866,38 @@ static int i2c_hid_fetch_hid_descriptor(struct i2c_hid *ihid)
 }
 
 #ifdef CONFIG_ACPI
+static const struct acpi_device_id i2c_hid_acpi_blacklist[] = {
+	/*
+	 * The CHPN0001 ACPI device, which is used to describe the Chipone
+	 * ICN8505 controller, has a _CID of PNP0C50 but is not HID compatible.
+	 */
+	{"CHPN0001", 0 },
+	{ },
+};
+
 static int i2c_hid_acpi_pdata(struct i2c_client *client,
 		struct i2c_hid_platform_data *pdata)
 {
-	static u8 i2c_hid_guid[] = {
-		0xF7, 0xF6, 0xDF, 0x3C, 0x67, 0x42, 0x55, 0x45,
-		0xAD, 0x05, 0xB3, 0x0A, 0x3D, 0x89, 0x38, 0xDE,
-	};
+	static guid_t i2c_hid_guid =
+		GUID_INIT(0x3CDFF6F7, 0x4267, 0x4555,
+			  0xAD, 0x05, 0xB3, 0x0A, 0x3D, 0x89, 0x38, 0xDE);
 	union acpi_object *obj;
 	struct acpi_device *adev;
 	acpi_handle handle;
 
 	handle = ACPI_HANDLE(&client->dev);
-	if (!handle || acpi_bus_get_device(handle, &adev))
+	if (!handle || acpi_bus_get_device(handle, &adev)) {
+		dev_err(&client->dev, "Error could not get ACPI device\n");
+		return -ENODEV;
+	}
+
+	if (acpi_match_device_ids(adev, i2c_hid_acpi_blacklist) == 0)
 		return -ENODEV;
 
-	obj = acpi_evaluate_dsm_typed(handle, i2c_hid_guid, 1, 1, NULL,
+	obj = acpi_evaluate_dsm_typed(handle, &i2c_hid_guid, 1, 1, NULL,
 				      ACPI_TYPE_INTEGER);
 	if (!obj) {
-		dev_err(&client->dev, "device _DSM execution failed\n");
+		dev_err(&client->dev, "Error _DSM call to get HID descriptor address failed\n");
 		return -ENODEV;
 	}
 
@@ -958,6 +905,15 @@ static int i2c_hid_acpi_pdata(struct i2c_client *client,
 	ACPI_FREE(obj);
 
 	return 0;
+}
+
+static void i2c_hid_acpi_fix_up_power(struct device *dev)
+{
+	struct acpi_device *adev;
+
+	adev = ACPI_COMPANION(dev);
+	if (adev)
+		acpi_device_fix_up_power(adev);
 }
 
 static const struct acpi_device_id i2c_hid_acpi_match[] = {
@@ -972,6 +928,8 @@ static inline int i2c_hid_acpi_pdata(struct i2c_client *client,
 {
 	return -ENODEV;
 }
+
+static inline void i2c_hid_acpi_fix_up_power(struct device *dev) {}
 #endif
 
 #ifdef CONFIG_OF
@@ -1010,6 +968,16 @@ static inline int i2c_hid_of_probe(struct i2c_client *client,
 }
 #endif
 
+static void i2c_hid_fwnode_probe(struct i2c_client *client,
+				 struct i2c_hid_platform_data *pdata)
+{
+	u32 val;
+
+	if (!device_property_read_u32(&client->dev, "post-power-on-delay-ms",
+				      &val))
+		pdata->post_power_delay_ms = val;
+}
+
 static int i2c_hid_probe(struct i2c_client *client,
 			 const struct i2c_device_id *dev_id)
 {
@@ -1044,14 +1012,32 @@ static int i2c_hid_probe(struct i2c_client *client,
 			goto err;
 	} else if (!platform_data) {
 		ret = i2c_hid_acpi_pdata(client, &ihid->pdata);
-		if (ret) {
-			dev_err(&client->dev,
-				"HID register address not provided\n");
+		if (ret)
 			goto err;
-		}
 	} else {
 		ihid->pdata = *platform_data;
 	}
+
+	/* Parse platform agnostic common properties from ACPI / device tree */
+	i2c_hid_fwnode_probe(client, &ihid->pdata);
+
+	ihid->pdata.supply = devm_regulator_get(&client->dev, "vdd");
+	if (IS_ERR(ihid->pdata.supply)) {
+		ret = PTR_ERR(ihid->pdata.supply);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&client->dev, "Failed to get regulator: %d\n",
+				ret);
+		goto err;
+	}
+
+	ret = regulator_enable(ihid->pdata.supply);
+	if (ret < 0) {
+		dev_err(&client->dev, "Failed to enable regulator: %d\n",
+			ret);
+		goto err;
+	}
+	if (ihid->pdata.post_power_delay_ms)
+		msleep(ihid->pdata.post_power_delay_ms);
 
 	i2c_set_clientdata(client, ihid);
 
@@ -1068,12 +1054,22 @@ static int i2c_hid_probe(struct i2c_client *client,
 	 * real computation later. */
 	ret = i2c_hid_alloc_buffers(ihid, HID_MIN_BUFFER_SIZE);
 	if (ret < 0)
-		goto err;
+		goto err_regulator;
+
+	i2c_hid_acpi_fix_up_power(&client->dev);
 
 	pm_runtime_get_noresume(&client->dev);
 	pm_runtime_set_active(&client->dev);
 	pm_runtime_enable(&client->dev);
 	device_enable_async_suspend(&client->dev);
+
+	/* Make sure there is something at this address */
+	ret = i2c_smbus_read_byte(client);
+	if (ret < 0) {
+		dev_dbg(&client->dev, "nothing at this address: %d\n", ret);
+		ret = -ENXIO;
+		goto err_pm;
+	}
 
 	ret = i2c_hid_fetch_hid_descriptor(ihid);
 	if (ret < 0)
@@ -1125,6 +1121,9 @@ err_pm:
 	pm_runtime_put_noidle(&client->dev);
 	pm_runtime_disable(&client->dev);
 
+err_regulator:
+	regulator_disable(ihid->pdata.supply);
+
 err:
 	i2c_hid_free_buffers(ihid);
 	kfree(ihid);
@@ -1148,6 +1147,8 @@ static int i2c_hid_remove(struct i2c_client *client)
 
 	if (ihid->bufsize)
 		i2c_hid_free_buffers(ihid);
+
+	regulator_disable(ihid->pdata.supply);
 
 	kfree(ihid);
 
@@ -1199,6 +1200,10 @@ static int i2c_hid_suspend(struct device *dev)
 		else
 			hid_warn(hid, "Failed to enable irq wake: %d\n",
 				wake_status);
+	} else {
+		ret = regulator_disable(ihid->pdata.supply);
+		if (ret < 0)
+			hid_warn(hid, "Failed to disable supply: %d\n", ret);
 	}
 
 	return 0;
@@ -1212,7 +1217,13 @@ static int i2c_hid_resume(struct device *dev)
 	struct hid_device *hid = ihid->hid;
 	int wake_status;
 
-	if (device_may_wakeup(&client->dev) && ihid->irq_wake_enabled) {
+	if (!device_may_wakeup(&client->dev)) {
+		ret = regulator_enable(ihid->pdata.supply);
+		if (ret < 0)
+			hid_warn(hid, "Failed to enable supply: %d\n", ret);
+		if (ihid->pdata.post_power_delay_ms)
+			msleep(ihid->pdata.post_power_delay_ms);
+	} else if (ihid->irq_wake_enabled) {
 		wake_status = disable_irq_wake(client->irq);
 		if (!wake_status)
 			ihid->irq_wake_enabled = false;
@@ -1230,6 +1241,16 @@ static int i2c_hid_resume(struct device *dev)
 	ret = i2c_hid_hwreset(client);
 	if (ret)
 		return ret;
+
+	/* RAYDIUM device (2386:3118) need to re-send report descr cmd
+	 * after resume, after this it will be back normal.
+	 * otherwise it issues too many incomplete reports.
+	 */
+	if (ihid->quirks & I2C_HID_QUIRK_RESEND_REPORT_DESCR) {
+		ret = i2c_hid_command(client, &hid_report_descr_cmd, NULL, 0);
+		if (ret)
+			return ret;
+	}
 
 	if (hid->driver && hid->driver->reset_resume) {
 		ret = hid->driver->reset_resume(hid);

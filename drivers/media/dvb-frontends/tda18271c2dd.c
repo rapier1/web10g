@@ -14,12 +14,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA
- * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
+ * To obtain the license, point your browser to
+ * http://www.gnu.org/copyleft/gpl.html
  */
 
 #include <linux/kernel.h>
@@ -31,7 +27,7 @@
 #include <linux/i2c.h>
 #include <asm/div64.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "tda18271c2dd.h"
 
 /* Max transfer size done by I2C transfer functions */
@@ -678,7 +674,6 @@ static int PowerScan(struct tda_state *state,
 			Count = 200000;
 			wait = true;
 		}
-		status = status;
 		if (status < 0)
 			break;
 		if (CID_Gain >= CID_Target) {

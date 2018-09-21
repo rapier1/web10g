@@ -1,17 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_SPARC64_TOPOLOGY_H
 #define _ASM_SPARC64_TOPOLOGY_H
 
 #ifdef CONFIG_NUMA
 
 #include <asm/mmzone.h>
-#include <asm/cpudata.h>
 
 static inline int cpu_to_node(int cpu)
 {
 	return numa_cpu_lookup_table[cpu];
 }
-
-#define parent_node(node)	(node)
 
 #define cpumask_of_node(node) ((node) == -1 ?				\
 			       cpu_all_mask :				\
@@ -42,6 +40,9 @@ int __node_distance(int, int);
 #endif /* !(CONFIG_NUMA) */
 
 #ifdef CONFIG_SMP
+
+#include <asm/cpudata.h>
+
 #define topology_physical_package_id(cpu)	(cpu_data(cpu).proc_id)
 #define topology_core_id(cpu)			(cpu_data(cpu).core_id)
 #define topology_core_cpumask(cpu)		(&cpu_core_sib_map[cpu])

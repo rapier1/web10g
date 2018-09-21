@@ -1,3 +1,35 @@
+/* QLogic qed NIC Driver
+ * Copyright (c) 2015-2016  QLogic Corporation
+ *
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and /or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #include <linux/crc32.h>
 #include "qed.h"
 #include "qed_dev_api.h"
@@ -93,10 +125,11 @@ int qed_selftest_nvram(struct qed_dev *cdev)
 	}
 
 	/* Acquire from MFW the amount of available images */
-	rc = qed_mcp_bist_nvm_test_get_num_images(p_hwfn, p_ptt, &num_images);
+	rc = qed_mcp_bist_nvm_get_num_images(p_hwfn, p_ptt, &num_images);
 	if (rc || !num_images) {
 		DP_ERR(p_hwfn, "Failed getting number of images\n");
-		return -EINVAL;
+		rc = -EINVAL;
+		goto err0;
 	}
 
 	/* Iterate over images and validate CRC */
@@ -104,8 +137,8 @@ int qed_selftest_nvram(struct qed_dev *cdev)
 		/* This mailbox returns information about the image required for
 		 * reading it.
 		 */
-		rc = qed_mcp_bist_nvm_test_get_image_att(p_hwfn, p_ptt,
-							 &image_att, i);
+		rc = qed_mcp_bist_nvm_get_image_att(p_hwfn, p_ptt,
+						    &image_att, i);
 		if (rc) {
 			DP_ERR(p_hwfn,
 			       "Failed getting image index %d attributes\n",

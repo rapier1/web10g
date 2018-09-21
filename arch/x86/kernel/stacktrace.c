@@ -4,6 +4,8 @@
  *  Copyright (C) 2006-2009 Red Hat, Inc., Ingo Molnar <mingo@redhat.com>
  */
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task_stack.h>
 #include <linux/stacktrace.h>
 #include <linux/export.h>
 #include <linux/uaccess.h>
@@ -28,7 +30,7 @@ static int save_stack_address(struct stack_trace *trace, unsigned long addr,
 	return 0;
 }
 
-static void __save_stack_trace(struct stack_trace *trace,
+static void noinline __save_stack_trace(struct stack_trace *trace,
 			       struct task_struct *task, struct pt_regs *regs,
 			       bool nosched)
 {
@@ -54,6 +56,7 @@ static void __save_stack_trace(struct stack_trace *trace,
  */
 void save_stack_trace(struct stack_trace *trace)
 {
+	trace->skip++;
 	__save_stack_trace(trace, current, NULL, false);
 }
 EXPORT_SYMBOL_GPL(save_stack_trace);
@@ -68,11 +71,113 @@ void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
 	if (!try_get_task_stack(tsk))
 		return;
 
+	if (tsk == current)
+		trace->skip++;
 	__save_stack_trace(trace, tsk, NULL, true);
 
 	put_task_stack(tsk);
 }
 EXPORT_SYMBOL_GPL(save_stack_trace_tsk);
+
+#ifdef CONFIG_HAVE_RELIABLE_STACKTRACE
+
+#define STACKTRACE_DUMP_ONCE(task) ({				\
+	static bool __section(.data.unlikely) __dumped;		\
+								\
+	if (!__dumped) {					\
+		__dumped = true;				\
+		WARN_ON(1);					\
+		show_stack(task, NULL);				\
+	}							\
+})
+
+static int __always_inline
+__save_stack_trace_reliable(struct stack_trace *trace,
+			    struct task_struct *task)
+{
+	struct unwind_state state;
+	struct pt_regs *regs;
+	unsigned long addr;
+
+	for (unwind_start(&state, task, NULL, NULL); !unwind_done(&state);
+	     unwind_next_frame(&state)) {
+
+		regs = unwind_get_entry_regs(&state, NULL);
+		if (regs) {
+			/*
+			 * Kernel mode registers on the stack indicate an
+			 * in-kernel interrupt or exception (e.g., preemption
+			 * or a page fault), which can make frame pointers
+			 * unreliable.
+			 */
+			if (!user_mode(regs))
+				return -EINVAL;
+
+			/*
+			 * The last frame contains the user mode syscall
+			 * pt_regs.  Skip it and finish the unwind.
+			 */
+			unwind_next_frame(&state);
+			if (!unwind_done(&state)) {
+				STACKTRACE_DUMP_ONCE(task);
+				return -EINVAL;
+			}
+			break;
+		}
+
+		addr = unwind_get_return_address(&state);
+
+		/*
+		 * A NULL or invalid return address probably means there's some
+		 * generated code which __kernel_text_address() doesn't know
+		 * about.
+		 */
+		if (!addr) {
+			STACKTRACE_DUMP_ONCE(task);
+			return -EINVAL;
+		}
+
+		if (save_stack_address(trace, addr, false))
+			return -EINVAL;
+	}
+
+	/* Check for stack corruption */
+	if (unwind_error(&state)) {
+		STACKTRACE_DUMP_ONCE(task);
+		return -EINVAL;
+	}
+
+	if (trace->nr_entries < trace->max_entries)
+		trace->entries[trace->nr_entries++] = ULONG_MAX;
+
+	return 0;
+}
+
+/*
+ * This function returns an error if it detects any unreliable features of the
+ * stack.  Otherwise it guarantees that the stack trace is reliable.
+ *
+ * If the task is not 'current', the caller *must* ensure the task is inactive.
+ */
+int save_stack_trace_tsk_reliable(struct task_struct *tsk,
+				  struct stack_trace *trace)
+{
+	int ret;
+
+	/*
+	 * If the task doesn't have a stack (e.g., a zombie), the stack is
+	 * "reliably" empty.
+	 */
+	if (!try_get_task_stack(tsk))
+		return 0;
+
+	ret = __save_stack_trace_reliable(trace, tsk);
+
+	put_task_stack(tsk);
+
+	return ret;
+}
+#endif /* CONFIG_HAVE_RELIABLE_STACKTRACE */
 
 /* Userspace stacktrace - based on kernel/trace/trace_sysprof.c */
 
@@ -136,4 +241,3 @@ void save_stack_trace_user(struct stack_trace *trace)
 	if (trace->nr_entries < trace->max_entries)
 		trace->entries[trace->nr_entries++] = ULONG_MAX;
 }
-

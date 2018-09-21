@@ -14,7 +14,7 @@
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/dm-io.h>
-#include "dm-bufio.h"
+#include <linux/dm-bufio.h>
 
 #define DM_MSG_PREFIX "persistent snapshot"
 #define DM_CHUNK_SIZE_DEFAULT_SECTORS 32	/* 16KB */
@@ -741,7 +741,8 @@ static void persistent_commit_exception(struct dm_exception_store *store,
 	/*
 	 * Commit exceptions to disk.
 	 */
-	if (ps->valid && area_io(ps, REQ_OP_WRITE, REQ_PREFLUSH | REQ_FUA))
+	if (ps->valid && area_io(ps, REQ_OP_WRITE,
+				 REQ_PREFLUSH | REQ_FUA | REQ_SYNC))
 		ps->valid = 0;
 
 	/*

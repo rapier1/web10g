@@ -163,7 +163,7 @@ static int ef4_init_rx_buffers(struct ef4_rx_queue *rx_queue, bool atomic)
 	do {
 		page = ef4_reuse_page(rx_queue);
 		if (page == NULL) {
-			page = alloc_pages(__GFP_COLD | __GFP_COMP |
+			page = alloc_pages(__GFP_COMP |
 					   (atomic ? GFP_ATOMIC : GFP_KERNEL),
 					   efx->rx_buffer_order);
 			if (unlikely(page == NULL))
@@ -376,9 +376,9 @@ void ef4_fast_push_rx_descriptors(struct ef4_rx_queue *rx_queue, bool atomic)
 		ef4_nic_notify_rx_desc(rx_queue);
 }
 
-void ef4_rx_slow_fill(unsigned long context)
+void ef4_rx_slow_fill(struct timer_list *t)
 {
-	struct ef4_rx_queue *rx_queue = (struct ef4_rx_queue *)context;
+	struct ef4_rx_queue *rx_queue = from_timer(rx_queue, t, slow_fill);
 
 	/* Post an event to cause NAPI to run and refill the queue */
 	ef4_nic_generate_fill_event(rx_queue);
@@ -674,8 +674,7 @@ void __ef4_rx_packet(struct ef4_channel *channel)
 	if (unlikely(!(efx->net_dev->features & NETIF_F_RXCSUM)))
 		rx_buf->flags &= ~EF4_RX_PKT_CSUMMED;
 
-	if ((rx_buf->flags & EF4_RX_PKT_TCP) && !channel->type->receive_skb &&
-	    !ef4_channel_busy_polling(channel))
+	if ((rx_buf->flags & EF4_RX_PKT_TCP) && !channel->type->receive_skb)
 		ef4_rx_packet_gro(channel, rx_buf, channel->rx_pkt_n_frags, eh);
 	else
 		ef4_rx_deliver(channel, eh, rx_buf, channel->rx_pkt_n_frags);

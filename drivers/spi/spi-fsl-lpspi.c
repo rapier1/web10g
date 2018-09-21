@@ -1,19 +1,8 @@
-/*
- * Freescale i.MX7ULP LPSPI driver
- *
- * Copyright 2016 Freescale Semiconductor, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Freescale i.MX7ULP LPSPI driver
+//
+// Copyright 2016 Freescale Semiconductor, Inc.
 
 #include <linux/clk.h>
 #include <linux/completion.h>
@@ -366,7 +355,7 @@ static int fsl_lpspi_transfer_one_msg(struct spi_master *master,
 	struct spi_transfer *xfer;
 	bool is_first_xfer = true;
 	u32 temp;
-	int ret;
+	int ret = 0;
 
 	msg->status = 0;
 	msg->actual_length = 0;
@@ -512,9 +501,9 @@ static int fsl_lpspi_remove(struct platform_device *pdev)
 
 static struct platform_driver fsl_lpspi_driver = {
 	.driver = {
-		   .name = DRIVER_NAME,
-		   .of_match_table = fsl_lpspi_dt_ids,
-		   },
+		.name = DRIVER_NAME,
+		.of_match_table = fsl_lpspi_dt_ids,
+	},
 	.probe = fsl_lpspi_probe,
 	.remove = fsl_lpspi_remove,
 };

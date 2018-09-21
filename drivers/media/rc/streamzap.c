@@ -25,10 +25,6 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/device.h>
@@ -47,7 +43,7 @@
 #define USB_STREAMZAP_PRODUCT_ID	0x0000
 
 /* table of devices that work with this driver */
-static struct usb_device_id streamzap_table[] = {
+static const struct usb_device_id streamzap_table[] = {
 	/* Streamzap Remote Control */
 	{ USB_DEVICE(USB_STREAMZAP_VENDOR_ID, USB_STREAMZAP_PRODUCT_ID) },
 	/* Terminating entry */
@@ -195,7 +191,7 @@ static void sz_push_half_space(struct streamzap_ir *sz,
 	sz_push_full_space(sz, value & SZ_SPACE_MASK);
 }
 
-/**
+/*
  * streamzap_callback - usb IRQ handler callback
  *
  * This procedure is invoked on reception of data from
@@ -291,7 +287,7 @@ static struct rc_dev *streamzap_init_rc_dev(struct streamzap_ir *sz)
 	struct device *dev = sz->dev;
 	int ret;
 
-	rdev = rc_allocate_device();
+	rdev = rc_allocate_device(RC_DRIVER_IR_RAW);
 	if (!rdev) {
 		dev_err(dev, "remote dev allocation failed\n");
 		goto out;
@@ -303,13 +299,12 @@ static struct rc_dev *streamzap_init_rc_dev(struct streamzap_ir *sz)
 	usb_make_path(sz->usbdev, sz->phys, sizeof(sz->phys));
 	strlcat(sz->phys, "/input0", sizeof(sz->phys));
 
-	rdev->input_name = sz->name;
+	rdev->device_name = sz->name;
 	rdev->input_phys = sz->phys;
 	usb_to_input_id(sz->usbdev, &rdev->input_id);
 	rdev->dev.parent = dev;
 	rdev->priv = sz;
-	rdev->driver_type = RC_DRIVER_IR_RAW;
-	rdev->allowed_protocols = RC_BIT_ALL;
+	rdev->allowed_protocols = RC_PROTO_BIT_ALL_IR_DECODER;
 	rdev->driver_name = DRIVER_NAME;
 	rdev->map_name = RC_MAP_STREAMZAP;
 
@@ -326,7 +321,7 @@ out:
 	return NULL;
 }
 
-/**
+/*
  *	streamzap_probe
  *
  *	Called by usb-core to associated with a candidate device
@@ -455,7 +450,7 @@ free_sz:
 	return retval;
 }
 
-/**
+/*
  * streamzap_disconnect
  *
  * Called by the usb core when the device is removed from the system.

@@ -17,7 +17,7 @@ What is Linux?
   loading, shared copy-on-write executables, proper memory management,
   and multistack networking including IPv4 and IPv6.
 
-  It is distributed under the GNU General Public License - see the
+  It is distributed under the GNU General Public License v2 - see the
   accompanying COPYING file for more details.
 
 On what hardware does it run?
@@ -26,8 +26,8 @@ On what hardware does it run?
   Although originally developed first for 32-bit x86-based PCs (386 or higher),
   today Linux also runs on (at least) the Compaq Alpha AXP, Sun SPARC and
   UltraSPARC, Motorola 68000, PowerPC, PowerPC64, ARM, Hitachi SuperH, Cell,
-  IBM S/390, MIPS, HP PA-RISC, Intel IA-64, DEC VAX, AMD x86-64, AXIS CRIS,
-  Xtensa, Tilera TILE, AVR32, ARC and Renesas M32R architectures.
+  IBM S/390, MIPS, HP PA-RISC, Intel IA-64, DEC VAX, AMD x86-64 Xtensa, and
+  ARC architectures.
 
   Linux is easily portable to most general-purpose 32- or 64-bit architectures
   as long as they have a paged memory management unit (PMMU) and a port of the
@@ -54,12 +54,6 @@ Documentation
    :ref:`Documentation/process/changes.rst <changes>` file, as it
    contains information about the problems, which may result by upgrading
    your kernel.
-
- - The Documentation/DocBook/ subdirectory contains several guides for
-   kernel developers and users.  These guides can be rendered in a
-   number of formats:  PostScript (.ps), PDF, HTML, & man-pages, among others.
-   After installation, ``make psdocs``, ``make pdfdocs``, ``make htmldocs``,
-   or ``make mandocs`` will render the documentation in the requested format.
 
 Installing the kernel source
 ----------------------------
@@ -176,11 +170,6 @@ Configuring the kernel
                         your existing ./.config file and asking about
                         new config symbols.
 
-     "make silentoldconfig"
-                        Like above, but avoids cluttering the screen
-                        with questions already answered.
-                        Additionally updates the dependencies.
-
      "make olddefconfig"
                         Like above, but sets new symbols to their default
                         values without prompting.
@@ -229,6 +218,13 @@ Configuring the kernel
      "make localyesconfig" Similar to localmodconfig, except it will convert
                            all module options to built in (=y) options.
 
+     "make kvmconfig"   Enable additional options for kvm guest kernel support.
+
+     "make xenconfig"   Enable additional options for xen dom0 guest kernel
+                        support.
+
+     "make tinyconfig"  Configure the tiniest possible kernel.
+
    You can find more information on using the Linux kernel config tools
    in Documentation/kbuild/kconfig.txt.
 
@@ -236,7 +232,7 @@ Configuring the kernel
 
     - Having unnecessary drivers will make the kernel bigger, and can
       under some circumstances lead to problems: probing for a
-      nonexistent controller card may confuse your other controllers
+      nonexistent controller card may confuse your other controllers.
 
     - A kernel with math-emulation compiled in will still use the
       coprocessor if one is present: the math emulation will just
@@ -356,13 +352,13 @@ If something goes wrong
    help debugging the problem.  The text above the dump is also
    important: it tells something about why the kernel dumped code (in
    the above example, it's due to a bad kernel pointer). More information
-   on making sense of the dump is in Documentation/admin-guide/oops-tracing.rst
+   on making sense of the dump is in Documentation/admin-guide/bug-hunting.rst
 
  - If you compiled the kernel with CONFIG_KALLSYMS you can send the dump
    as is, otherwise you will have to use the ``ksymoops`` program to make
    sense of the dump (but compiling with CONFIG_KALLSYMS is usually preferred).
    This utility can be downloaded from
-   ftp://ftp.<country>.kernel.org/pub/linux/utils/kernel/ksymoops/ .
+   https://www.kernel.org/pub/linux/utils/kernel/ksymoops/ .
    Alternatively, you can do the dump lookup by hand:
 
  - In debugging dumps like the above, it helps enormously if you can

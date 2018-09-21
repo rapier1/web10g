@@ -77,14 +77,17 @@
 #define THIN_SUPERBLOCK_MAGIC 27022010
 #define THIN_SUPERBLOCK_LOCATION 0
 #define THIN_VERSION 2
-#define THIN_METADATA_CACHE_SIZE 64
 #define SECTOR_TO_BLOCK_SHIFT 3
 
 /*
+ * For btree insert:
  *  3 for btree insert +
  *  2 for btree lookup used within space map
+ * For btree remove:
+ *  2 for shadow spine +
+ *  4 for rebalance 3 child node
  */
-#define THIN_MAX_CONCURRENT_LOCKS 5
+#define THIN_MAX_CONCURRENT_LOCKS 6
 
 /* This should be plenty */
 #define SPACE_MAP_ROOT_SIZE 128
@@ -485,11 +488,11 @@ static int __write_initial_superblock(struct dm_pool_metadata *pmd)
 	if (r < 0)
 		return r;
 
-	r = save_sm_roots(pmd);
+	r = dm_tm_pre_commit(pmd->tm);
 	if (r < 0)
 		return r;
 
-	r = dm_tm_pre_commit(pmd->tm);
+	r = save_sm_roots(pmd);
 	if (r < 0)
 		return r;
 
@@ -686,7 +689,6 @@ static int __create_persistent_data_objects(struct dm_pool_metadata *pmd, bool f
 	int r;
 
 	pmd->bm = dm_block_manager_create(pmd->bdev, THIN_METADATA_BLOCK_SIZE << SECTOR_SHIFT,
-					  THIN_METADATA_CACHE_SIZE,
 					  THIN_MAX_CONCURRENT_LOCKS);
 	if (IS_ERR(pmd->bm)) {
 		DMERR("could not create block manager");
@@ -774,7 +776,6 @@ static int __write_changed_details(struct dm_pool_metadata *pmd)
 static int __commit_transaction(struct dm_pool_metadata *pmd)
 {
 	int r;
-	size_t metadata_len, data_len;
 	struct thin_disk_superblock *disk_super;
 	struct dm_block *sblock;
 
@@ -792,14 +793,6 @@ static int __commit_transaction(struct dm_pool_metadata *pmd)
 		return r;
 
 	r = dm_tm_pre_commit(pmd->tm);
-	if (r < 0)
-		return r;
-
-	r = dm_sm_root_size(pmd->metadata_sm, &metadata_len);
-	if (r < 0)
-		return r;
-
-	r = dm_sm_root_size(pmd->data_sm, &data_len);
 	if (r < 0)
 		return r;
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* ttable.S: Sparc V9 Trap Table(s) with SpitFire/Cheetah/SUN4V extensions.
  *
  * Copyright (C) 1996, 2001, 2006 David S. Miller (davem@davemloft.net)
@@ -25,8 +26,10 @@ tl0_ill:	membar #Sync
 		TRAP_7INSNS(do_illegal_instruction)
 tl0_privop:	TRAP(do_privop)
 tl0_resv012:	BTRAP(0x12) BTRAP(0x13) BTRAP(0x14) BTRAP(0x15) BTRAP(0x16) BTRAP(0x17)
-tl0_resv018:	BTRAP(0x18) BTRAP(0x19) BTRAP(0x1a) BTRAP(0x1b) BTRAP(0x1c) BTRAP(0x1d)
-tl0_resv01e:	BTRAP(0x1e) BTRAP(0x1f)
+tl0_resv018:	BTRAP(0x18) BTRAP(0x19)
+tl0_mcd:	SUN4V_MCD_PRECISE
+tl0_resv01b:	BTRAP(0x1b)
+tl0_resv01c:	BTRAP(0x1c) BTRAP(0x1d)	BTRAP(0x1e) BTRAP(0x1f)
 tl0_fpdis:	TRAP_NOSAVE(do_fpdis)
 tl0_fpieee:	TRAP_SAVEFPU(do_fpieee)
 tl0_fpother:	TRAP_NOSAVE(do_fpother_check_fitos)
@@ -50,7 +53,7 @@ tl0_resv03e:	BTRAP(0x3e) BTRAP(0x3f) BTRAP(0x40)
 tl0_irq1:	TRAP_IRQ(smp_call_function_client, 1)
 tl0_irq2:	TRAP_IRQ(smp_receive_signal_client, 2)
 tl0_irq3:	TRAP_IRQ(smp_penguin_jailcell, 3)
-tl0_irq4:	TRAP_IRQ(smp_new_mmu_context_version_client, 4)
+tl0_irq4:       BTRAP(0x44)
 #else
 tl0_irq1:	BTRAP(0x41)
 tl0_irq2:	BTRAP(0x42)

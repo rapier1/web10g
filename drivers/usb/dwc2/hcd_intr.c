@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
  * hcd_intr.c - DesignWare HS OTG Controller host-mode interrupt handling
  *
@@ -52,6 +53,12 @@
 #include "core.h"
 #include "hcd.h"
 
+/*
+ * If we get this many NAKs on a split transaction we'll slow down
+ * retransmission.  A 1 here means delay after the first NAK.
+ */
+#define DWC2_NAKS_BEFORE_DELAY		3
+
 /* This function is for debug only */
 static void dwc2_track_missed_sofs(struct dwc2_hsotg *hsotg)
 {
@@ -60,7 +67,7 @@ static void dwc2_track_missed_sofs(struct dwc2_hsotg *hsotg)
 
 	if (expected != curr_frame_number)
 		dwc2_sch_vdbg(hsotg, "MISSED SOF %04x != %04x\n",
-			expected, curr_frame_number);
+			      expected, curr_frame_number);
 
 #ifdef CONFIG_USB_DWC2_TRACK_MISSED_SOFS
 	if (hsotg->frame_num_idx < FRAME_NUM_ARRAY_SIZE) {
@@ -163,7 +170,7 @@ static void dwc2_sof_intr(struct dwc2_hsotg *hsotg)
 			 * (micro)frame
 			 */
 			list_move_tail(&qh->qh_list_entry,
-				  &hsotg->periodic_sched_ready);
+				       &hsotg->periodic_sched_ready);
 		}
 	}
 	tr_type = dwc2_hcd_select_transactions(hsotg);
@@ -297,8 +304,7 @@ static void dwc2_hprt0_enable(struct dwc2_hsotg *hsotg, u32 hprt0,
 			      HCFG_FSLSPCLKSEL_SHIFT;
 
 		if (prtspd == HPRT0_SPD_LOW_SPEED &&
-		    params->host_ls_low_power_phy_clk ==
-		    DWC2_HOST_LS_LOW_POWER_PHY_CLK_PARAM_6MHZ) {
+		    params->host_ls_low_power_phy_clk) {
 			/* 6 MHZ */
 			dev_vdbg(hsotg->dev,
 				 "FS_PHY programming HCFG to 6 MHz\n");
@@ -398,7 +404,7 @@ static void dwc2_port_intr(struct dwc2_hsotg *hsotg)
 			if (hsotg->params.dma_desc_fs_enable) {
 				u32 hcfg;
 
-				hsotg->params.dma_desc_enable = 0;
+				hsotg->params.dma_desc_enable = false;
 				hsotg->new_connection = false;
 				hcfg = dwc2_readl(hsotg->regs + HCFG);
 				hcfg &= ~HCFG_DESCDMA;
@@ -442,7 +448,7 @@ static u32 dwc2_get_actual_xfer_length(struct dwc2_hsotg *hsotg,
 			count = (hctsiz & TSIZ_XFERSIZE_MASK) >>
 				TSIZ_XFERSIZE_SHIFT;
 			length = chan->xfer_len - count;
-			if (short_read != NULL)
+			if (short_read)
 				*short_read = (count != 0);
 		} else if (chan->qh->do_split) {
 			length = qtd->ssplit_out_xfer_count;
@@ -471,6 +477,12 @@ static u32 dwc2_get_actual_xfer_length(struct dwc2_hsotg *hsotg,
  * Complete interrupt on the host channel. Updates the actual_length field
  * of the URB based on the number of bytes transferred via the host channel.
  * Sets the URB status if the data transfer is finished.
+ *
+ * @hsotg: Programming view of the DWC_otg controller
+ * @chan: Programming view of host channel
+ * @chnum: Channel number
+ * @urb: Processing URB
+ * @qtd: Queue transfer descriptor
  *
  * Return: 1 if the data transfer specified by the URB is completely finished,
  * 0 otherwise
@@ -560,6 +572,12 @@ void dwc2_hcd_save_data_toggle(struct dwc2_hsotg *hsotg,
  * halt_status. Completes the Isochronous URB if all the URB frames have been
  * completed.
  *
+ * @hsotg: Programming view of the DWC_otg controller
+ * @chan: Programming view of host channel
+ * @chnum: Channel number
+ * @halt_status: Reason for halting a host channel
+ * @qtd: Queue transfer descriptor
+ *
  * Return: DWC2_HC_XFER_COMPLETE if there are more frames remaining to be
  * transferred in the URB. Otherwise return DWC2_HC_XFER_URB_COMPLETE.
  */
@@ -604,7 +622,7 @@ static enum dwc2_halt_status dwc2_update_isoc_urb_state(
 		/* Skip whole frame */
 		if (chan->qh->do_split &&
 		    chan->ep_type == USB_ENDPOINT_XFER_ISOC && chan->ep_is_in &&
-		    hsotg->params.host_dma > 0) {
+		    hsotg->params.host_dma) {
 			qtd->complete_split = 0;
 			qtd->isoc_split_offset = 0;
 		}
@@ -743,7 +761,7 @@ cleanup:
 	dwc2_hc_cleanup(hsotg, chan);
 	list_add_tail(&chan->hc_list_entry, &hsotg->free_hc_list);
 
-	if (hsotg->params.uframe_sched > 0) {
+	if (hsotg->params.uframe_sched) {
 		hsotg->available_host_channels++;
 	} else {
 		switch (chan->ep_type) {
@@ -789,7 +807,7 @@ static void dwc2_halt_channel(struct dwc2_hsotg *hsotg,
 	if (dbg_hc(chan))
 		dev_vdbg(hsotg->dev, "%s()\n", __func__);
 
-	if (hsotg->params.host_dma > 0) {
+	if (hsotg->params.host_dma) {
 		if (dbg_hc(chan))
 			dev_vdbg(hsotg->dev, "DMA enabled\n");
 		dwc2_release_channel(hsotg, chan, qtd, halt_status);
@@ -823,7 +841,7 @@ static void dwc2_halt_channel(struct dwc2_hsotg *hsotg,
 			 * processed.
 			 */
 			list_move_tail(&chan->qh->qh_list_entry,
-				  &hsotg->periodic_sched_assigned);
+				       &hsotg->periodic_sched_assigned);
 
 			/*
 			 * Make sure the Periodic Tx FIFO Empty interrupt is
@@ -924,13 +942,20 @@ static int dwc2_xfercomp_isoc_split_in(struct dwc2_hsotg *hsotg,
 	frame_desc = &qtd->urb->iso_descs[qtd->isoc_frame_index];
 	len = dwc2_get_actual_xfer_length(hsotg, chan, chnum, qtd,
 					  DWC2_HC_XFER_COMPLETE, NULL);
-	if (!len) {
+	if (!len && !qtd->isoc_split_offset) {
 		qtd->complete_split = 0;
-		qtd->isoc_split_offset = 0;
 		return 0;
 	}
 
 	frame_desc->actual_length += len;
+
+	if (chan->align_buf) {
+		dev_vdbg(hsotg->dev, "non-aligned buffer\n");
+		dma_unmap_single(hsotg->dev, chan->qh->dw_align_buf_dma,
+				 DWC2_KMEM_UNALIGNED_BUF_SIZE, DMA_FROM_DEVICE);
+		memcpy(qtd->urb->buf + (chan->xfer_dma - qtd->urb->dma),
+		       chan->qh->dw_align_buf, len);
+	}
 
 	qtd->isoc_split_offset += len;
 
@@ -979,7 +1004,7 @@ static void dwc2_hc_xfercomp_intr(struct dwc2_hsotg *hsotg,
 
 	pipe_type = dwc2_hcd_get_pipe_type(&urb->pipe_info);
 
-	if (hsotg->params.dma_desc_enable > 0) {
+	if (hsotg->params.dma_desc_enable) {
 		dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum, halt_status);
 		if (pipe_type == USB_ENDPOINT_XFER_ISOC)
 			/* Do not disable the interrupt, just clear it */
@@ -990,7 +1015,7 @@ static void dwc2_hc_xfercomp_intr(struct dwc2_hsotg *hsotg,
 	/* Handle xfer complete on CSPLIT */
 	if (chan->qh->do_split) {
 		if (chan->ep_type == USB_ENDPOINT_XFER_ISOC && chan->ep_is_in &&
-		    hsotg->params.host_dma > 0) {
+		    hsotg->params.host_dma) {
 			if (qtd->complete_split &&
 			    dwc2_xfercomp_isoc_split_in(hsotg, chan, chnum,
 							qtd))
@@ -1078,7 +1103,8 @@ static void dwc2_hc_xfercomp_intr(struct dwc2_hsotg *hsotg,
 			dev_vdbg(hsotg->dev, "  Isochronous transfer complete\n");
 		if (qtd->isoc_split_pos == DWC2_HCSPLT_XACTPOS_ALL)
 			halt_status = dwc2_update_isoc_urb_state(hsotg, chan,
-					chnum, qtd, DWC2_HC_XFER_COMPLETE);
+							chnum, qtd,
+							DWC2_HC_XFER_COMPLETE);
 		dwc2_complete_periodic_xfer(hsotg, chan, chnum, qtd,
 					    halt_status);
 		break;
@@ -1102,7 +1128,7 @@ static void dwc2_hc_stall_intr(struct dwc2_hsotg *hsotg,
 	dev_dbg(hsotg->dev, "--Host Channel %d Interrupt: STALL Received--\n",
 		chnum);
 
-	if (hsotg->params.dma_desc_enable > 0) {
+	if (hsotg->params.dma_desc_enable) {
 		dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum,
 					    DWC2_HC_XFER_STALL);
 		goto handle_stall_done;
@@ -1200,11 +1226,30 @@ static void dwc2_hc_nak_intr(struct dwc2_hsotg *hsotg,
 	/*
 	 * Handle NAK for IN/OUT SSPLIT/CSPLIT transfers, bulk, control, and
 	 * interrupt. Re-start the SSPLIT transfer.
+	 *
+	 * Normally for non-periodic transfers we'll retry right away, but to
+	 * avoid interrupt storms we'll wait before retrying if we've got
+	 * several NAKs. If we didn't do this we'd retry directly from the
+	 * interrupt handler and could end up quickly getting another
+	 * interrupt (another NAK), which we'd retry. Note that we do not
+	 * delay retries for IN parts of control requests, as those are expected
+	 * to complete fairly quickly, and if we delay them we risk confusing
+	 * the device and cause it issue STALL.
+	 *
+	 * Note that in DMA mode software only gets involved to re-send NAKed
+	 * transfers for split transactions, so we only need to apply this
+	 * delaying logic when handling splits. In non-DMA mode presumably we
+	 * might want a similar delay if someone can demonstrate this problem
+	 * affects that code path too.
 	 */
 	if (chan->do_split) {
 		if (chan->complete_split)
 			qtd->error_count = 0;
 		qtd->complete_split = 0;
+		qtd->num_naks++;
+		qtd->qh->want_wait = qtd->num_naks >= DWC2_NAKS_BEFORE_DELAY &&
+				!(chan->ep_type == USB_ENDPOINT_XFER_CONTROL &&
+				  chan->ep_is_in);
 		dwc2_halt_channel(hsotg, chan, qtd, DWC2_HC_XFER_NAK);
 		goto handle_nak_done;
 	}
@@ -1212,7 +1257,7 @@ static void dwc2_hc_nak_intr(struct dwc2_hsotg *hsotg,
 	switch (dwc2_hcd_get_pipe_type(&qtd->urb->pipe_info)) {
 	case USB_ENDPOINT_XFER_CONTROL:
 	case USB_ENDPOINT_XFER_BULK:
-		if (hsotg->params.host_dma > 0 && chan->ep_is_in) {
+		if (hsotg->params.host_dma && chan->ep_is_in) {
 			/*
 			 * NAK interrupts are enabled on bulk/control IN
 			 * transfers in DMA mode for the sole purpose of
@@ -1358,7 +1403,7 @@ static void dwc2_hc_nyet_intr(struct dwc2_hsotg *hsotg,
 	 */
 	if (chan->do_split && chan->complete_split) {
 		if (chan->ep_is_in && chan->ep_type == USB_ENDPOINT_XFER_ISOC &&
-		    hsotg->params.host_dma > 0) {
+		    hsotg->params.host_dma) {
 			qtd->complete_split = 0;
 			qtd->isoc_split_offset = 0;
 			qtd->isoc_frame_index++;
@@ -1379,7 +1424,7 @@ static void dwc2_hc_nyet_intr(struct dwc2_hsotg *hsotg,
 			struct dwc2_qh *qh = chan->qh;
 			bool past_end;
 
-			if (hsotg->params.uframe_sched <= 0) {
+			if (!hsotg->params.uframe_sched) {
 				int frnum = dwc2_hcd_get_frame_number(hsotg);
 
 				/* Don't have num_hs_transfers; simple logic */
@@ -1389,22 +1434,27 @@ static void dwc2_hc_nyet_intr(struct dwc2_hsotg *hsotg,
 				int end_frnum;
 
 				/*
-				* Figure out the end frame based on schedule.
-				*
-				* We don't want to go on trying again and again
-				* forever.  Let's stop when we've done all the
-				* transfers that were scheduled.
-				*
-				* We're going to be comparing start_active_frame
-				* and next_active_frame, both of which are 1
-				* before the time the packet goes on the wire,
-				* so that cancels out.  Basically if had 1
-				* transfer and we saw 1 NYET then we're done.
-				* We're getting a NYET here so if next >=
-				* (start + num_transfers) we're done. The
-				* complexity is that for all but ISOC_OUT we
-				* skip one slot.
-				*/
+				 * Figure out the end frame based on
+				 * schedule.
+				 *
+				 * We don't want to go on trying again
+				 * and again forever. Let's stop when
+				 * we've done all the transfers that
+				 * were scheduled.
+				 *
+				 * We're going to be comparing
+				 * start_active_frame and
+				 * next_active_frame, both of which
+				 * are 1 before the time the packet
+				 * goes on the wire, so that cancels
+				 * out. Basically if had 1 transfer
+				 * and we saw 1 NYET then we're done.
+				 * We're getting a NYET here so if
+				 * next >= (start + num_transfers)
+				 * we're done. The complexity is that
+				 * for all but ISOC_OUT we skip one
+				 * slot.
+				 */
 				end_frnum = dwc2_frame_num_inc(
 					qh->start_active_frame,
 					qh->num_hs_transfers);
@@ -1472,7 +1522,7 @@ static void dwc2_hc_babble_intr(struct dwc2_hsotg *hsotg,
 
 	dwc2_hc_handle_tt_clear(hsotg, chan, qtd);
 
-	if (hsotg->params.dma_desc_enable > 0) {
+	if (hsotg->params.dma_desc_enable) {
 		dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum,
 					    DWC2_HC_XFER_BABBLE_ERR);
 		goto disable_int;
@@ -1577,7 +1627,7 @@ static void dwc2_hc_ahberr_intr(struct dwc2_hsotg *hsotg,
 	dev_err(hsotg->dev, "  Interval: %d\n", urb->interval);
 
 	/* Core halts the channel for Descriptor DMA mode */
-	if (hsotg->params.dma_desc_enable > 0) {
+	if (hsotg->params.dma_desc_enable) {
 		dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum,
 					    DWC2_HC_XFER_AHB_ERR);
 		goto handle_ahberr_done;
@@ -1609,7 +1659,7 @@ static void dwc2_hc_xacterr_intr(struct dwc2_hsotg *hsotg,
 
 	dwc2_hc_handle_tt_clear(hsotg, chan, qtd);
 
-	if (hsotg->params.dma_desc_enable > 0) {
+	if (hsotg->params.dma_desc_enable) {
 		dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum,
 					    DWC2_HC_XFER_XACT_ERR);
 		goto handle_xacterr_done;
@@ -1620,7 +1670,6 @@ static void dwc2_hc_xacterr_intr(struct dwc2_hsotg *hsotg,
 	case USB_ENDPOINT_XFER_BULK:
 		qtd->error_count++;
 		if (!chan->qh->ping_state) {
-
 			dwc2_update_urb_state_abn(hsotg, chan, chnum, qtd->urb,
 						  qtd, DWC2_HC_XFER_XACT_ERR);
 			dwc2_hcd_save_data_toggle(hsotg, chan, chnum, qtd);
@@ -1645,7 +1694,7 @@ static void dwc2_hc_xacterr_intr(struct dwc2_hsotg *hsotg,
 			enum dwc2_halt_status halt_status;
 
 			halt_status = dwc2_update_isoc_urb_state(hsotg, chan,
-					chnum, qtd, DWC2_HC_XFER_XACT_ERR);
+					 chnum, qtd, DWC2_HC_XFER_XACT_ERR);
 			dwc2_halt_channel(hsotg, chan, qtd, halt_status);
 		}
 		break;
@@ -1803,8 +1852,8 @@ static void dwc2_hc_chhltd_intr_dma(struct dwc2_hsotg *hsotg,
 
 	if (chan->halt_status == DWC2_HC_XFER_URB_DEQUEUE ||
 	    (chan->halt_status == DWC2_HC_XFER_AHB_ERR &&
-	     hsotg->params.dma_desc_enable <= 0)) {
-		if (hsotg->params.dma_desc_enable > 0)
+	     !hsotg->params.dma_desc_enable)) {
+		if (hsotg->params.dma_desc_enable)
 			dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum,
 						    chan->halt_status);
 		else
@@ -1835,7 +1884,7 @@ static void dwc2_hc_chhltd_intr_dma(struct dwc2_hsotg *hsotg,
 	} else if (chan->hcint & HCINTMSK_STALL) {
 		dwc2_hc_stall_intr(hsotg, chan, chnum, qtd);
 	} else if ((chan->hcint & HCINTMSK_XACTERR) &&
-		   hsotg->params.dma_desc_enable <= 0) {
+		   !hsotg->params.dma_desc_enable) {
 		if (out_nak_enh) {
 			if (chan->hcint &
 			    (HCINTMSK_NYET | HCINTMSK_NAK | HCINTMSK_ACK)) {
@@ -1855,10 +1904,10 @@ static void dwc2_hc_chhltd_intr_dma(struct dwc2_hsotg *hsotg,
 		 */
 		dwc2_hc_xacterr_intr(hsotg, chan, chnum, qtd);
 	} else if ((chan->hcint & HCINTMSK_XCS_XACT) &&
-		   hsotg->params.dma_desc_enable > 0) {
+		   hsotg->params.dma_desc_enable) {
 		dwc2_hc_xacterr_intr(hsotg, chan, chnum, qtd);
 	} else if ((chan->hcint & HCINTMSK_AHBERR) &&
-		   hsotg->params.dma_desc_enable > 0) {
+		   hsotg->params.dma_desc_enable) {
 		dwc2_hc_ahberr_intr(hsotg, chan, chnum, qtd);
 	} else if (chan->hcint & HCINTMSK_BBLERR) {
 		dwc2_hc_babble_intr(hsotg, chan, chnum, qtd);
@@ -1951,7 +2000,7 @@ static void dwc2_hc_chhltd_intr(struct dwc2_hsotg *hsotg,
 		dev_vdbg(hsotg->dev, "--Host Channel %d Interrupt: Channel Halted--\n",
 			 chnum);
 
-	if (hsotg->params.host_dma > 0) {
+	if (hsotg->params.host_dma) {
 		dwc2_hc_chhltd_intr_dma(hsotg, chan, chnum, qtd);
 	} else {
 		if (!dwc2_halt_status_ok(hsotg, chan, chnum, qtd))
@@ -1970,7 +2019,7 @@ static bool dwc2_check_qtd_still_ok(struct dwc2_qtd *qtd, struct dwc2_qh *qh)
 {
 	struct dwc2_qtd *cur_head;
 
-	if (qh == NULL)
+	if (!qh)
 		return false;
 
 	cur_head = list_first_entry(&qh->qtd_list, struct dwc2_qtd,
@@ -2028,7 +2077,7 @@ static void dwc2_hc_n_intr(struct dwc2_hsotg *hsotg, int chnum)
 		 * interrupt unmasked
 		 */
 		WARN_ON(hcint != HCINTMSK_CHHLTD);
-		if (hsotg->params.dma_desc_enable > 0)
+		if (hsotg->params.dma_desc_enable)
 			dwc2_hcd_complete_xfer_ddma(hsotg, chan, chnum,
 						    chan->halt_status);
 		else
@@ -2056,7 +2105,7 @@ static void dwc2_hc_n_intr(struct dwc2_hsotg *hsotg, int chnum)
 	qtd = list_first_entry(&chan->qh->qtd_list, struct dwc2_qtd,
 			       qtd_list_entry);
 
-	if (hsotg->params.host_dma <= 0) {
+	if (!hsotg->params.host_dma) {
 		if ((hcint & HCINTMSK_CHHLTD) && hcint != HCINTMSK_CHHLTD)
 			hcint &= ~HCINTMSK_CHHLTD;
 	}

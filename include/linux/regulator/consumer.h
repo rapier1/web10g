@@ -80,6 +80,7 @@ struct regmap;
  * These modes can be OR'ed together to make up a mask of valid register modes.
  */
 
+#define REGULATOR_MODE_INVALID			0x0
 #define REGULATOR_MODE_FAST			0x1
 #define REGULATOR_MODE_NORMAL			0x2
 #define REGULATOR_MODE_IDLE			0x4
@@ -119,6 +120,7 @@ struct regmap;
 #define REGULATOR_EVENT_ABORT_VOLTAGE_CHANGE	0x200
 #define REGULATOR_EVENT_PRE_DISABLE		0x400
 #define REGULATOR_EVENT_ABORT_DISABLE		0x800
+#define REGULATOR_EVENT_ENABLE			0x1000
 
 /*
  * Regulator errors that can be queried using regulator_get_error_flags

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ccw based virtio transport
  *
  * Copyright IBM Corp. 2012, 2014
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2 only)
- * as published by the Free Software Foundation.
  *
  *    Author(s): Cornelia Huck <cornelia.huck@de.ibm.com>
  */
@@ -87,7 +84,7 @@ struct vq_info_block {
 } __packed;
 
 struct virtio_feature_desc {
-	__u32 features;
+	__le32 features;
 	__u8 index;
 } __packed;
 
@@ -484,7 +481,7 @@ static void virtio_ccw_del_vqs(struct virtio_device *vdev)
 
 static struct virtqueue *virtio_ccw_setup_vq(struct virtio_device *vdev,
 					     int i, vq_callback_t *callback,
-					     const char *name,
+					     const char *name, bool ctx,
 					     struct ccw1 *ccw)
 {
 	struct virtio_ccw_device *vcdev = to_vc_device(vdev);
@@ -522,7 +519,7 @@ static struct virtqueue *virtio_ccw_setup_vq(struct virtio_device *vdev,
 	}
 
 	vq = vring_new_virtqueue(i, info->num, KVM_VIRTIO_CCW_RING_ALIGN, vdev,
-				 true, info->queue, virtio_ccw_kvm_notify,
+				 true, ctx, info->queue, virtio_ccw_kvm_notify,
 				 callback, name);
 	if (!vq) {
 		/* For now, we fail if we can't get the requested size. */
@@ -628,7 +625,9 @@ out:
 static int virtio_ccw_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 			       struct virtqueue *vqs[],
 			       vq_callback_t *callbacks[],
-			       const char * const names[])
+			       const char * const names[],
+			       const bool *ctx,
+			       struct irq_affinity *desc)
 {
 	struct virtio_ccw_device *vcdev = to_vc_device(vdev);
 	unsigned long *indicatorp = NULL;
@@ -641,7 +640,7 @@ static int virtio_ccw_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 
 	for (i = 0; i < nvqs; ++i) {
 		vqs[i] = virtio_ccw_setup_vq(vdev, i, callbacks[i], names[i],
-					     ccw);
+					     ctx ? ctx[i] : false, ccw);
 		if (IS_ERR(vqs[i])) {
 			ret = PTR_ERR(vqs[i]);
 			vqs[i] = NULL;
@@ -661,7 +660,7 @@ static int virtio_ccw_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		ret = virtio_ccw_register_adapter_ind(vcdev, vqs, nvqs, ccw);
 		if (ret)
 			/* no error, just fall back to legacy interrupts */
-			vcdev->is_thinint = 0;
+			vcdev->is_thinint = false;
 	}
 	if (!vcdev->is_thinint) {
 		/* Register queue indicators with host. */
@@ -1298,6 +1297,9 @@ static int virtio_ccw_cio_notify(struct ccw_device *cdev, int event)
 		vcdev->device_lost = true;
 		rc = NOTIFY_DONE;
 		break;
+	case CIO_OPER:
+		rc = NOTIFY_OK;
+		break;
 	default:
 		rc = NOTIFY_DONE;
 		break;
@@ -1309,6 +1311,27 @@ static struct ccw_device_id virtio_ids[] = {
 	{ CCW_DEVICE(0x3832, 0) },
 	{},
 };
+
+#ifdef CONFIG_PM_SLEEP
+static int virtio_ccw_freeze(struct ccw_device *cdev)
+{
+	struct virtio_ccw_device *vcdev = dev_get_drvdata(&cdev->dev);
+
+	return virtio_device_freeze(&vcdev->vdev);
+}
+
+static int virtio_ccw_restore(struct ccw_device *cdev)
+{
+	struct virtio_ccw_device *vcdev = dev_get_drvdata(&cdev->dev);
+	int ret;
+
+	ret = virtio_ccw_set_transport_rev(vcdev);
+	if (ret)
+		return ret;
+
+	return virtio_device_restore(&vcdev->vdev);
+}
+#endif
 
 static struct ccw_driver virtio_ccw_driver = {
 	.driver = {
@@ -1322,6 +1345,11 @@ static struct ccw_driver virtio_ccw_driver = {
 	.set_online = virtio_ccw_online,
 	.notify = virtio_ccw_cio_notify,
 	.int_class = IRQIO_VIR,
+#ifdef CONFIG_PM_SLEEP
+	.freeze = virtio_ccw_freeze,
+	.thaw = virtio_ccw_restore,
+	.restore = virtio_ccw_restore,
+#endif
 };
 
 static int __init pure_hex(char **cp, unsigned int *val, int min_digit,

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_LIST_H
 #define _LINUX_LIST_H
 
@@ -525,6 +526,19 @@ static inline void list_splice_tail_init(struct list_head *list,
 #define list_for_each_entry_from(pos, head, member) 			\
 	for (; &pos->member != (head);					\
 	     pos = list_next_entry(pos, member))
+
+/**
+ * list_for_each_entry_from_reverse - iterate backwards over list of given type
+ *                                    from the current point
+ * @pos:	the type * to use as a loop cursor.
+ * @head:	the head for your list.
+ * @member:	the name of the list_head within the struct.
+ *
+ * Iterate backwards over list of given type, continuing from current position.
+ */
+#define list_for_each_entry_from_reverse(pos, head, member)		\
+	for (; &pos->member != (head);					\
+	     pos = list_prev_entry(pos, member))
 
 /**
  * list_for_each_entry_safe - iterate over list of given type safe against removal of list entry

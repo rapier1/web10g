@@ -58,6 +58,7 @@
  * Wildcat Point (PCH)		0x8ca2	32	hard	yes	yes	yes
  * Wildcat Point-LP (PCH)	0x9ca2	32	hard	yes	yes	yes
  * BayTrail (SOC)		0x0f12	32	hard	yes	yes	yes
+ * Braswell (SOC)		0x2292	32	hard	yes	yes	yes
  * Sunrise Point-H (PCH) 	0xa123  32	hard	yes	yes	yes
  * Sunrise Point-LP (PCH)	0x9d23	32	hard	yes	yes	yes
  * DNV (SOC)			0x19df	32	hard	yes	yes	yes
@@ -65,6 +66,10 @@
  * Lewisburg (PCH)		0xa1a3	32	hard	yes	yes	yes
  * Lewisburg Supersku (PCH)	0xa223	32	hard	yes	yes	yes
  * Kaby Lake PCH-H (PCH)	0xa2a3	32	hard	yes	yes	yes
+ * Gemini Lake (SOC)		0x31d4	32	hard	yes	yes	yes
+ * Cannon Lake-H (PCH)		0xa323	32	hard	yes	yes	yes
+ * Cannon Lake-LP (PCH)		0x9da3	32	hard	yes	yes	yes
+ * Cedar Fork (PCH)		0x18df	32	hard	yes	yes	yes
  *
  * Features supported by this driver:
  * Software PEC				no
@@ -101,7 +106,7 @@
 
 #if IS_ENABLED(CONFIG_I2C_MUX_GPIO) && defined CONFIG_DMI
 #include <linux/gpio.h>
-#include <linux/i2c-mux-gpio.h>
+#include <linux/platform_data/i2c-mux-gpio.h>
 #endif
 
 /* I801 SMBus address offsets */
@@ -201,6 +206,7 @@
 
 /* Older devices have their ID defined in <linux/pci_ids.h> */
 #define PCI_DEVICE_ID_INTEL_BAYTRAIL_SMBUS		0x0f12
+#define PCI_DEVICE_ID_INTEL_CDF_SMBUS			0x18df
 #define PCI_DEVICE_ID_INTEL_DNV_SMBUS			0x19df
 #define PCI_DEVICE_ID_INTEL_COUGARPOINT_SMBUS		0x1c22
 #define PCI_DEVICE_ID_INTEL_PATSBURG_SMBUS		0x1d22
@@ -213,6 +219,7 @@
 #define PCI_DEVICE_ID_INTEL_BRASWELL_SMBUS		0x2292
 #define PCI_DEVICE_ID_INTEL_DH89XXCC_SMBUS		0x2330
 #define PCI_DEVICE_ID_INTEL_COLETOCREEK_SMBUS		0x23b0
+#define PCI_DEVICE_ID_INTEL_GEMINILAKE_SMBUS		0x31d4
 #define PCI_DEVICE_ID_INTEL_5_3400_SERIES_SMBUS		0x3b30
 #define PCI_DEVICE_ID_INTEL_BROXTON_SMBUS		0x5ad4
 #define PCI_DEVICE_ID_INTEL_LYNXPOINT_SMBUS		0x8c22
@@ -224,10 +231,12 @@
 #define PCI_DEVICE_ID_INTEL_LYNXPOINT_LP_SMBUS		0x9c22
 #define PCI_DEVICE_ID_INTEL_WILDCATPOINT_LP_SMBUS	0x9ca2
 #define PCI_DEVICE_ID_INTEL_SUNRISEPOINT_LP_SMBUS	0x9d23
+#define PCI_DEVICE_ID_INTEL_CANNONLAKE_LP_SMBUS		0x9da3
 #define PCI_DEVICE_ID_INTEL_SUNRISEPOINT_H_SMBUS	0xa123
 #define PCI_DEVICE_ID_INTEL_LEWISBURG_SMBUS		0xa1a3
 #define PCI_DEVICE_ID_INTEL_LEWISBURG_SSKU_SMBUS	0xa223
 #define PCI_DEVICE_ID_INTEL_KABYLAKE_PCH_H_SMBUS	0xa2a3
+#define PCI_DEVICE_ID_INTEL_CANNONLAKE_H_SMBUS		0xa323
 
 struct i801_mux_config {
 	char *gpio_chip;
@@ -957,8 +966,6 @@ static void i801_enable_host_notify(struct i2c_adapter *adapter)
 	if (!(priv->features & FEATURE_HOST_NOTIFY))
 		return;
 
-	priv->original_slvcmd = inb_p(SMBSLVCMD(priv));
-
 	if (!(SMBSLVCMD_HST_NTFY_INTREN & priv->original_slvcmd))
 		outb_p(SMBSLVCMD_HST_NTFY_INTREN | priv->original_slvcmd,
 		       SMBSLVCMD(priv));
@@ -1012,17 +1019,21 @@ static const struct pci_device_id i801_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS1) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS2) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_COLETOCREEK_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_GEMINILAKE_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WILDCATPOINT_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WILDCATPOINT_LP_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BAYTRAIL_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BRASWELL_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SUNRISEPOINT_H_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SUNRISEPOINT_LP_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CDF_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_DNV_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BROXTON_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_LEWISBURG_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_LEWISBURG_SSKU_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_KABYLAKE_PCH_H_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CANNONLAKE_H_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CANNONLAKE_LP_SMBUS) },
 	{ 0, }
 };
 
@@ -1323,6 +1334,7 @@ static void i801_add_tco(struct i801_priv *priv)
 	u32 tco_base, tco_ctl;
 	u32 base_addr, ctrl_val;
 	u64 base64_addr;
+	u8 hidden;
 
 	if (!(priv->features & FEATURE_TCO))
 		return;
@@ -1367,8 +1379,10 @@ static void i801_add_tco(struct i801_priv *priv)
 
 	devfn = PCI_DEVFN(PCI_SLOT(pci_dev->devfn), 1);
 
-	/* Unhide the P2SB device */
-	pci_bus_write_config_byte(pci_dev->bus, devfn, 0xe1, 0x0);
+	/* Unhide the P2SB device, if it is hidden */
+	pci_bus_read_config_byte(pci_dev->bus, devfn, 0xe1, &hidden);
+	if (hidden)
+		pci_bus_write_config_byte(pci_dev->bus, devfn, 0xe1, 0x0);
 
 	pci_bus_read_config_dword(pci_dev->bus, devfn, SBREG_BAR, &base_addr);
 	base64_addr = base_addr & 0xfffffff0;
@@ -1376,8 +1390,9 @@ static void i801_add_tco(struct i801_priv *priv)
 	pci_bus_read_config_dword(pci_dev->bus, devfn, SBREG_BAR + 0x4, &base_addr);
 	base64_addr |= (u64)base_addr << 32;
 
-	/* Hide the P2SB device */
-	pci_bus_write_config_byte(pci_dev->bus, devfn, 0xe1, 0x1);
+	/* Hide the P2SB device, if it was hidden before */
+	if (hidden)
+		pci_bus_write_config_byte(pci_dev->bus, devfn, 0xe1, hidden);
 	spin_unlock(&p2sb_spinlock);
 
 	res = &tco_res[ICH_RES_MEM_OFF];
@@ -1496,8 +1511,11 @@ static int i801_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	switch (dev->device) {
 	case PCI_DEVICE_ID_INTEL_SUNRISEPOINT_H_SMBUS:
 	case PCI_DEVICE_ID_INTEL_SUNRISEPOINT_LP_SMBUS:
+	case PCI_DEVICE_ID_INTEL_CANNONLAKE_H_SMBUS:
+	case PCI_DEVICE_ID_INTEL_CANNONLAKE_LP_SMBUS:
 	case PCI_DEVICE_ID_INTEL_LEWISBURG_SMBUS:
 	case PCI_DEVICE_ID_INTEL_LEWISBURG_SSKU_SMBUS:
+	case PCI_DEVICE_ID_INTEL_CDF_SMBUS:
 	case PCI_DEVICE_ID_INTEL_DNV_SMBUS:
 	case PCI_DEVICE_ID_INTEL_KABYLAKE_PCH_H_SMBUS:
 		priv->features |= FEATURE_I2C_BLOCK_READ;
@@ -1595,8 +1613,15 @@ static int i801_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		outb_p(inb_p(SMBAUXCTL(priv)) &
 		       ~(SMBAUXCTL_CRC | SMBAUXCTL_E32B), SMBAUXCTL(priv));
 
+	/* Remember original Host Notify setting */
+	if (priv->features & FEATURE_HOST_NOTIFY)
+		priv->original_slvcmd = inb_p(SMBSLVCMD(priv));
+
 	/* Default timeout in interrupt mode: 200 ms */
 	priv->adapter.timeout = HZ / 5;
+
+	if (dev->irq == IRQ_NOTCONNECTED)
+		priv->features &= ~FEATURE_IRQ;
 
 	if (priv->features & FEATURE_IRQ) {
 		u16 pcictl, pcists;
@@ -1676,7 +1701,16 @@ static void i801_remove(struct pci_dev *dev)
 	 */
 }
 
-#ifdef CONFIG_PM
+static void i801_shutdown(struct pci_dev *dev)
+{
+	struct i801_priv *priv = pci_get_drvdata(dev);
+
+	/* Restore config registers to avoid hard hang on some systems */
+	i801_disable_host_notify(priv);
+	pci_write_config_byte(dev, SMBHSTCFG, priv->original_hstcfg);
+}
+
+#ifdef CONFIG_PM_SLEEP
 static int i801_suspend(struct device *dev)
 {
 	struct pci_dev *pci_dev = to_pci_dev(dev);
@@ -1697,14 +1731,14 @@ static int i801_resume(struct device *dev)
 }
 #endif
 
-static UNIVERSAL_DEV_PM_OPS(i801_pm_ops, i801_suspend,
-			    i801_resume, NULL);
+static SIMPLE_DEV_PM_OPS(i801_pm_ops, i801_suspend, i801_resume);
 
 static struct pci_driver i801_driver = {
 	.name		= "i801_smbus",
 	.id_table	= i801_ids,
 	.probe		= i801_probe,
 	.remove		= i801_remove,
+	.shutdown	= i801_shutdown,
 	.driver		= {
 		.pm	= &i801_pm_ops,
 	},

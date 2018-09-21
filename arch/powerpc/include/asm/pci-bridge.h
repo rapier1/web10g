@@ -174,14 +174,6 @@ extern int pci_device_from_OF_node(struct device_node *node,
 				   u8 *bus, u8 *devfn);
 extern void pci_create_OF_bus_map(void);
 
-static inline int isa_vaddr_is_ioport(void __iomem *address)
-{
-	/* No specific ISA handling on ppc32 at this stage, it
-	 * all goes through PCI
-	 */
-	return 0;
-}
-
 #else	/* CONFIG_PPC64 */
 
 /*
@@ -203,30 +195,27 @@ struct pci_dn {
 	struct  pci_dn *parent;
 	struct  pci_controller *phb;	/* for pci devices */
 	struct	iommu_table_group *table_group;	/* for phb's or bridges */
-	struct	device_node *node;	/* back-pointer to the device_node */
 
 	int	pci_ext_config_space;	/* for pci devices */
-
-	struct	pci_dev *pcidev;	/* back-pointer to the pci device */
 #ifdef CONFIG_EEH
 	struct eeh_dev *edev;		/* eeh device */
 #endif
 #define IODA_INVALID_PE		0xFFFFFFFF
-#ifdef CONFIG_PPC_POWERNV
 	unsigned int pe_number;
-	int     vf_index;		/* VF index in the PF */
 #ifdef CONFIG_PCI_IOV
+	int     vf_index;		/* VF index in the PF */
 	u16     vfs_expanded;		/* number of VFs IOV BAR expanded */
 	u16     num_vfs;		/* number of VFs enabled*/
 	unsigned int *pe_num_map;	/* PE# for the first VF PE or array */
 	bool    m64_single_mode;	/* Use M64 BAR in Single Mode */
 #define IODA_INVALID_M64        (-1)
-	int     (*m64_map)[PCI_SRIOV_NUM_BARS];
+	int     (*m64_map)[PCI_SRIOV_NUM_BARS];	/* Only used on powernv */
+	int     last_allow_rc;			/* Only used on pseries */
 #endif /* CONFIG_PCI_IOV */
 	int	mps;			/* Maximum Payload Size */
-#endif
 	struct list_head child_list;
 	struct list_head list;
+	struct resource holes[PCI_SRIOV_NUM_BARS];
 };
 
 /* Get the pointer to a device_node's pci_dn */
@@ -268,16 +257,6 @@ extern void pci_hp_remove_devices(struct pci_bus *bus);
 
 /** Discover new pci devices under this bus, and add them */
 extern void pci_hp_add_devices(struct pci_bus *bus);
-
-
-extern void isa_bridge_find_early(struct pci_controller *hose);
-
-static inline int isa_vaddr_is_ioport(void __iomem *address)
-{
-	/* Check if address hits the reserved legacy IO range */
-	unsigned long ea = (unsigned long)address;
-	return ea >= ISA_IO_BASE && ea < ISA_IO_END;
-}
 
 extern int pcibios_unmap_io_space(struct pci_bus *bus);
 extern int pcibios_map_io_space(struct pci_bus *bus);

@@ -739,7 +739,7 @@ static int xgmac_dma_desc_rings_init(struct net_device *dev)
 
 	netdev_dbg(priv->dev, "mtu [%d] bfsize [%d]\n", dev->mtu, bfsize);
 
-	priv->rx_skbuff = kzalloc(sizeof(struct sk_buff *) * DMA_RX_RING_SZ,
+	priv->rx_skbuff = kcalloc(DMA_RX_RING_SZ, sizeof(struct sk_buff *),
 				  GFP_KERNEL);
 	if (!priv->rx_skbuff)
 		return -ENOMEM;
@@ -752,7 +752,7 @@ static int xgmac_dma_desc_rings_init(struct net_device *dev)
 	if (!priv->dma_rx)
 		goto err_dma_rx;
 
-	priv->tx_skbuff = kzalloc(sizeof(struct sk_buff *) * DMA_TX_RING_SZ,
+	priv->tx_skbuff = kcalloc(DMA_TX_RING_SZ, sizeof(struct sk_buff *),
 				  GFP_KERNEL);
 	if (!priv->tx_skbuff)
 		goto err_tx_skb;
@@ -1247,7 +1247,7 @@ static int xgmac_poll(struct napi_struct *napi, int budget)
 	work_done = xgmac_rx(priv, budget);
 
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		__raw_writel(DMA_INTR_DEFAULT_MASK, priv->base + XGMAC_DMA_INTR_ENA);
 	}
 	return work_done;
@@ -1446,9 +1446,9 @@ static void xgmac_poll_controller(struct net_device *dev)
 }
 #endif
 
-static struct rtnl_link_stats64 *
+static void
 xgmac_get_stats64(struct net_device *dev,
-		       struct rtnl_link_stats64 *storage)
+		  struct rtnl_link_stats64 *storage)
 {
 	struct xgmac_priv *priv = netdev_priv(dev);
 	void __iomem *base = priv->base;
@@ -1476,7 +1476,6 @@ xgmac_get_stats64(struct net_device *dev,
 
 	writel(0, base + XGMAC_MMC_CTRL);
 	spin_unlock_bh(&priv->stats_lock);
-	return storage;
 }
 
 static int xgmac_set_mac_address(struct net_device *dev, void *p)

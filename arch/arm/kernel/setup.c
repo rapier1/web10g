@@ -80,8 +80,8 @@ __setup("fpe=", fpe_setup);
 
 extern void init_default_cache_policy(unsigned long);
 extern void paging_init(const struct machine_desc *desc);
-extern void early_paging_init(const struct machine_desc *);
-extern void sanity_check_meminfo(void);
+extern void early_mm_init(const struct machine_desc *);
+extern void adjust_lowmem_bounds(void);
 extern enum reboot_mode reboot_mode;
 extern void setup_dma_zone(const struct machine_desc *desc);
 
@@ -315,7 +315,7 @@ static void __init cacheid_init(void)
 	if (arch >= CPU_ARCH_ARMv6) {
 		unsigned int cachetype = read_cpuid_cachetype();
 
-		if ((arch == CPU_ARCH_ARMv7M) && !cachetype) {
+		if ((arch == CPU_ARCH_ARMv7M) && !(cachetype & 0xf000f)) {
 			cacheid = 0;
 		} else if ((cachetype & (7 << 29)) == 4 << 29) {
 			/* ARMv7 register format */
@@ -754,7 +754,7 @@ int __init arm_add_memory(u64 start, u64 size)
 	else
 		size -= aligned_start - start;
 
-#ifndef CONFIG_ARCH_PHYS_ADDR_T_64BIT
+#ifndef CONFIG_PHYS_ADDR_T_64BIT
 	if (aligned_start > ULONG_MAX) {
 		pr_crit("Ignoring memory at 0x%08llx outside 32-bit physical address space\n",
 			(long long)start);
@@ -987,6 +987,9 @@ static void __init reserve_crashkernel(void)
 
 	if (crash_base <= 0) {
 		unsigned long long crash_max = idmap_to_phys((u32)~0);
+		unsigned long long lowmem_max = __pa(high_memory - 1) + 1;
+		if (crash_max > lowmem_max)
+			crash_max = lowmem_max;
 		crash_base = memblock_find_in_range(CRASH_ALIGN, crash_max,
 						    crash_size, CRASH_ALIGN);
 		if (!crash_base) {
@@ -1066,6 +1069,16 @@ void __init setup_arch(char **cmdline_p)
 	mdesc = setup_machine_fdt(__atags_pointer);
 	if (!mdesc)
 		mdesc = setup_machine_tags(__atags_pointer, __machine_arch_type);
+	if (!mdesc) {
+		early_print("\nError: invalid dtb and unrecognized/unsupported machine ID\n");
+		early_print("  r1=0x%08x, r2=0x%08x\n", __machine_arch_type,
+			    __atags_pointer);
+		if (__atags_pointer)
+			early_print("  r2[]=%*ph\n", 16,
+				    phys_to_virt(__atags_pointer));
+		dump_machine_table();
+	}
+
 	machine_desc = mdesc;
 	machine_name = mdesc->name;
 	dump_stack_set_arch_desc("%s", mdesc->name);
@@ -1088,13 +1101,19 @@ void __init setup_arch(char **cmdline_p)
 	parse_early_param();
 
 #ifdef CONFIG_MMU
-	early_paging_init(mdesc);
+	early_mm_init(mdesc);
 #endif
 	setup_dma_zone(mdesc);
 	xen_early_init();
 	efi_init();
-	sanity_check_meminfo();
+	/*
+	 * Make sure the calculation for lowmem/highmem is set appropriately
+	 * before reserving/allocating any mmeory
+	 */
+	adjust_lowmem_bounds();
 	arm_memblock_init(mdesc);
+	/* Memory may have been removed so recalculate the bounds. */
+	adjust_lowmem_bounds();
 
 	early_ioremap_reset();
 

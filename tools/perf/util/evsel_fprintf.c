@@ -1,10 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <traceevent/event-parse.h>
 #include "evsel.h"
 #include "callchain.h"
 #include "map.h"
+#include "strlist.h"
 #include "symbol.h"
+#include "srcline.h"
 
 static int comma_fprintf(FILE *fp, bool *first, const char *fmt, ...)
 {
@@ -154,7 +158,7 @@ int sample__fprintf_callchain(struct perf_sample *sample, int left_alignment,
 				}
 			}
 
-			if (print_dso) {
+			if (print_dso && (!node->sym || !node->sym->inlined)) {
 				printed += fprintf(fp, " (");
 				printed += map__fprintf_dsoname(node->map, fp);
 				printed += fprintf(fp, ")");
@@ -163,12 +167,14 @@ int sample__fprintf_callchain(struct perf_sample *sample, int left_alignment,
 			if (print_srcline)
 				printed += map__fprintf_srcline(node->map, addr, "\n  ", fp);
 
+			if (node->sym && node->sym->inlined)
+				printed += fprintf(fp, " (inlined)");
+
 			if (!print_oneline)
 				printed += fprintf(fp, "\n");
 
 			if (symbol_conf.bt_stop_list &&
 			    node->sym &&
-			    node->sym->name &&
 			    strlist__has_entry(symbol_conf.bt_stop_list,
 					       node->sym->name)) {
 				break;

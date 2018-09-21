@@ -157,6 +157,7 @@ struct tcp_estats_perf_table {
 	/*		SndLimTimeSnd */
 	u32		snd_lim_trans[TCP_ESTATS_SNDLIM_NSTATES];
 	u32		snd_lim_time[TCP_ESTATS_SNDLIM_NSTATES];
+	u32             LostRetransmitSegs;
 };
 
 struct tcp_estats_path_table {
@@ -231,6 +232,7 @@ struct tcp_estats_stack_table {
 	u32		MaxReasmQueue;
 	u32		EarlyRetrans;
 	u32		EarlyRetransDelay;
+	u32             RackTimeout;
 };
 
 struct tcp_estats_app_table {

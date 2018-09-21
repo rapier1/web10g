@@ -184,7 +184,7 @@ struct mpt3_ioctl_iocinfo {
 
 
 /* number of event log entries */
-#define MPT3SAS_CTL_EVENT_LOG_SIZE (50)
+#define MPT3SAS_CTL_EVENT_LOG_SIZE (200)
 
 /**
  * struct mpt3_ioctl_eventquery - query event count and type
@@ -390,7 +390,7 @@ struct mpt3_diag_query {
  *
  * This allows ownership of the specified buffer to returned to the driver,
  * allowing an application to read the buffer without fear that firmware is
- * overwritting information in the buffer.
+ * overwriting information in the buffer.
  */
 struct mpt3_diag_release {
 	struct mpt3_ioctl_header hdr;

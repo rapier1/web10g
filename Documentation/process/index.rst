@@ -3,6 +3,7 @@
 	\renewcommand\thesection*
 	\renewcommand\thesubsection*
 
+.. _process_index:
 
 Working with the kernel development community
 =============================================
@@ -23,7 +24,10 @@ Below are the essential guides that every developer should read.
    development-process
    submitting-patches
    coding-style
+   maintainer-pgp-guide
    email-clients
+   kernel-enforcement-statement
+   kernel-driver-statement
 
 Other guides to the community that are of interest to most developers are: 
 
@@ -48,6 +52,7 @@ lack of a better place.
    adding-syscalls
    magic-number
    volatile-considered-harmful
+   clang-format
 
 .. only::  subproject and html
 

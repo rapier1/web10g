@@ -36,7 +36,7 @@ static unsigned int dbg_level;
 #include "../libcxgbi.h"
 
 #define	DRV_MODULE_NAME		"cxgb4i"
-#define DRV_MODULE_DESC		"Chelsio T4/T5 iSCSI Driver"
+#define DRV_MODULE_DESC		"Chelsio T4-T6 iSCSI Driver"
 #define	DRV_MODULE_VERSION	"0.9.5-ko"
 #define DRV_MODULE_RELDATE	"Apr. 2015"
 
@@ -103,6 +103,7 @@ static struct scsi_host_template cxgb4i_host_template = {
 	.sg_tablesize	= SG_ALL,
 	.max_sectors	= 0xFFFF,
 	.cmd_per_lun	= ISCSI_DEF_CMD_PER_LUN,
+	.eh_timed_out	= iscsi_eh_cmd_timed_out,
 	.eh_abort_handler = iscsi_eh_abort,
 	.eh_device_reset_handler = iscsi_eh_device_reset,
 	.eh_target_reset_handler = iscsi_eh_recover_target,
@@ -643,7 +644,7 @@ static inline void make_tx_data_wr(struct cxgbi_sock *csk, struct sk_buff *skb,
 	unsigned int wr_ulp_mode = 0, val;
 	bool imm = is_ofld_imm(skb);
 
-	req = (struct fw_ofld_tx_data_wr *)__skb_push(skb, sizeof(*req));
+	req = __skb_push(skb, sizeof(*req));
 
 	if (imm) {
 		req->op_to_immdlen = htonl(FW_WR_OP_V(FW_OFLD_TX_DATA_WR) |
@@ -805,7 +806,7 @@ static void do_act_establish(struct cxgbi_device *cdev, struct sk_buff *skb)
 
 	cxgbi_sock_get(csk);
 	csk->tid = tid;
-	cxgb4_insert_tid(lldi->tids, csk, tid);
+	cxgb4_insert_tid(lldi->tids, csk, tid, csk->csk_family);
 	cxgbi_sock_set_flag(csk, CTPF_HAS_TID);
 
 	free_atid(csk);
@@ -871,10 +872,10 @@ static int act_open_rpl_status_to_errno(int status)
 	}
 }
 
-static void csk_act_open_retry_timer(unsigned long data)
+static void csk_act_open_retry_timer(struct timer_list *t)
 {
 	struct sk_buff *skb = NULL;
-	struct cxgbi_sock *csk = (struct cxgbi_sock *)data;
+	struct cxgbi_sock *csk = from_timer(csk, t, retry_timer);
 	struct cxgb4_lld_info *lldi = cxgbi_cdev_priv(csk->cdev);
 	void (*send_act_open_func)(struct cxgbi_sock *, struct sk_buff *,
 				   struct l2t_entry *);
@@ -955,7 +956,8 @@ static void do_act_open_rpl(struct cxgbi_device *cdev, struct sk_buff *skb)
 	if (status && status != CPL_ERR_TCAM_FULL &&
 	    status != CPL_ERR_CONN_EXIST &&
 	    status != CPL_ERR_ARP_MISS)
-		cxgb4_remove_tid(lldi->tids, csk->port_id, GET_TID(rpl));
+		cxgb4_remove_tid(lldi->tids, csk->port_id, GET_TID(rpl),
+				 csk->csk_family);
 
 	cxgbi_sock_get(csk);
 	spin_lock_bh(&csk->lock);
@@ -1573,6 +1575,7 @@ static void release_offload_resources(struct cxgbi_sock *csk)
 		csk, csk->state, csk->flags, csk->tid);
 
 	cxgbi_sock_free_cpl_skbs(csk);
+	cxgbi_sock_purge_write_queue(csk);
 	if (csk->wr_cred != csk->wr_max_cred) {
 		cxgbi_sock_purge_wr_queue(csk);
 		cxgbi_sock_reset_wr_list(csk);
@@ -1589,12 +1592,12 @@ static void release_offload_resources(struct cxgbi_sock *csk)
 		free_atid(csk);
 	else if (cxgbi_sock_flag(csk, CTPF_HAS_TID)) {
 		lldi = cxgbi_cdev_priv(csk->cdev);
-		cxgb4_remove_tid(lldi->tids, 0, csk->tid);
+		cxgb4_remove_tid(lldi->tids, 0, csk->tid,
+				 csk->csk_family);
 		cxgbi_sock_clear_flag(csk, CTPF_HAS_TID);
 		cxgbi_sock_put(csk);
 	}
 	csk->dst = NULL;
-	csk->cdev = NULL;
 }
 
 static int init_act_open(struct cxgbi_sock *csk)
@@ -1606,6 +1609,7 @@ static int init_act_open(struct cxgbi_sock *csk)
 	struct neighbour *n = NULL;
 	void *daddr;
 	unsigned int step;
+	unsigned int rxq_idx;
 	unsigned int size, size6;
 	unsigned int linkspeed;
 	unsigned int rcv_winf, snd_winf;
@@ -1631,6 +1635,9 @@ static int init_act_open(struct cxgbi_sock *csk)
 		pr_err("%s, can't get neighbour of csk->dst.\n", ndev->name);
 		goto rel_resource;
 	}
+
+	if (!(n->nud_state & NUD_VALID))
+		neigh_event_send(n, NULL);
 
 	csk->atid = cxgb4_alloc_atid(lldi->tids, csk);
 	if (csk->atid < 0) {
@@ -1684,7 +1691,9 @@ static int init_act_open(struct cxgbi_sock *csk)
 	step = lldi->ntxq / lldi->nchan;
 	csk->txq_idx = cxgb4_port_idx(ndev) * step;
 	step = lldi->nrxq / lldi->nchan;
-	csk->rss_qid = lldi->rxq_ids[cxgb4_port_idx(ndev) * step];
+	rxq_idx = (cxgb4_port_idx(ndev) * step) + (cdev->rxq_idx_cntr % step);
+	cdev->rxq_idx_cntr++;
+	csk->rss_qid = lldi->rxq_ids[rxq_idx];
 	linkspeed = ((struct port_info *)netdev_priv(ndev))->link_cfg.speed;
 	csk->snd_win = cxgb4i_snd_win;
 	csk->rcv_win = cxgb4i_rcv_win;
@@ -2099,12 +2108,12 @@ static int t4_uld_rx_handler(void *handle, const __be64 *rsp,
 	log_debug(1 << CXGBI_DBG_TOE,
 		"cdev %p, opcode 0x%x(0x%x,0x%x), skb %p.\n",
 		 cdev, opc, rpl->ot.opcode_tid, ntohl(rpl->ot.opcode_tid), skb);
-	if (cxgb4i_cplhandlers[opc])
-		cxgb4i_cplhandlers[opc](cdev, skb);
-	else {
+	if (opc >= ARRAY_SIZE(cxgb4i_cplhandlers) || !cxgb4i_cplhandlers[opc]) {
 		pr_err("No handler for opcode 0x%x.\n", opc);
 		__kfree_skb(skb);
-	}
+	} else
+		cxgb4i_cplhandlers[opc](cdev, skb);
+
 	return 0;
 nomem:
 	log_debug(1 << CXGBI_DBG_TOE, "OOM bailing out.\n");

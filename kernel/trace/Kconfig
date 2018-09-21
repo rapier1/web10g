@@ -12,22 +12,22 @@ config NOP_TRACER
 config HAVE_FTRACE_NMI_ENTER
 	bool
 	help
-	  See Documentation/trace/ftrace-design.txt
+	  See Documentation/trace/ftrace-design.rst
 
 config HAVE_FUNCTION_TRACER
 	bool
 	help
-	  See Documentation/trace/ftrace-design.txt
+	  See Documentation/trace/ftrace-design.rst
 
 config HAVE_FUNCTION_GRAPH_TRACER
 	bool
 	help
-	  See Documentation/trace/ftrace-design.txt
+	  See Documentation/trace/ftrace-design.rst
 
 config HAVE_DYNAMIC_FTRACE
 	bool
 	help
-	  See Documentation/trace/ftrace-design.txt
+	  See Documentation/trace/ftrace-design.rst
 
 config HAVE_DYNAMIC_FTRACE_WITH_REGS
 	bool
@@ -35,12 +35,12 @@ config HAVE_DYNAMIC_FTRACE_WITH_REGS
 config HAVE_FTRACE_MCOUNT_RECORD
 	bool
 	help
-	  See Documentation/trace/ftrace-design.txt
+	  See Documentation/trace/ftrace-design.rst
 
 config HAVE_SYSCALL_TRACEPOINTS
 	bool
 	help
-	  See Documentation/trace/ftrace-design.txt
+	  See Documentation/trace/ftrace-design.rst
 
 config HAVE_FENTRY
 	bool
@@ -110,11 +110,7 @@ config GENERIC_TRACER
 #
 config TRACING_SUPPORT
 	bool
-	# PPC32 has no irqflags tracing support, but it can use most of the
-	# tracers anyway, they were tested to build and work. Note that new
-	# exceptions to this list aren't welcomed, better implement the
-	# irqflags tracing for your architecture.
-	depends on TRACE_IRQFLAGS_SUPPORT || PPC32
+	depends on TRACE_IRQFLAGS_SUPPORT
 	depends on STACKTRACE_SUPPORT
 	default y
 
@@ -134,7 +130,8 @@ config FUNCTION_TRACER
 	select KALLSYMS
 	select GENERIC_TRACER
 	select CONTEXT_SWITCH_TRACER
-        select GLOB
+	select GLOB
+	select TASKS_RCU if PREEMPT
 	help
 	  Enable the kernel to trace every kernel function. This is done
 	  by using a compiler feature to insert a small, 5-byte No-Operation
@@ -158,6 +155,18 @@ config FUNCTION_GRAPH_TRACER
 	  the return value. This is done by setting the current return
 	  address on the current task structure into a stack of calls.
 
+
+config PREEMPTIRQ_EVENTS
+	bool "Enable trace events for preempt and irq disable/enable"
+	select TRACE_IRQFLAGS
+	depends on DEBUG_PREEMPT || !PROVE_LOCKING
+	depends on TRACING
+	default n
+	help
+	  Enable tracing of disable and enable events for preemption and irqs.
+	  For tracing preempt disable/enable events, DEBUG_PREEMPT must be
+	  enabled. For tracing irq disable/enable events, PROVE_LOCKING must
+	  be disabled.
 
 config IRQSOFF_TRACER
 	bool "Interrupts-off Latency Tracer"
@@ -223,7 +232,7 @@ config HWLAT_TRACER
 	select GENERIC_TRACER
 	help
 	 This tracer, when enabled will create one or more kernel threads,
-	 depening on what the cpumask file is set to, which each thread
+	 depending on what the cpumask file is set to, which each thread
 	 spinning in a loop looking for interruptions caused by
 	 something other than the kernel. For example, if a
 	 System Management Interrupt (SMI) takes a noticeable amount of
@@ -238,7 +247,7 @@ config HWLAT_TRACER
 				     iteration
 
 	 A kernel thread is created that will spin with interrupts disabled
-	 for "width" microseconds in every "widow" cycle. It will not spin
+	 for "width" microseconds in every "window" cycle. It will not spin
 	 for "window - width" microseconds, where the system can
 	 continue to operate.
 
@@ -342,7 +351,7 @@ config PROFILE_ANNOTATED_BRANCHES
 	  on if you need to profile the system's use of these macros.
 
 config PROFILE_ALL_BRANCHES
-	bool "Profile all if conditionals"
+	bool "Profile all if conditionals" if !FORTIFY_SOURCE
 	select TRACE_BRANCH_PROFILING
 	help
 	  This tracer profiles all branch conditions. Every if ()
@@ -429,7 +438,7 @@ config BLK_DEV_IO_TRACE
 
 	  If unsure, say N.
 
-config KPROBE_EVENT
+config KPROBE_EVENTS
 	depends on KPROBES
 	depends on HAVE_REGS_AND_STACK_ACCESS_API
 	bool "Enable kprobes-based dynamic events"
@@ -439,7 +448,7 @@ config KPROBE_EVENT
 	help
 	  This allows the user to add tracing events (similar to tracepoints)
 	  on the fly via the ftrace interface. See
-	  Documentation/trace/kprobetrace.txt for more details.
+	  Documentation/trace/kprobetrace.rst for more details.
 
 	  Those events can be inserted wherever kprobes can probe, and record
 	  various register and memory values.
@@ -447,7 +456,7 @@ config KPROBE_EVENT
 	  This option is also required by perf-probe subcommand of perf tools.
 	  If you want to use perf tools, this option is strongly recommended.
 
-config UPROBE_EVENT
+config UPROBE_EVENTS
 	bool "Enable uprobes-based dynamic events"
 	depends on ARCH_SUPPORTS_UPROBES
 	depends on MMU
@@ -455,7 +464,7 @@ config UPROBE_EVENT
 	select UPROBES
 	select PROBE_EVENTS
 	select TRACING
-	default n
+	default y
 	help
 	  This allows the user to add tracing events on top of userspace
 	  dynamic events (similar to tracepoints) on the fly via the trace
@@ -466,7 +475,7 @@ config UPROBE_EVENT
 
 config BPF_EVENTS
 	depends on BPF_SYSCALL
-	depends on (KPROBE_EVENT || UPROBE_EVENT) && PERF_EVENTS
+	depends on (KPROBE_EVENTS || UPROBE_EVENTS) && PERF_EVENTS
 	bool
 	default y
 	help
@@ -517,6 +526,15 @@ config FUNCTION_PROFILER
 
 	  If in doubt, say N.
 
+config BPF_KPROBE_OVERRIDE
+	bool "Enable BPF programs to override a kprobed function"
+	depends on BPF_EVENTS
+	depends on FUNCTION_ERROR_INJECTION
+	default n
+	help
+	 Allows BPF to override the execution of a probed function and
+	 set a different return value.  This is used for error injection.
+
 config FTRACE_MCOUNT_RECORD
 	def_bool y
 	depends on DYNAMIC_FTRACE
@@ -557,7 +575,7 @@ config MMIOTRACE
 	  implementation and works via page faults. Tracing is disabled by
 	  default and can be enabled at run-time.
 
-	  See Documentation/trace/mmiotrace.txt.
+	  See Documentation/trace/mmiotrace.rst.
 	  If you are not helping to develop drivers, say N.
 
 config TRACING_MAP
@@ -584,7 +602,10 @@ config HIST_TRIGGERS
 	  event activity as an initial guide for further investigation
 	  using more advanced tools.
 
-	  See Documentation/trace/events.txt.
+	  Inter-event tracing of quantities such as latencies is also
+	  supported using hist triggers under this option.
+
+	  See Documentation/trace/histogram.txt.
 	  If in doubt, say N.
 
 config MMIOTRACE_TEST
@@ -666,30 +687,30 @@ config RING_BUFFER_STARTUP_TEST
 
 	 If unsure, say N
 
-config TRACE_ENUM_MAP_FILE
-       bool "Show enum mappings for trace events"
+config TRACE_EVAL_MAP_FILE
+       bool "Show eval mappings for trace events"
        depends on TRACING
        help
-        The "print fmt" of the trace events will show the enum names instead
-	of their values. This can cause problems for user space tools that
-	use this string to parse the raw data as user space does not know
+	The "print fmt" of the trace events will show the enum/sizeof names
+	instead	of their values. This can cause problems for user space tools
+	that use this string to parse the raw data as user space does not know
 	how to convert the string to its value.
 
 	To fix this, there's a special macro in the kernel that can be used
-	to convert the enum into its value. If this macro is used, then the
-	print fmt strings will have the enums converted to their values.
+	to convert an enum/sizeof into its value. If this macro is used, then
+	the print fmt strings will be converted to their values.
 
 	If something does not get converted properly, this option can be
-	used to show what enums the kernel tried to convert.
+	used to show what enums/sizeof the kernel tried to convert.
 
-	This option is for debugging the enum conversions. A file is created
-	in the tracing directory called "enum_map" that will show the enum
+	This option is for debugging the conversions. A file is created
+	in the tracing directory called "eval_map" that will show the
 	names matched with their values and what trace event system they
 	belong too.
 
 	Normally, the mapping of the strings to values will be freed after
 	boot up or module load. With this option, they will not be freed, as
-	they are needed for the "enum_map" file. Enabling this option will
+	they are needed for the "eval_map" file. Enabling this option will
 	increase the memory footprint of the running kernel.
 
 	If unsure, say N

@@ -7,7 +7,7 @@
  */
 
 #include <generated/compile.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/uts.h>
 #include <linux/utsname.h>
 #include <generated/utsrelease.h>
@@ -23,9 +23,7 @@ int version_string(LINUX_VERSION_CODE);
 #endif
 
 struct uts_namespace init_uts_ns = {
-	.kref = {
-		.refcount	= ATOMIC_INIT(2),
-	},
+	.kref = KREF_INIT(2),
 	.name = {
 		.sysname	= UTS_SYSNAME,
 		.nodename	= UTS_NODENAME,

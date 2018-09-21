@@ -79,11 +79,17 @@ int x509_get_sig_params(struct x509_certificate *cert)
 	desc->tfm = tfm;
 	desc->flags = CRYPTO_TFM_REQ_MAY_SLEEP;
 
-	ret = crypto_shash_init(desc);
+	ret = crypto_shash_digest(desc, cert->tbs, cert->tbs_size, sig->digest);
 	if (ret < 0)
 		goto error_2;
-	might_sleep();
-	ret = crypto_shash_finup(desc, cert->tbs, cert->tbs_size, sig->digest);
+
+	ret = is_hash_blacklisted(sig->digest, sig->digest_size, "tbs");
+	if (ret == -EKEYREJECTED) {
+		pr_err("Cert %*phN is blacklisted\n",
+		       sig->digest_size, sig->digest);
+		cert->blacklisted = true;
+		ret = 0;
+	}
 
 error_2:
 	kfree(desc);
@@ -125,7 +131,7 @@ int x509_check_for_self_signed(struct x509_certificate *cert)
 	}
 
 	ret = -EKEYREJECTED;
-	if (cert->pub->pkey_algo != cert->sig->pkey_algo)
+	if (strcmp(cert->pub->pkey_algo, cert->sig->pkey_algo) != 0)
 		goto out;
 
 	ret = public_key_verify_signature(cert->pub, cert->sig);
@@ -185,6 +191,11 @@ static int x509_key_preparse(struct key_preparsed_payload *prep)
 		pr_devel("Cert Signature: %s + %s\n",
 			 cert->sig->pkey_algo, cert->sig->hash_algo);
 	}
+
+	/* Don't permit addition of blacklisted keys */
+	ret = -EKEYREJECTED;
+	if (cert->blacklisted)
+		goto error_free_cert;
 
 	/* Propose a description */
 	sulen = strlen(cert->subject);
@@ -260,4 +271,5 @@ module_init(x509_key_init);
 module_exit(x509_key_exit);
 
 MODULE_DESCRIPTION("X.509 certificate parser");
+MODULE_AUTHOR("Red Hat, Inc.");
 MODULE_LICENSE("GPL");

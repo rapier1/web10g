@@ -31,13 +31,13 @@
  * SOFTWARE.
  */
 
+#include <net/addrconf.h>
 #include "rxe.h"
 #include "rxe_loc.h"
 
 MODULE_AUTHOR("Bob Pearson, Frank Zago, John Groves, Kamal Heib");
 MODULE_DESCRIPTION("Soft RDMA transport");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_VERSION("0.2");
 
 /* free resources for all ports on a device */
 static void rxe_cleanup_ports(struct rxe_dev *rxe)
@@ -64,6 +64,8 @@ static void rxe_cleanup(struct rxe_dev *rxe)
 	rxe_pool_cleanup(&rxe->mc_elem_pool);
 
 	rxe_cleanup_ports(rxe);
+
+	crypto_free_shash(rxe->tfm);
 }
 
 /* called when all references have been dropped */
@@ -75,14 +77,8 @@ void rxe_release(struct kref *kref)
 	ib_dealloc_device(&rxe->ib_dev);
 }
 
-void rxe_dev_put(struct rxe_dev *rxe)
-{
-	kref_put(&rxe->ref_cnt, rxe_release);
-}
-EXPORT_SYMBOL_GPL(rxe_dev_put);
-
 /* initialize rxe device parameters */
-static int rxe_init_device_param(struct rxe_dev *rxe)
+static void rxe_init_device_param(struct rxe_dev *rxe)
 {
 	rxe->max_inline_data			= RXE_MAX_INLINE_DATA;
 
@@ -126,8 +122,6 @@ static int rxe_init_device_param(struct rxe_dev *rxe)
 	rxe->attr.local_ca_ack_delay		= RXE_LOCAL_CA_ACK_DELAY;
 
 	rxe->max_ucontext			= RXE_MAX_UCONTEXT;
-
-	return 0;
 }
 
 /* initialize port attributes */
@@ -178,7 +172,8 @@ static int rxe_init_ports(struct rxe_dev *rxe)
 		return -ENOMEM;
 
 	port->pkey_tbl[0] = 0xffff;
-	port->port_guid = rxe->ifc_ops->port_guid(rxe);
+	addrconf_addr_eui48((unsigned char *)&port->port_guid,
+			    rxe->ndev->dev_addr);
 
 	spin_lock_init(&port->port_lock);
 
@@ -296,7 +291,7 @@ err1:
 	return err;
 }
 
-int rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu)
+void rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu)
 {
 	struct rxe_port *port = &rxe->port;
 	enum ib_mtu mtu;
@@ -308,10 +303,7 @@ int rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu)
 
 	port->attr.active_mtu = mtu;
 	port->mtu_cap = ib_mtu_enum_to_int(mtu);
-
-	return 0;
 }
-EXPORT_SYMBOL(rxe_set_mtu);
 
 /* called by ifc layer to create new rxe device.
  * The caller should allocate memory for rxe by calling ib_alloc_device.
@@ -326,9 +318,7 @@ int rxe_add(struct rxe_dev *rxe, unsigned int mtu)
 	if (err)
 		goto err1;
 
-	err = rxe_set_mtu(rxe, mtu);
-	if (err)
-		goto err1;
+	rxe_set_mtu(rxe, mtu);
 
 	err = rxe_register_device(rxe);
 	if (err)
@@ -340,7 +330,6 @@ err1:
 	rxe_dev_put(rxe);
 	return err;
 }
-EXPORT_SYMBOL(rxe_add);
 
 /* called by the ifc layer to remove a device */
 void rxe_remove(struct rxe_dev *rxe)
@@ -349,7 +338,6 @@ void rxe_remove(struct rxe_dev *rxe)
 
 	rxe_dev_put(rxe);
 }
-EXPORT_SYMBOL(rxe_remove);
 
 static int __init rxe_module_init(void)
 {

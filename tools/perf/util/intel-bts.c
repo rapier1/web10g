@@ -14,7 +14,9 @@
  */
 
 #include <endian.h>
+#include <errno.h>
 #include <byteswap.h>
+#include <inttypes.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/bitops.h>
@@ -65,7 +67,6 @@ struct intel_bts {
 	u64				branches_sample_type;
 	u64				branches_id;
 	size_t				branches_event_size;
-	bool				synth_needs_swap;
 	unsigned long			num_events;
 };
 
@@ -301,8 +302,7 @@ static int intel_bts_synth_branch_sample(struct intel_bts_queue *btsq,
 		event.sample.header.size = bts->branches_event_size;
 		ret = perf_event__synthesize_sample(&event,
 						    bts->branches_sample_type,
-						    0, &sample,
-						    bts->synth_needs_swap);
+						    0, &sample);
 		if (ret)
 			return ret;
 	}
@@ -335,8 +335,7 @@ static int intel_bts_get_next_insn(struct intel_bts_queue *btsq, u64 ip)
 	if (!thread)
 		return -1;
 
-	thread__find_addr_map(thread, cpumode, MAP__FUNCTION, ip, &al);
-	if (!al.map || !al.map->dso)
+	if (!thread__find_map(thread, cpumode, ip, &al) || !al.map->dso)
 		goto out_put;
 
 	len = dso__data_read_addr(al.map->dso, al.map, machine, ip, buf,
@@ -498,7 +497,7 @@ static int intel_bts_process_queue(struct intel_bts_queue *btsq, u64 *timestamp)
 	}
 
 	if (!buffer->data) {
-		int fd = perf_data_file__fd(btsq->bts->session->file);
+		int fd = perf_data__fd(btsq->bts->session->data);
 
 		buffer->data = auxtrace_buffer__get_data(buffer, fd);
 		if (!buffer->data) {
@@ -662,10 +661,10 @@ static int intel_bts_process_auxtrace_event(struct perf_session *session,
 	if (!bts->data_queued) {
 		struct auxtrace_buffer *buffer;
 		off_t data_offset;
-		int fd = perf_data_file__fd(session->file);
+		int fd = perf_data__fd(session->data);
 		int err;
 
-		if (perf_data_file__is_pipe(session->file)) {
+		if (perf_data__is_pipe(session->data)) {
 			data_offset = 0;
 		} else {
 			data_offset = lseek(fd, 0, SEEK_CUR);
@@ -839,8 +838,6 @@ static int intel_bts_synth_events(struct intel_bts *bts,
 				__perf_evsel__sample_size(attr.sample_type);
 	}
 
-	bts->synth_needs_swap = evsel->needs_swap;
-
 	return 0;
 }
 
@@ -863,8 +860,6 @@ static void intel_bts_print_info(u64 *arr, int start, int finish)
 	for (i = start; i <= finish; i++)
 		fprintf(stdout, intel_bts_info_fmts[i], arr[i]);
 }
-
-u64 intel_bts_auxtrace_info_priv[INTEL_BTS_AUXTRACE_PRIV_SIZE];
 
 int intel_bts_process_auxtrace_info(union perf_event *event,
 				    struct perf_session *session)

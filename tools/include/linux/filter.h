@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Linux Socket Filter Data Structures
  */
@@ -168,6 +169,16 @@
 		.off   = OFF,					\
 		.imm   = 0 })
 
+/* Atomic memory add, *(uint *)(dst_reg + off16) += src_reg */
+
+#define BPF_STX_XADD(SIZE, DST, SRC, OFF)			\
+	((struct bpf_insn) {					\
+		.code  = BPF_STX | BPF_SIZE(SIZE) | BPF_XADD,	\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
+		.off   = OFF,					\
+		.imm   = 0 })
+
 /* Memory store, *(uint *) (dst_reg + off16) = imm32 */
 
 #define BPF_ST_MEM(SIZE, DST, OFF, IMM)				\
@@ -197,6 +208,16 @@
 		.src_reg = 0,					\
 		.off   = OFF,					\
 		.imm   = IMM })
+
+/* Unconditional jumps, goto pc + off16 */
+
+#define BPF_JMP_A(OFF)						\
+	((struct bpf_insn) {					\
+		.code  = BPF_JMP | BPF_JA,			\
+		.dst_reg = 0,					\
+		.src_reg = 0,					\
+		.off   = OFF,					\
+		.imm   = 0 })
 
 /* Function call */
 
@@ -241,6 +262,16 @@
 
 #define BPF_LD_MAP_FD(DST, MAP_FD)				\
 	BPF_LD_IMM64_RAW(DST, BPF_PSEUDO_MAP_FD, MAP_FD)
+
+/* Relative call */
+
+#define BPF_CALL_REL(TGT)					\
+	((struct bpf_insn) {					\
+		.code  = BPF_JMP | BPF_CALL,			\
+		.dst_reg = 0,					\
+		.src_reg = BPF_PSEUDO_CALL,			\
+		.off   = 0,					\
+		.imm   = TGT })
 
 /* Program exit */
 

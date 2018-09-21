@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * sysfs.h - definitions for the device driver filesystem
  *
@@ -112,17 +113,22 @@ struct attribute_group {
 }
 
 #define __ATTR_RO(_name) {						\
-	.attr	= { .name = __stringify(_name), .mode = S_IRUGO },	\
+	.attr	= { .name = __stringify(_name), .mode = 0444 },		\
+	.show	= _name##_show,						\
+}
+
+#define __ATTR_RO_MODE(_name, _mode) {					\
+	.attr	= { .name = __stringify(_name),				\
+		    .mode = VERIFY_OCTAL_PERMISSIONS(_mode) },		\
 	.show	= _name##_show,						\
 }
 
 #define __ATTR_WO(_name) {						\
-	.attr	= { .name = __stringify(_name), .mode = S_IWUSR },	\
+	.attr	= { .name = __stringify(_name), .mode = 0200 },		\
 	.store	= _name##_store,					\
 }
 
-#define __ATTR_RW(_name) __ATTR(_name, (S_IWUSR | S_IRUGO),		\
-			 _name##_show, _name##_store)
+#define __ATTR_RW(_name) __ATTR(_name, 0644, _name##_show, _name##_store)
 
 #define __ATTR_NULL { .attr = { .name = NULL } }
 
@@ -185,14 +191,13 @@ struct bin_attribute {
 }
 
 #define __BIN_ATTR_RO(_name, _size) {					\
-	.attr	= { .name = __stringify(_name), .mode = S_IRUGO },	\
+	.attr	= { .name = __stringify(_name), .mode = 0444 },		\
 	.read	= _name##_read,						\
 	.size	= _size,						\
 }
 
-#define __BIN_ATTR_RW(_name, _size) __BIN_ATTR(_name,			\
-				   (S_IWUSR | S_IRUGO), _name##_read,	\
-				   _name##_write, _size)
+#define __BIN_ATTR_RW(_name, _size)					\
+	__BIN_ATTR(_name, 0644, _name##_read, _name##_write, _size)
 
 #define __BIN_ATTR_NULL __ATTR_NULL
 
@@ -512,7 +517,7 @@ static inline void sysfs_notify_dirent(struct kernfs_node *kn)
 }
 
 static inline struct kernfs_node *sysfs_get_dirent(struct kernfs_node *parent,
-						   const unsigned char *name)
+						   const char *name)
 {
 	return kernfs_find_and_get(parent, name);
 }

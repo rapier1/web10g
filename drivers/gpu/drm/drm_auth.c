@@ -31,17 +31,18 @@
 #include <drm/drmP.h>
 #include "drm_internal.h"
 #include "drm_legacy.h"
+#include <drm/drm_lease.h>
 
 /**
  * DOC: master and authentication
  *
- * struct &drm_master is used to track groups of clients with open
- * primary/legacy device nodes. For every struct &drm_file which has had at
+ * &struct drm_master is used to track groups of clients with open
+ * primary/legacy device nodes. For every &struct drm_file which has had at
  * least once successfully became the device master (either through the
  * SET_MASTER IOCTL, or implicitly through opening the primary device node when
  * no one else is the current master that time) there exists one &drm_master.
- * This is noted in the is_master member of &drm_file. All other clients have
- * just a pointer to the &drm_master they are associated with.
+ * This is noted in &drm_file.is_master. All other clients have just a pointer
+ * to the &drm_master they are associated with.
  *
  * In addition only one &drm_master can be the current master for a &drm_device.
  * It can be switched through the DROP_MASTER and SET_MASTER IOCTL, or
@@ -93,7 +94,7 @@ int drm_authmagic(struct drm_device *dev, void *data,
 	return file ? 0 : -EINVAL;
 }
 
-static struct drm_master *drm_master_create(struct drm_device *dev)
+struct drm_master *drm_master_create(struct drm_device *dev)
 {
 	struct drm_master *master;
 
@@ -106,6 +107,14 @@ static struct drm_master *drm_master_create(struct drm_device *dev)
 	init_waitqueue_head(&master->lock.lock_queue);
 	idr_init(&master->magic_map);
 	master->dev = dev;
+
+	/* initialize the tree of output resource lessees */
+	master->lessor = NULL;
+	master->lessee_id = 0;
+	INIT_LIST_HEAD(&master->lessees);
+	INIT_LIST_HEAD(&master->lessee_list);
+	idr_init(&master->leases);
+	idr_init(&master->lessee_idr);
 
 	return master;
 }
@@ -189,6 +198,12 @@ int drm_setmaster_ioctl(struct drm_device *dev, void *data,
 		goto out_unlock;
 	}
 
+	if (file_priv->master->lessor != NULL) {
+		DRM_DEBUG_LEASE("Attempt to set lessee %d as master\n", file_priv->master->lessee_id);
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
 	ret = drm_set_master(dev, file_priv, false);
 out_unlock:
 	mutex_unlock(&dev->master_mutex);
@@ -214,6 +229,12 @@ int drm_dropmaster_ioctl(struct drm_device *dev, void *data,
 
 	if (!dev->master)
 		goto out_unlock;
+
+	if (file_priv->master->lessor != NULL) {
+		DRM_DEBUG_LEASE("Attempt to drop lessee %d as master\n", file_priv->master->lessee_id);
+		ret = -EINVAL;
+		goto out_unlock;
+	}
 
 	ret = 0;
 	drm_drop_master(dev, file_priv);
@@ -270,6 +291,13 @@ void drm_master_release(struct drm_file *file_priv)
 	if (dev->master == file_priv->master)
 		drm_drop_master(dev, file_priv);
 out:
+	if (drm_core_check_feature(dev, DRIVER_MODESET) && file_priv->is_master) {
+		/* Revoke any leases held by this or lessees, but only if
+		 * this is the "real" master
+		 */
+		drm_lease_revoke(master);
+	}
+
 	/* drop the master reference held by the file priv */
 	if (file_priv->master)
 		drm_master_put(&file_priv->master);
@@ -288,13 +316,13 @@ out:
  */
 bool drm_is_current_master(struct drm_file *fpriv)
 {
-	return fpriv->is_master && fpriv->master == fpriv->minor->dev->master;
+	return fpriv->is_master && drm_lease_owner(fpriv->master) == fpriv->minor->dev->master;
 }
 EXPORT_SYMBOL(drm_is_current_master);
 
 /**
  * drm_master_get - reference a master pointer
- * @master: struct &drm_master
+ * @master: &struct drm_master
  *
  * Increments the reference count of @master and returns a pointer to @master.
  */
@@ -310,19 +338,25 @@ static void drm_master_destroy(struct kref *kref)
 	struct drm_master *master = container_of(kref, struct drm_master, refcount);
 	struct drm_device *dev = master->dev;
 
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		drm_lease_destroy(master);
+
 	if (dev->driver->master_destroy)
 		dev->driver->master_destroy(dev, master);
 
 	drm_legacy_master_rmmaps(dev, master);
 
 	idr_destroy(&master->magic_map);
+	idr_destroy(&master->leases);
+	idr_destroy(&master->lessee_idr);
+
 	kfree(master->unique);
 	kfree(master);
 }
 
 /**
  * drm_master_put - unreference and clear a master pointer
- * @master: pointer to a pointer of struct &drm_master
+ * @master: pointer to a pointer of &struct drm_master
  *
  * This decrements the &drm_master behind @master and sets it to NULL.
  */

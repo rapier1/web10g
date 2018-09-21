@@ -44,6 +44,7 @@ Table of Contents
   3.8   /proc/<pid>/fdinfo/<fd> - Information about opened file
   3.9   /proc/<pid>/map_files - Information about memory mapped files
   3.10  /proc/<pid>/timerslack_ns - Task timerslack value
+  3.11	/proc/<pid>/patch_state - Livepatch patch operation state
 
   4	Configuring procfs
   4.1	Mount options
@@ -180,6 +181,7 @@ read the file /proc/PID/status:
   VmPTE:        20 kb
   VmSwap:        0 kB
   HugetlbPages:          0 kB
+  CoreDumping:    0
   Threads:        1
   SigQ:   0/28578
   SigPnd: 0000000000000000
@@ -249,10 +251,11 @@ Table 1-2: Contents of the status files (as of 4.8)
  VmExe                       size of text segment
  VmLib                       size of shared library code
  VmPTE                       size of page table entries
- VmPMD                       size of second level page tables
  VmSwap                      amount of swap used by anonymous private data
                              (shmem swap usage is not included)
  HugetlbPages                size of hugetlb memory portions
+ CoreDumping                 process's memory is currently being dumped
+                             (killing the process may lead to a corrupted core)
  Threads                     number of threads
  SigQ                        number of signals queued/max. number for queue
  SigPnd                      bitmap of pending signals for the thread
@@ -412,6 +415,7 @@ Private_Clean:         0 kB
 Private_Dirty:         0 kB
 Referenced:          892 kB
 Anonymous:             0 kB
+LazyFree:              0 kB
 AnonHugePages:         0 kB
 ShmemPmdMapped:        0 kB
 Shared_Hugetlb:        0 kB
@@ -441,6 +445,11 @@ accessed.
 "Anonymous" shows the amount of memory that does not belong to any file.  Even
 a mapping associated with a file may contain anonymous pages: when MAP_PRIVATE
 and a page is modified, the file page is replaced by a private anonymous copy.
+"LazyFree" shows the amount of memory which is marked by madvise(MADV_FREE).
+The memory isn't freed immediately with madvise(). It's freed in memory
+pressure if the memory is clean. Please note that the printed value might
+be lower than the real value due to optimizations used in the current
+implementation. If this is not desirable please file a bug report.
 "AnonHugePages" shows the ammount of memory backed by transparent hugepage.
 "ShmemPmdMapped" shows the ammount of shared (shmem/tmpfs) memory backed by
 huge pages.
@@ -506,7 +515,8 @@ guarantees:
 
 The /proc/PID/clear_refs is used to reset the PG_Referenced and ACCESSED/YOUNG
 bits on both physical and virtual pages associated with a process, and the
-soft-dirty bit on pte (see Documentation/vm/soft-dirty.txt for details).
+soft-dirty bit on pte (see Documentation/admin-guide/mm/soft-dirty.rst
+for details).
 To clear the bits for all the pages associated with the process
     > echo 1 > /proc/PID/clear_refs
 
@@ -527,7 +537,8 @@ Any other value written to /proc/PID/clear_refs will have no effect.
 
 The /proc/pid/pagemap gives the PFN, which can be used to find the pageflags
 using /proc/kpageflags and number of times a page is mapped using
-/proc/kpagecount. For detailed explanation, see Documentation/vm/pagemap.txt.
+/proc/kpagecount. For detailed explanation, see
+Documentation/admin-guide/mm/pagemap.rst.
 
 The /proc/pid/numa_maps is an extension based on maps, showing the memory
 locality and binding policy, as well as the memory usage (in pages) of
@@ -555,7 +566,7 @@ address   policy    mapping details
 
 Where:
 "address" is the starting address for the mapping;
-"policy" reports the NUMA memory policy set for the mapping (see vm/numa_memory_policy.txt);
+"policy" reports the NUMA memory policy set for the mapping (see Documentation/admin-guide/mm/numa_memory_policy.rst);
 "mapping details" summarizes mapping data such as mapping type, page usage counters,
 node locality page counters (N0 == node0, N1 == node1, ...) and the kernel page
 size, in KB, that is backing the mapping up.
@@ -1779,11 +1790,15 @@ pair provide additional information particular to the objects they represent.
 	pos:	0
 	flags:	02
 	mnt_id:	9
-	tfd:        5 events:       1d data: ffffffffffffffff
+	tfd:        5 events:       1d data: ffffffffffffffff pos:0 ino:61af sdev:7
 
 	where 'tfd' is a target file descriptor number in decimal form,
 	'events' is events mask being watched and the 'data' is data
 	associated with a target [see epoll(7) for more details].
+
+	The 'pos' is current offset of the target file in decimal form
+	[see lseek(2)], 'ino' and 'sdev' are inode and device numbers
+	where target file resides, all in hex format.
 
 	Fsnotify files
 	~~~~~~~~~~~~~~
@@ -1886,6 +1901,23 @@ Valid values are from 0 - ULLONG_MAX
 
 An application setting the value must have PTRACE_MODE_ATTACH_FSCREDS level
 permissions on the task specified to change its timerslack_ns value.
+
+3.11	/proc/<pid>/patch_state - Livepatch patch operation state
+-----------------------------------------------------------------
+When CONFIG_LIVEPATCH is enabled, this file displays the value of the
+patch state for the task.
+
+A value of '-1' indicates that no patch is in transition.
+
+A value of '0' indicates that a patch is in transition and the task is
+unpatched.  If the patch is being enabled, then the task hasn't been
+patched yet.  If the patch is being disabled, then the task has already
+been unpatched.
+
+A value of '1' indicates that a patch is in transition and the task is
+patched.  If the patch is being enabled, then the task has already been
+patched.  If the patch is being disabled, then the task hasn't been
+unpatched yet.
 
 
 ------------------------------------------------------------------------------

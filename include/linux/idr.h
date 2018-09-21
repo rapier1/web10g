@@ -12,46 +12,47 @@
 #ifndef __IDR_H__
 #define __IDR_H__
 
-#include <linux/types.h>
-#include <linux/bitops.h>
-#include <linux/init.h>
-#include <linux/rcupdate.h>
-
-/*
- * Using 6 bits at each layer allows us to allocate 7 layers out of each page.
- * 8 bits only gave us 3 layers out of every pair of pages, which is less
- * efficient except for trees with a largest element between 192-255 inclusive.
- */
-#define IDR_BITS 6
-#define IDR_SIZE (1 << IDR_BITS)
-#define IDR_MASK ((1 << IDR_BITS)-1)
-
-struct idr_layer {
-	int			prefix;	/* the ID prefix of this idr_layer */
-	int			layer;	/* distance from leaf */
-	struct idr_layer __rcu	*ary[1<<IDR_BITS];
-	int			count;	/* When zero, we can release it */
-	union {
-		/* A zero bit means "space here" */
-		DECLARE_BITMAP(bitmap, IDR_SIZE);
-		struct rcu_head		rcu_head;
-	};
-};
+#include <linux/radix-tree.h>
+#include <linux/gfp.h>
+#include <linux/percpu.h>
 
 struct idr {
-	struct idr_layer __rcu	*hint;	/* the last layer allocated from */
-	struct idr_layer __rcu	*top;
-	int			layers;	/* only valid w/o concurrent changes */
-	int			cur;	/* current pos for cyclic allocation */
-	spinlock_t		lock;
-	int			id_free_cnt;
-	struct idr_layer	*id_free;
+	struct radix_tree_root	idr_rt;
+	unsigned int		idr_base;
+	unsigned int		idr_next;
 };
 
-#define IDR_INIT(name)							\
-{									\
-	.lock			= __SPIN_LOCK_UNLOCKED(name.lock),	\
+/*
+ * The IDR API does not expose the tagging functionality of the radix tree
+ * to users.  Use tag 0 to track whether a node has free space below it.
+ */
+#define IDR_FREE	0
+
+/* Set the IDR flag and the IDR_FREE tag */
+#define IDR_RT_MARKER	(ROOT_IS_IDR | (__force gfp_t)			\
+					(1 << (ROOT_TAG_SHIFT + IDR_FREE)))
+
+#define IDR_INIT_BASE(name, base) {					\
+	.idr_rt = RADIX_TREE_INIT(name, IDR_RT_MARKER),			\
+	.idr_base = (base),						\
+	.idr_next = 0,							\
 }
+
+/**
+ * IDR_INIT() - Initialise an IDR.
+ * @name: Name of IDR.
+ *
+ * A freshly-initialised IDR contains no IDs.
+ */
+#define IDR_INIT(name)	IDR_INIT_BASE(name, 0)
+
+/**
+ * DEFINE_IDR() - Define a statically-allocated IDR.
+ * @name: Name of IDR.
+ *
+ * An IDR defined using this macro is ready for use with no additional
+ * initialisation required.  It contains no IDs.
+ */
 #define DEFINE_IDR(name)	struct idr name = IDR_INIT(name)
 
 /**
@@ -62,9 +63,9 @@ struct idr {
  * idr_alloc_cyclic() if it is free (otherwise the search will start from
  * this position).
  */
-static inline unsigned int idr_get_cursor(struct idr *idr)
+static inline unsigned int idr_get_cursor(const struct idr *idr)
 {
-	return READ_ONCE(idr->cur);
+	return READ_ONCE(idr->idr_next);
 }
 
 /**
@@ -77,7 +78,7 @@ static inline unsigned int idr_get_cursor(struct idr *idr)
  */
 static inline void idr_set_cursor(struct idr *idr, unsigned int val)
 {
-	WRITE_ONCE(idr->cur, val);
+	WRITE_ONCE(idr->idr_next, val);
 }
 
 /**
@@ -97,22 +98,59 @@ static inline void idr_set_cursor(struct idr *idr, unsigned int val)
  * period).
  */
 
-/*
- * This is what we export.
- */
-
-void *idr_find_slowpath(struct idr *idp, int id);
 void idr_preload(gfp_t gfp_mask);
-int idr_alloc(struct idr *idp, void *ptr, int start, int end, gfp_t gfp_mask);
-int idr_alloc_cyclic(struct idr *idr, void *ptr, int start, int end, gfp_t gfp_mask);
-int idr_for_each(struct idr *idp,
+
+int idr_alloc(struct idr *, void *ptr, int start, int end, gfp_t);
+int __must_check idr_alloc_u32(struct idr *, void *ptr, u32 *id,
+				unsigned long max, gfp_t);
+int idr_alloc_cyclic(struct idr *, void *ptr, int start, int end, gfp_t);
+void *idr_remove(struct idr *, unsigned long id);
+void *idr_find(const struct idr *, unsigned long id);
+int idr_for_each(const struct idr *,
 		 int (*fn)(int id, void *p, void *data), void *data);
-void *idr_get_next(struct idr *idp, int *nextid);
-void *idr_replace(struct idr *idp, void *ptr, int id);
-void idr_remove(struct idr *idp, int id);
-void idr_destroy(struct idr *idp);
-void idr_init(struct idr *idp);
-bool idr_is_empty(struct idr *idp);
+void *idr_get_next(struct idr *, int *nextid);
+void *idr_get_next_ul(struct idr *, unsigned long *nextid);
+void *idr_replace(struct idr *, void *, unsigned long id);
+void idr_destroy(struct idr *);
+
+/**
+ * idr_init_base() - Initialise an IDR.
+ * @idr: IDR handle.
+ * @base: The base value for the IDR.
+ *
+ * This variation of idr_init() creates an IDR which will allocate IDs
+ * starting at %base.
+ */
+static inline void idr_init_base(struct idr *idr, int base)
+{
+	INIT_RADIX_TREE(&idr->idr_rt, IDR_RT_MARKER);
+	idr->idr_base = base;
+	idr->idr_next = 0;
+}
+
+/**
+ * idr_init() - Initialise an IDR.
+ * @idr: IDR handle.
+ *
+ * Initialise a dynamically allocated IDR.  To initialise a
+ * statically allocated IDR, use DEFINE_IDR().
+ */
+static inline void idr_init(struct idr *idr)
+{
+	idr_init_base(idr, 0);
+}
+
+/**
+ * idr_is_empty() - Are there any IDs allocated?
+ * @idr: IDR handle.
+ *
+ * Return: %true if any IDs have been allocated from this IDR.
+ */
+static inline bool idr_is_empty(const struct idr *idr)
+{
+	return radix_tree_empty(&idr->idr_rt) &&
+		radix_tree_tagged(&idr->idr_rt, IDR_FREE);
+}
 
 /**
  * idr_preload_end - end preload section started with idr_preload()
@@ -126,87 +164,80 @@ static inline void idr_preload_end(void)
 }
 
 /**
- * idr_find - return pointer for given id
- * @idr: idr handle
- * @id: lookup key
- *
- * Return the pointer given the id it has been registered with.  A %NULL
- * return indicates that @id is not valid or you passed %NULL in
- * idr_get_new().
- *
- * This function can be called under rcu_read_lock(), given that the leaf
- * pointers lifetimes are correctly managed.
- */
-static inline void *idr_find(struct idr *idr, int id)
-{
-	struct idr_layer *hint = rcu_dereference_raw(idr->hint);
-
-	if (hint && (id & ~IDR_MASK) == hint->prefix)
-		return rcu_dereference_raw(hint->ary[id & IDR_MASK]);
-
-	return idr_find_slowpath(idr, id);
-}
-
-/**
- * idr_for_each_entry - iterate over an idr's elements of a given type
- * @idp:     idr handle
- * @entry:   the type * to use as cursor
- * @id:      id entry's key
+ * idr_for_each_entry() - Iterate over an IDR's elements of a given type.
+ * @idr: IDR handle.
+ * @entry: The type * to use as cursor
+ * @id: Entry ID.
  *
  * @entry and @id do not need to be initialized before the loop, and
- * after normal terminatinon @entry is left with the value NULL.  This
+ * after normal termination @entry is left with the value NULL.  This
  * is convenient for a "not found" value.
  */
-#define idr_for_each_entry(idp, entry, id)			\
-	for (id = 0; ((entry) = idr_get_next(idp, &(id))) != NULL; ++id)
+#define idr_for_each_entry(idr, entry, id)			\
+	for (id = 0; ((entry) = idr_get_next(idr, &(id))) != NULL; ++id)
 
 /**
- * idr_for_each_entry - continue iteration over an idr's elements of a given type
- * @idp:     idr handle
- * @entry:   the type * to use as cursor
- * @id:      id entry's key
+ * idr_for_each_entry_ul() - Iterate over an IDR's elements of a given type.
+ * @idr: IDR handle.
+ * @entry: The type * to use as cursor.
+ * @id: Entry ID.
  *
- * Continue to iterate over list of given type, continuing after
- * the current position.
+ * @entry and @id do not need to be initialized before the loop, and
+ * after normal termination @entry is left with the value NULL.  This
+ * is convenient for a "not found" value.
  */
-#define idr_for_each_entry_continue(idp, entry, id)			\
-	for ((entry) = idr_get_next((idp), &(id));			\
+#define idr_for_each_entry_ul(idr, entry, id)			\
+	for (id = 0; ((entry) = idr_get_next_ul(idr, &(id))) != NULL; ++id)
+
+/**
+ * idr_for_each_entry_continue() - Continue iteration over an IDR's elements of a given type
+ * @idr: IDR handle.
+ * @entry: The type * to use as a cursor.
+ * @id: Entry ID.
+ *
+ * Continue to iterate over entries, continuing after the current position.
+ */
+#define idr_for_each_entry_continue(idr, entry, id)			\
+	for ((entry) = idr_get_next((idr), &(id));			\
 	     entry;							\
-	     ++id, (entry) = idr_get_next((idp), &(id)))
+	     ++id, (entry) = idr_get_next((idr), &(id)))
 
 /*
  * IDA - IDR based id allocator, use when translation from id to
  * pointer isn't necessary.
- *
- * IDA_BITMAP_LONGS is calculated to be one less to accommodate
- * ida_bitmap->nr_busy so that the whole struct fits in 128 bytes.
  */
 #define IDA_CHUNK_SIZE		128	/* 128 bytes per chunk */
-#define IDA_BITMAP_LONGS	(IDA_CHUNK_SIZE / sizeof(long) - 1)
+#define IDA_BITMAP_LONGS	(IDA_CHUNK_SIZE / sizeof(long))
 #define IDA_BITMAP_BITS 	(IDA_BITMAP_LONGS * sizeof(long) * 8)
 
 struct ida_bitmap {
-	long			nr_busy;
 	unsigned long		bitmap[IDA_BITMAP_LONGS];
 };
 
+DECLARE_PER_CPU(struct ida_bitmap *, ida_bitmap);
+
 struct ida {
-	struct idr		idr;
-	struct ida_bitmap	*free_bitmap;
+	struct radix_tree_root	ida_rt;
 };
 
-#define IDA_INIT(name)		{ .idr = IDR_INIT((name).idr), .free_bitmap = NULL, }
+#define IDA_INIT(name)	{						\
+	.ida_rt = RADIX_TREE_INIT(name, IDR_RT_MARKER | GFP_NOWAIT),	\
+}
 #define DEFINE_IDA(name)	struct ida name = IDA_INIT(name)
 
 int ida_pre_get(struct ida *ida, gfp_t gfp_mask);
 int ida_get_new_above(struct ida *ida, int starting_id, int *p_id);
 void ida_remove(struct ida *ida, int id);
 void ida_destroy(struct ida *ida);
-void ida_init(struct ida *ida);
 
 int ida_simple_get(struct ida *ida, unsigned int start, unsigned int end,
 		   gfp_t gfp_mask);
 void ida_simple_remove(struct ida *ida, unsigned int id);
+
+static inline void ida_init(struct ida *ida)
+{
+	INIT_RADIX_TREE(&ida->ida_rt, IDR_RT_MARKER | GFP_NOWAIT);
+}
 
 /**
  * ida_get_new - allocate new ID
@@ -220,11 +251,8 @@ static inline int ida_get_new(struct ida *ida, int *p_id)
 	return ida_get_new_above(ida, 0, p_id);
 }
 
-static inline bool ida_is_empty(struct ida *ida)
+static inline bool ida_is_empty(const struct ida *ida)
 {
-	return idr_is_empty(&ida->idr);
+	return radix_tree_empty(&ida->ida_rt);
 }
-
-void __init idr_init_cache(void);
-
 #endif /* __IDR_H__ */

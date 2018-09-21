@@ -43,12 +43,12 @@ static bool detect_loud_models(struct fw_unit *unit)
 	const char *const models[] = {
 		"Onyxi",
 		"Onyx-i",
+		"Onyx 1640i",
 		"d.Pro",
 		"Mackie Onyx Satellite",
 		"Tapco LINK.firewire 4x6",
 		"U.420"};
 	char model[32];
-	unsigned int i;
 	int err;
 
 	err = fw_csr_string(unit->directory, CSR_MODEL,
@@ -56,12 +56,7 @@ static bool detect_loud_models(struct fw_unit *unit)
 	if (err < 0)
 		return false;
 
-	for (i = 0; i < ARRAY_SIZE(models); i++) {
-		if (strcmp(models[i], model) == 0)
-			break;
-	}
-
-	return (i < ARRAY_SIZE(models));
+	return match_string(models, ARRAY_SIZE(models), model) >= 0;
 }
 
 static int name_card(struct snd_oxfw *oxfw)
@@ -226,11 +221,11 @@ static void do_registration(struct work_struct *work)
 	if (err < 0)
 		goto error;
 
-	err = detect_quirks(oxfw);
+	err = snd_oxfw_stream_discover(oxfw);
 	if (err < 0)
 		goto error;
 
-	err = snd_oxfw_stream_discover(oxfw);
+	err = detect_quirks(oxfw);
 	if (err < 0)
 		goto error;
 

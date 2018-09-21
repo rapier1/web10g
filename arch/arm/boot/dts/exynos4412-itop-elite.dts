@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * TOPEET's Exynos4412 based itop board device tree source
  *
@@ -7,10 +8,6 @@
  *
  * Device tree source file for TOPEET iTop Exynos 4412 core board
  * which is based on Samsung's Exynos4412 SoC.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /dts-v1/;
@@ -82,17 +79,6 @@
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "wm-sound";
 
-		assigned-clocks = <&clock_audss EXYNOS_MOUT_AUDSS>,
-				<&clock_audss EXYNOS_MOUT_I2S>,
-				<&clock_audss EXYNOS_DOUT_SRP>,
-				<&clock_audss EXYNOS_DOUT_AUD_BUS>;
-		assigned-clock-parents = <&clock CLK_FOUT_EPLL>,
-				<&clock_audss EXYNOS_MOUT_AUDSS>;
-		assigned-clock-rates = <0>,
-				<0>,
-				<112896000>,
-				<11289600>;
-
 		simple-audio-card,format = "i2s";
 		simple-audio-card,bitclock-master = <&link0_codec>;
 		simple-audio-card,frame-master = <&link0_codec>;
@@ -130,19 +116,29 @@
 		compatible = "pwm-beeper";
 		pwms = <&pwm 0 4000000 PWM_POLARITY_INVERTED>;
 	};
-
-	camera: camera {
-		pinctrl-0 = <&cam_port_a_clk_active>;
-		pinctrl-names = "default";
-		status = "okay";
-		assigned-clocks = <&clock CLK_MOUT_CAM0>;
-		assigned-clock-parents = <&clock CLK_XUSBXTI>;
-	};
 };
 
 &adc {
 	vdd-supply = <&ldo3_reg>;
 	status = "okay";
+};
+
+&camera {
+	pinctrl-0 = <&cam_port_a_clk_active>;
+	pinctrl-names = "default";
+	status = "okay";
+	assigned-clocks = <&clock CLK_MOUT_CAM0>;
+	assigned-clock-parents = <&clock CLK_XUSBXTI>;
+};
+
+&clock_audss {
+	assigned-clocks = <&clock_audss EXYNOS_MOUT_AUDSS>,
+			<&clock_audss EXYNOS_MOUT_I2S>,
+			<&clock_audss EXYNOS_DOUT_SRP>,
+			<&clock_audss EXYNOS_DOUT_AUD_BUS>;
+	assigned-clock-parents = <&clock CLK_FOUT_EPLL>,
+			<&clock_audss EXYNOS_MOUT_AUDSS>;
+	assigned-clock-rates = <0>, <0>, <112896000>, <11289600>;
 };
 
 &ehci {
@@ -198,10 +194,6 @@
 	pinctrl-0 = <&i2s0_bus>;
 	pinctrl-names = "default";
 	status = "okay";
-	clocks = <&clock_audss EXYNOS_I2S_BUS>,
-		 <&clock_audss EXYNOS_DOUT_AUD_BUS>,
-		 <&clock_audss EXYNOS_SCLK_I2S>;
-	clock-names = "iis", "i2s_opclk0", "i2s_opclk1";
 };
 
 &pinctrl_1 {

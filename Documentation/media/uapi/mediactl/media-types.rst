@@ -5,13 +5,13 @@
 Types and flags used to represent the media graph elements
 ==========================================================
 
-..  tabularcolumns:: |p{8.0cm}|p{10.5cm}|
+..  tabularcolumns:: |p{8.2cm}|p{10.3cm}|
 
-.. _media-entity-type:
+.. _media-entity-functions:
 
 .. cssclass:: longtable
 
-.. flat-table:: Media entity types
+.. flat-table:: Media entity functions
     :header-rows:  0
     :stub-columns: 0
 
@@ -26,7 +26,7 @@ Types and flags used to represent the media graph elements
 	  ``MEDIA_ENT_F_V4L2_SUBDEV_UNKNOWN``
 
        -  Unknown entity. That generally indicates that a driver didn't
-	  initialize properly the entity, with is a Kernel bug
+	  initialize properly the entity, which is a Kernel bug
 
     -  .. row 2
 
@@ -284,7 +284,8 @@ Types and flags used to represent the media graph elements
 	  supported scaling ratios is entity-specific and can differ
 	  between the horizontal and vertical directions (in particular
 	  scaling can be supported in one direction only). Binning and
-	  skipping are considered as scaling.
+	  sub-sampling (occasionally also referred to as skipping) are
+	  considered as scaling.
 
     -  ..  row 28
 
@@ -292,12 +293,44 @@ Types and flags used to represent the media graph elements
 
        -  ``MEDIA_ENT_F_PROC_VIDEO_STATISTICS``
 
-       -  Video statistics computation (histogram, 3A, ...). An entity
+       -  Video statistics computation (histogram, 3A, etc.). An entity
 	  capable of statistics computation must have one sink pad and
 	  one source pad. It computes statistics over the frames
 	  received on its sink pad and outputs the statistics data on
 	  its source pad.
 
+    -  ..  row 29
+
+       ..  _MEDIA-ENT-F-VID-MUX:
+
+       -  ``MEDIA_ENT_F_VID_MUX``
+
+       - Video multiplexer. An entity capable of multiplexing must have at
+         least two sink pads and one source pad, and must pass the video
+         frame(s) received from the active sink pad to the source pad.
+
+    -  ..  row 30
+
+       ..  _MEDIA-ENT-F-VID-IF-BRIDGE:
+
+       -  ``MEDIA_ENT_F_VID_IF_BRIDGE``
+
+       - Video interface bridge. A video interface bridge entity must have at
+         least one sink pad and at least one source pad. It receives video
+         frames on its sink pad from an input video bus of one type (HDMI, eDP,
+         MIPI CSI-2, etc.), and outputs them on its source pad to an output
+         video bus of another type (eDP, MIPI CSI-2, parallel, etc.).
+
+    -  ..  row 31
+
+       ..  _MEDIA-ENT-F-DTV-DECODER:
+
+       -  ``MEDIA_ENT_F_DTV_DECODER``
+
+       -  Digital video decoder. The basic function of the video decoder is
+	  to accept digital video from a wide variety of sources
+	  and output it in some digital video standard, with appropriate
+	  timing signals.
 
 ..  tabularcolumns:: |p{5.5cm}|p{12.0cm}|
 
@@ -315,7 +348,7 @@ Types and flags used to represent the media graph elements
        -  ``MEDIA_ENT_FL_DEFAULT``
 
        -  Default entity for its type. Used to discover the default audio,
-	  VBI and video devices, the default camera sensor, ...
+	  VBI and video devices, the default camera sensor, etc.
 
     -  .. row 2
 
@@ -323,7 +356,7 @@ Types and flags used to represent the media graph elements
 
        -  ``MEDIA_ENT_FL_CONNECTOR``
 
-       -  The entity represents a data conector
+       -  The entity represents a connector.
 
 
 ..  tabularcolumns:: |p{6.5cm}|p{6.0cm}|p{5.0cm}|

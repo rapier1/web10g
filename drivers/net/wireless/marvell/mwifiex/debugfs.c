@@ -114,7 +114,8 @@ mwifiex_info_read(struct file *file, char __user *ubuf,
 	if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_STA) {
 		p += sprintf(p, "multicast_count=\"%d\"\n",
 			     netdev_mc_count(netdev));
-		p += sprintf(p, "essid=\"%s\"\n", info.ssid.ssid);
+		p += sprintf(p, "essid=\"%.*s\"\n", info.ssid.ssid_len,
+			     info.ssid.ssid);
 		p += sprintf(p, "bssid=\"%pM\"\n", info.bssid);
 		p += sprintf(p, "channel=\"%d\"\n", (int) info.bss_chan);
 		p += sprintf(p, "country_code = \"%s\"\n", info.country_code);
@@ -150,29 +151,6 @@ mwifiex_info_read(struct file *file, char __user *ubuf,
 free_and_exit:
 	free_page(page);
 	return ret;
-}
-
-/*
- * Proc device dump read handler.
- *
- * This function is called when the 'device_dump' file is opened for
- * reading.
- * This function dumps driver information and firmware memory segments
- * (ex. DTCM, ITCM, SQRAM etc.) for
- * debugging.
- */
-static ssize_t
-mwifiex_device_dump_read(struct file *file, char __user *ubuf,
-			 size_t count, loff_t *ppos)
-{
-	struct mwifiex_private *priv = file->private_data;
-
-	if (!priv->adapter->if_ops.device_dump)
-		return -EIO;
-
-	priv->adapter->if_ops.device_dump(priv->adapter);
-
-	return 0;
 }
 
 /*
@@ -939,8 +917,6 @@ mwifiex_reset_write(struct file *file,
 
 	if (adapter->if_ops.card_reset) {
 		dev_info(adapter->dev, "Resetting per request\n");
-		adapter->hw_status = MWIFIEX_HW_STATUS_RESET;
-		mwifiex_cancel_all_pending_cmd(adapter);
 		adapter->if_ops.card_reset(adapter);
 	}
 
@@ -976,7 +952,6 @@ static const struct file_operations mwifiex_dfs_##name##_fops = {       \
 MWIFIEX_DFS_FILE_READ_OPS(info);
 MWIFIEX_DFS_FILE_READ_OPS(debug);
 MWIFIEX_DFS_FILE_READ_OPS(getlog);
-MWIFIEX_DFS_FILE_READ_OPS(device_dump);
 MWIFIEX_DFS_FILE_OPS(regrdwr);
 MWIFIEX_DFS_FILE_OPS(rdeeprom);
 MWIFIEX_DFS_FILE_OPS(memrw);
@@ -1007,7 +982,7 @@ mwifiex_dev_debugfs_init(struct mwifiex_private *priv)
 	MWIFIEX_DFS_ADD_FILE(getlog);
 	MWIFIEX_DFS_ADD_FILE(regrdwr);
 	MWIFIEX_DFS_ADD_FILE(rdeeprom);
-	MWIFIEX_DFS_ADD_FILE(device_dump);
+
 	MWIFIEX_DFS_ADD_FILE(memrw);
 	MWIFIEX_DFS_ADD_FILE(hscfg);
 	MWIFIEX_DFS_ADD_FILE(histogram);
@@ -1045,6 +1020,5 @@ mwifiex_debugfs_init(void)
 void
 mwifiex_debugfs_remove(void)
 {
-	if (mwifiex_dfs_dir)
-		debugfs_remove(mwifiex_dfs_dir);
+	debugfs_remove(mwifiex_dfs_dir);
 }

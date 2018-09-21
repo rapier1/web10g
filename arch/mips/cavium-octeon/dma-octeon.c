@@ -10,7 +10,7 @@
  * IP32 changes by Ilya.
  * Copyright (C) 2010 Cavium Networks, Inc.
  */
-#include <linux/dma-mapping.h>
+#include <linux/dma-direct.h>
 #include <linux/scatterlist.h>
 #include <linux/bootmem.h>
 #include <linux/export.h>
@@ -159,39 +159,11 @@ static void octeon_dma_sync_sg_for_device(struct device *dev,
 static void *octeon_dma_alloc_coherent(struct device *dev, size_t size,
 	dma_addr_t *dma_handle, gfp_t gfp, unsigned long attrs)
 {
-	void *ret;
-
-	/* ignore region specifiers */
-	gfp &= ~(__GFP_DMA | __GFP_DMA32 | __GFP_HIGHMEM);
-
-#ifdef CONFIG_ZONE_DMA
-	if (dev == NULL)
-		gfp |= __GFP_DMA;
-	else if (dev->coherent_dma_mask <= DMA_BIT_MASK(24))
-		gfp |= __GFP_DMA;
-	else
-#endif
-#ifdef CONFIG_ZONE_DMA32
-	     if (dev->coherent_dma_mask <= DMA_BIT_MASK(32))
-		gfp |= __GFP_DMA32;
-	else
-#endif
-		;
-
-	/* Don't invoke OOM killer */
-	gfp |= __GFP_NORETRY;
-
-	ret = swiotlb_alloc_coherent(dev, size, dma_handle, gfp);
+	void *ret = swiotlb_alloc(dev, size, dma_handle, gfp, attrs);
 
 	mb();
 
 	return ret;
-}
-
-static void octeon_dma_free_coherent(struct device *dev, size_t size,
-	void *vaddr, dma_addr_t dma_handle, unsigned long attrs)
-{
-	swiotlb_free_coherent(dev, size, vaddr, dma_handle);
 }
 
 static dma_addr_t octeon_unity_phys_to_dma(struct device *dev, phys_addr_t paddr)
@@ -205,12 +177,12 @@ static phys_addr_t octeon_unity_dma_to_phys(struct device *dev, dma_addr_t daddr
 }
 
 struct octeon_dma_map_ops {
-	struct dma_map_ops dma_map_ops;
+	const struct dma_map_ops dma_map_ops;
 	dma_addr_t (*phys_to_dma)(struct device *dev, phys_addr_t paddr);
 	phys_addr_t (*dma_to_phys)(struct device *dev, dma_addr_t daddr);
 };
 
-dma_addr_t phys_to_dma(struct device *dev, phys_addr_t paddr)
+dma_addr_t __phys_to_dma(struct device *dev, phys_addr_t paddr)
 {
 	struct octeon_dma_map_ops *ops = container_of(get_dma_ops(dev),
 						      struct octeon_dma_map_ops,
@@ -218,9 +190,9 @@ dma_addr_t phys_to_dma(struct device *dev, phys_addr_t paddr)
 
 	return ops->phys_to_dma(dev, paddr);
 }
-EXPORT_SYMBOL(phys_to_dma);
+EXPORT_SYMBOL(__phys_to_dma);
 
-phys_addr_t dma_to_phys(struct device *dev, dma_addr_t daddr)
+phys_addr_t __dma_to_phys(struct device *dev, dma_addr_t daddr)
 {
 	struct octeon_dma_map_ops *ops = container_of(get_dma_ops(dev),
 						      struct octeon_dma_map_ops,
@@ -228,12 +200,12 @@ phys_addr_t dma_to_phys(struct device *dev, dma_addr_t daddr)
 
 	return ops->dma_to_phys(dev, daddr);
 }
-EXPORT_SYMBOL(dma_to_phys);
+EXPORT_SYMBOL(__dma_to_phys);
 
 static struct octeon_dma_map_ops octeon_linear_dma_map_ops = {
 	.dma_map_ops = {
 		.alloc = octeon_dma_alloc_coherent,
-		.free = octeon_dma_free_coherent,
+		.free = swiotlb_free,
 		.map_page = octeon_dma_map_page,
 		.unmap_page = swiotlb_unmap_page,
 		.map_sg = octeon_dma_map_sg,
@@ -319,7 +291,7 @@ void __init plat_swiotlb_setup(void)
 static struct octeon_dma_map_ops _octeon_pci_dma_map_ops = {
 	.dma_map_ops = {
 		.alloc = octeon_dma_alloc_coherent,
-		.free = octeon_dma_free_coherent,
+		.free = swiotlb_free,
 		.map_page = octeon_dma_map_page,
 		.unmap_page = swiotlb_unmap_page,
 		.map_sg = octeon_dma_map_sg,
@@ -333,7 +305,7 @@ static struct octeon_dma_map_ops _octeon_pci_dma_map_ops = {
 	},
 };
 
-struct dma_map_ops *octeon_pci_dma_map_ops;
+const struct dma_map_ops *octeon_pci_dma_map_ops;
 
 void __init octeon_pci_dma_init(void)
 {

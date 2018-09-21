@@ -13,11 +13,12 @@
 #include <linux/buffer_head.h>
 #include <linux/namei.h>
 #include <linux/mm.h>
+#include <linux/cred.h>
 #include <linux/xattr.h>
 #include <linux/posix_acl.h>
 #include <linux/gfs2_ondisk.h>
 #include <linux/crc32.h>
-#include <linux/fiemap.h>
+#include <linux/iomap.h>
 #include <linux/security.h>
 #include <linux/uaccess.h>
 
@@ -108,7 +109,7 @@ static void gfs2_set_iop(struct inode *inode)
  * @no_addr: The inode number
  * @no_formal_ino: The inode generation number
  * @blktype: Requested block type (GFS2_BLKST_DINODE or GFS2_BLKST_UNLINKED;
- *           GFS2_BLKST_FREE do indicate not to verify)
+ *           GFS2_BLKST_FREE to indicate not to verify)
  *
  * If @type is DT_UNKNOWN, the inode type is fetched from disk.
  *
@@ -143,7 +144,7 @@ struct inode *gfs2_inode_lookup(struct super_block *sb, unsigned int type,
 		error = gfs2_glock_get(sdp, no_addr, &gfs2_inode_glops, CREATE, &ip->i_gl);
 		if (unlikely(error))
 			goto fail;
-		ip->i_gl->gl_object = ip;
+		flush_delayed_work(&ip->i_gl->gl_work);
 
 		error = gfs2_glock_get(sdp, no_addr, &gfs2_iopen_glops, CREATE, &io_gl);
 		if (unlikely(error))
@@ -168,12 +169,12 @@ struct inode *gfs2_inode_lookup(struct super_block *sb, unsigned int type,
 			}
 		}
 
+		glock_set_object(ip->i_gl, ip);
 		set_bit(GIF_INVALID, &ip->i_flags);
 		error = gfs2_glock_nq_init(io_gl, LM_ST_SHARED, GL_EXACT, &ip->i_iopen_gh);
 		if (unlikely(error))
 			goto fail_put;
-
-		ip->i_iopen_gh.gh_gl->gl_object = ip;
+		glock_set_object(ip->i_iopen_gh.gh_gl, ip);
 		gfs2_glock_put(io_gl);
 		io_gl = NULL;
 
@@ -188,7 +189,8 @@ struct inode *gfs2_inode_lookup(struct super_block *sb, unsigned int type,
 
 		gfs2_set_iop(inode);
 
-		inode->i_atime.tv_sec = 0;
+		/* Lowest possible timestamp; will be overwritten in gfs2_dinode_in. */
+		inode->i_atime.tv_sec = 1LL << (8 * sizeof(inode->i_atime.tv_sec) - 1);
 		inode->i_atime.tv_nsec = 0;
 
 		unlock_new_inode(inode);
@@ -200,15 +202,14 @@ struct inode *gfs2_inode_lookup(struct super_block *sb, unsigned int type,
 
 fail_refresh:
 	ip->i_iopen_gh.gh_flags |= GL_NOCACHE;
-	ip->i_iopen_gh.gh_gl->gl_object = NULL;
-	gfs2_glock_dq_wait(&ip->i_iopen_gh);
-	gfs2_holder_uninit(&ip->i_iopen_gh);
+	glock_clear_object(ip->i_iopen_gh.gh_gl, ip);
+	gfs2_glock_dq_uninit(&ip->i_iopen_gh);
 fail_put:
 	if (io_gl)
 		gfs2_glock_put(io_gl);
+	glock_clear_object(ip->i_gl, ip);
 	if (gfs2_holder_initialized(&i_gh))
 		gfs2_glock_dq_uninit(&i_gh);
-	ip->i_gl->gl_object = NULL;
 fail:
 	iget_failed(inode);
 	return ERR_PTR(error);
@@ -607,6 +608,7 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	error = gfs2_glock_nq_init(dip->i_gl, LM_ST_EXCLUSIVE, 0, ghs);
 	if (error)
 		goto fail;
+	gfs2_holder_mark_uninitialized(ghs + 1);
 
 	error = create_ok(dip, name, mode);
 	if (error)
@@ -666,6 +668,7 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	ip->i_height = 0;
 	ip->i_depth = 0;
 	ip->i_entries = 0;
+	ip->i_no_addr = 0; /* Temporarily zero until real addr is assigned */
 
 	switch(mode & S_IFMT) {
 	case S_IFREG:
@@ -703,8 +706,9 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	error = gfs2_glock_get(sdp, ip->i_no_addr, &gfs2_inode_glops, CREATE, &ip->i_gl);
 	if (error)
 		goto fail_free_inode;
+	flush_delayed_work(&ip->i_gl->gl_work);
+	glock_set_object(ip->i_gl, ip);
 
-	ip->i_gl->gl_object = ip;
 	error = gfs2_glock_nq_init(ip->i_gl, LM_ST_EXCLUSIVE, GL_SKIP, ghs + 1);
 	if (error)
 		goto fail_free_inode;
@@ -730,7 +734,7 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	if (error)
 		goto fail_gunlock2;
 
-	ip->i_iopen_gh.gh_gl->gl_object = ip;
+	glock_set_object(ip->i_iopen_gh.gh_gl, ip);
 	gfs2_glock_put(io_gl);
 	gfs2_set_iop(inode);
 	insert_inode_hash(inode);
@@ -772,15 +776,17 @@ static int gfs2_create_inode(struct inode *dir, struct dentry *dentry,
 	return error;
 
 fail_gunlock3:
+	glock_clear_object(io_gl, ip);
 	gfs2_glock_dq_uninit(&ip->i_iopen_gh);
 	gfs2_glock_put(io_gl);
 fail_gunlock2:
 	if (io_gl)
 		clear_bit(GLF_INODE_CREATING, &io_gl->gl_flags);
-	gfs2_glock_dq_uninit(ghs + 1);
 fail_free_inode:
-	if (ip->i_gl)
+	if (ip->i_gl) {
+		glock_clear_object(ip->i_gl, ip);
 		gfs2_glock_put(ip->i_gl);
+	}
 	gfs2_rsqa_delete(ip, NULL);
 fail_free_acls:
 	if (default_acl)
@@ -798,6 +804,8 @@ fail_gunlock:
 			&GFS2_I(inode)->i_flags);
 		iput(inode);
 	}
+	if (gfs2_holder_initialized(ghs + 1))
+		gfs2_glock_dq_uninit(ghs + 1);
 fail:
 	return error;
 }
@@ -1144,12 +1152,11 @@ static int gfs2_unlink(struct inode *dir, struct dentry *dentry)
 
 	error = gfs2_trans_begin(sdp, 2*RES_DINODE + 3*RES_LEAF + RES_RG_BIT, 0);
 	if (error)
-		goto out_end_trans;
+		goto out_gunlock;
 
 	error = gfs2_unlink_inode(dip, dentry);
-
-out_end_trans:
 	gfs2_trans_end(sdp);
+
 out_gunlock:
 	gfs2_glock_dq(ghs + 2);
 out_rgrp:
@@ -1176,11 +1183,10 @@ out_inodes:
 static int gfs2_symlink(struct inode *dir, struct dentry *dentry,
 			const char *symname)
 {
-	struct gfs2_sbd *sdp = GFS2_SB(dir);
 	unsigned int size;
 
 	size = strlen(symname);
-	if (size > sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode) - 1)
+	if (size >= gfs2_max_stuffed_size(GFS2_I(dir)))
 		return -ENAMETOOLONG;
 
 	return gfs2_create_inode(dir, dentry, NULL, S_IFLNK | S_IRWXUGO, 0, symname, size, 0, NULL);
@@ -1197,8 +1203,7 @@ static int gfs2_symlink(struct inode *dir, struct dentry *dentry,
 
 static int gfs2_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
-	struct gfs2_sbd *sdp = GFS2_SB(dir);
-	unsigned dsize = sdp->sd_sb.sb_bsize - sizeof(struct gfs2_dinode);
+	unsigned dsize = gfs2_max_stuffed_size(GFS2_I(dir));
 	return gfs2_create_inode(dir, dentry, NULL, S_IFDIR | mode, 0, NULL, dsize, 0, NULL);
 }
 
@@ -1321,19 +1326,11 @@ static int gfs2_ok_to_move(struct gfs2_inode *this, struct gfs2_inode *to)
 static int update_moved_ino(struct gfs2_inode *ip, struct gfs2_inode *ndip,
 			    int dir_rename)
 {
-	int error;
-	struct buffer_head *dibh;
-
 	if (dir_rename)
 		return gfs2_dir_mvino(ip, &gfs2_qdotdot, ndip, DT_DIR);
 
-	error = gfs2_meta_inode_buffer(ip, &dibh);
-	if (error)
-		return error;
 	ip->i_inode.i_ctime = current_time(&ip->i_inode);
-	gfs2_trans_add_meta(ip->i_gl, dibh);
-	gfs2_dinode_out(ip, dibh->b_data);
-	brelse(dibh);
+	mark_inode_dirty_sync(&ip->i_inode);
 	return 0;
 }
 
@@ -1959,9 +1956,10 @@ out:
 
 /**
  * gfs2_getattr - Read out an inode's attributes
- * @mnt: The vfsmount the inode is being accessed from
- * @dentry: The dentry to stat
+ * @path: Object to query
  * @stat: The inode's stats
+ * @request_mask: Mask of STATX_xxx flags indicating the caller's interests
+ * @flags: AT_STATX_xxx setting
  *
  * This may be called from the VFS directly, or from within GFS2 with the
  * inode locked, so we look to see if the glock is already locked and only
@@ -1972,12 +1970,13 @@ out:
  * Returns: errno
  */
 
-static int gfs2_getattr(struct vfsmount *mnt, struct dentry *dentry,
-			struct kstat *stat)
+static int gfs2_getattr(const struct path *path, struct kstat *stat,
+			u32 request_mask, unsigned int flags)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = d_inode(path->dentry);
 	struct gfs2_inode *ip = GFS2_I(inode);
 	struct gfs2_holder gh;
+	u32 gfsflags;
 	int error;
 
 	gfs2_holder_mark_uninitialized(&gh);
@@ -1987,7 +1986,20 @@ static int gfs2_getattr(struct vfsmount *mnt, struct dentry *dentry,
 			return error;
 	}
 
+	gfsflags = ip->i_diskflags;
+	if (gfsflags & GFS2_DIF_APPENDONLY)
+		stat->attributes |= STATX_ATTR_APPEND;
+	if (gfsflags & GFS2_DIF_IMMUTABLE)
+		stat->attributes |= STATX_ATTR_IMMUTABLE;
+
+	stat->attributes_mask |= (STATX_ATTR_APPEND |
+				  STATX_ATTR_COMPRESSED |
+				  STATX_ATTR_ENCRYPTED |
+				  STATX_ATTR_IMMUTABLE |
+				  STATX_ATTR_NODUMP);
+
 	generic_fillattr(inode, stat);
+
 	if (gfs2_holder_initialized(&gh))
 		gfs2_glock_dq_uninit(&gh);
 
@@ -2001,39 +2013,57 @@ static int gfs2_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
 	struct gfs2_holder gh;
 	int ret;
 
-	ret = fiemap_check_flags(fieinfo, FIEMAP_FLAG_SYNC);
-	if (ret)
-		return ret;
-
-	inode_lock(inode);
+	inode_lock_shared(inode);
 
 	ret = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, 0, &gh);
 	if (ret)
 		goto out;
 
-	if (gfs2_is_stuffed(ip)) {
-		u64 phys = ip->i_no_addr << inode->i_blkbits;
-		u64 size = i_size_read(inode);
-		u32 flags = FIEMAP_EXTENT_LAST|FIEMAP_EXTENT_NOT_ALIGNED|
-			    FIEMAP_EXTENT_DATA_INLINE;
-		phys += sizeof(struct gfs2_dinode);
-		phys += start;
-		if (start + len > size)
-			len = size - start;
-		if (start < size)
-			ret = fiemap_fill_next_extent(fieinfo, start, phys,
-						      len, flags);
-		if (ret == 1)
-			ret = 0;
-	} else {
-		ret = __generic_block_fiemap(inode, fieinfo, start, len,
-					     gfs2_block_map);
-	}
+	ret = iomap_fiemap(inode, fieinfo, start, len, &gfs2_iomap_ops);
 
 	gfs2_glock_dq_uninit(&gh);
+
 out:
-	inode_unlock(inode);
+	inode_unlock_shared(inode);
 	return ret;
+}
+
+loff_t gfs2_seek_data(struct file *file, loff_t offset)
+{
+	struct inode *inode = file->f_mapping->host;
+	struct gfs2_inode *ip = GFS2_I(inode);
+	struct gfs2_holder gh;
+	loff_t ret;
+
+	inode_lock_shared(inode);
+	ret = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, 0, &gh);
+	if (!ret)
+		ret = iomap_seek_data(inode, offset, &gfs2_iomap_ops);
+	gfs2_glock_dq_uninit(&gh);
+	inode_unlock_shared(inode);
+
+	if (ret < 0)
+		return ret;
+	return vfs_setpos(file, ret, inode->i_sb->s_maxbytes);
+}
+
+loff_t gfs2_seek_hole(struct file *file, loff_t offset)
+{
+	struct inode *inode = file->f_mapping->host;
+	struct gfs2_inode *ip = GFS2_I(inode);
+	struct gfs2_holder gh;
+	loff_t ret;
+
+	inode_lock_shared(inode);
+	ret = gfs2_glock_nq_init(ip->i_gl, LM_ST_SHARED, 0, &gh);
+	if (!ret)
+		ret = iomap_seek_hole(inode, offset, &gfs2_iomap_ops);
+	gfs2_glock_dq_uninit(&gh);
+	inode_unlock_shared(inode);
+
+	if (ret < 0)
+		return ret;
+	return vfs_setpos(file, ret, inode->i_sb->s_maxbytes);
 }
 
 const struct inode_operations gfs2_file_iops = {

@@ -51,8 +51,7 @@ void rtl92cu_phy_rf6052_set_bandwidth(struct ieee80211_hw *hw, u8 bandwidth)
 			      rtlphy->rfreg_chnlval[0]);
 		break;
 	default:
-		RT_TRACE(rtlpriv, COMP_ERR, DBG_EMERG,
-			 "unknown bandwidth: %#X\n", bandwidth);
+		pr_err("unknown bandwidth: %#X\n", bandwidth);
 		break;
 	}
 }
@@ -300,9 +299,6 @@ static void _rtl92c_get_txpower_writeval_by_regulatory(struct ieee80211_hw *hw,
 			writeVal = 0x00000000;
 		if (rtlpriv->dm.dynamic_txhighpower_lvl == TXHIGHPWRLEVEL_BT1)
 			writeVal = writeVal - 0x06060606;
-		else if (rtlpriv->dm.dynamic_txhighpower_lvl ==
-			 TXHIGHPWRLEVEL_BT2)
-			writeVal = writeVal;
 		*(p_outwriteval + rf) = writeVal;
 	}
 }

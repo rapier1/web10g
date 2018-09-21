@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * vivid-vid-cap.c - video capture support functions.
  *
  * Copyright 2014 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
- *
- * This program is free software; you may redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
  */
 
 #include <linux/errno.h>
@@ -63,7 +51,7 @@ static const struct vivid_fmt formats_ovl[] = {
 };
 
 /* The number of discrete webcam framesizes */
-#define VIVID_WEBCAM_SIZES 4
+#define VIVID_WEBCAM_SIZES 5
 /* The number of discrete webcam frameintervals */
 #define VIVID_WEBCAM_IVALS (VIVID_WEBCAM_SIZES * 2)
 
@@ -73,6 +61,7 @@ static const struct v4l2_frmsize_discrete webcam_sizes[VIVID_WEBCAM_SIZES] = {
 	{  640, 360 },
 	{ 1280, 720 },
 	{ 1920, 1080 },
+	{ 3840, 2160 },
 };
 
 /*
@@ -80,7 +69,9 @@ static const struct v4l2_frmsize_discrete webcam_sizes[VIVID_WEBCAM_SIZES] = {
  * elements in this array as there are in webcam_sizes.
  */
 static const struct v4l2_fract webcam_intervals[VIVID_WEBCAM_IVALS] = {
+	{  1, 1 },
 	{  1, 2 },
+	{  1, 4 },
 	{  1, 5 },
 	{  1, 10 },
 	{  1, 15 },
@@ -88,11 +79,6 @@ static const struct v4l2_fract webcam_intervals[VIVID_WEBCAM_IVALS] = {
 	{  1, 30 },
 	{  1, 50 },
 	{  1, 60 },
-};
-
-static const struct v4l2_discrete_probe webcam_probe = {
-	webcam_sizes,
-	VIVID_WEBCAM_SIZES
 };
 
 static int vid_cap_queue_setup(struct vb2_queue *vq,
@@ -575,7 +561,9 @@ int vivid_try_fmt_vid_cap(struct file *file, void *priv,
 	mp->field = vivid_field_cap(dev, mp->field);
 	if (vivid_is_webcam(dev)) {
 		const struct v4l2_frmsize_discrete *sz =
-			v4l2_find_nearest_format(&webcam_probe, mp->width, mp->height);
+			v4l2_find_nearest_size(webcam_sizes,
+					       VIVID_WEBCAM_SIZES, width,
+					       height, mp->width, mp->height);
 
 		w = sz->width;
 		h = sz->height;
@@ -613,7 +601,7 @@ int vivid_try_fmt_vid_cap(struct file *file, void *priv,
 	/* This driver supports custom bytesperline values */
 
 	mp->num_planes = fmt->buffers;
-	for (p = 0; p < mp->num_planes; p++) {
+	for (p = 0; p < fmt->buffers; p++) {
 		/* Calculate the minimum supported bytesperline value */
 		bytesperline = (mp->width * fmt->bit_depth[p]) >> 3;
 		/* Calculate the maximum supported bytesperline value */
@@ -623,10 +611,17 @@ int vivid_try_fmt_vid_cap(struct file *file, void *priv,
 			pfmt[p].bytesperline = max_bpl;
 		if (pfmt[p].bytesperline < bytesperline)
 			pfmt[p].bytesperline = bytesperline;
-		pfmt[p].sizeimage = tpg_calc_line_width(&dev->tpg, p, pfmt[p].bytesperline) *
-			mp->height + fmt->data_offset[p];
+
+		pfmt[p].sizeimage = (pfmt[p].bytesperline * mp->height) /
+				fmt->vdownsampling[p] + fmt->data_offset[p];
+
 		memset(pfmt[p].reserved, 0, sizeof(pfmt[p].reserved));
 	}
+	for (p = fmt->buffers; p < fmt->planes; p++)
+		pfmt[0].sizeimage += (pfmt[0].bytesperline * mp->height *
+			(fmt->bit_depth[p] / fmt->vdownsampling[p])) /
+			(fmt->bit_depth[0] / fmt->vdownsampling[0]);
+
 	mp->colorspace = vivid_colorspace_cap(dev);
 	if (fmt->color_enc == TGP_COLOR_ENC_HSV)
 		mp->hsv_enc = vivid_hsv_enc_cap(dev);

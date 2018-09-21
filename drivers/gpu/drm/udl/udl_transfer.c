@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/fb.h>
 #include <linux/prefetch.h>
+#include <asm/unaligned.h>
 
 #include <drm/drmP.h>
 #include "udl_drv.h"
@@ -152,18 +153,18 @@ static void udl_compress_hline16(
 		raw_pixels_count_byte = cmd++; /*  we'll know this later */
 		raw_pixel_start = pixel;
 
-		cmd_pixel_end = pixel + (min(MAX_CMD_PIXELS + 1,
-			min((int)(pixel_end - pixel) / bpp,
-			    (int)(cmd_buffer_end - cmd) / 2))) * bpp;
+		cmd_pixel_end = pixel + min3(MAX_CMD_PIXELS + 1UL,
+					(unsigned long)(pixel_end - pixel) / bpp,
+					(unsigned long)(cmd_buffer_end - 1 - cmd) / 2) * bpp;
 
-		prefetch_range((void *) pixel, (cmd_pixel_end - pixel) * bpp);
+		prefetch_range((void *) pixel, cmd_pixel_end - pixel);
 		pixel_val16 = get_pixel_val16(pixel, bpp);
 
 		while (pixel < cmd_pixel_end) {
 			const u8 *const start = pixel;
 			const uint16_t repeating_pixel_val16 = pixel_val16;
 
-			*(uint16_t *)cmd = cpu_to_be16(pixel_val16);
+			put_unaligned_be16(pixel_val16, cmd);
 
 			cmd += 2;
 			pixel += bpp;
@@ -192,6 +193,9 @@ static void udl_compress_hline16(
 		if (pixel > raw_pixel_start) {
 			/* finalize last RAW span */
 			*raw_pixels_count_byte = ((pixel-raw_pixel_start) / bpp) & 0xFF;
+		} else {
+			/* undo unused byte */
+			cmd--;
 		}
 
 		*cmd_pixels_count_byte = ((pixel - cmd_pixel_start) / bpp) & 0xFF;

@@ -172,7 +172,7 @@ extern int platform_device_add_resources(struct platform_device *pdev,
 extern int platform_device_add_data(struct platform_device *pdev,
 				    const void *data, size_t size);
 extern int platform_device_add_properties(struct platform_device *pdev,
-					  struct property_entry *properties);
+				const struct property_entry *properties);
 extern int platform_device_add(struct platform_device *pdev);
 extern void platform_device_del(struct platform_device *pdev);
 extern void platform_device_put(struct platform_device *pdev);
@@ -355,6 +355,8 @@ extern int platform_pm_restore(struct device *dev);
 #define platform_pm_poweroff		NULL
 #define platform_pm_restore		NULL
 #endif
+
+extern int platform_dma_configure(struct device *dev);
 
 #ifdef CONFIG_PM_SLEEP
 #define USE_PLATFORM_PM_SLEEP_OPS \

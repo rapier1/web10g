@@ -27,14 +27,40 @@ Groups:
       VCPU and all of the redistributor pages are contiguous.
       Only valid for KVM_DEV_TYPE_ARM_VGIC_V3.
       This address needs to be 64K aligned.
+
+    KVM_VGIC_V3_ADDR_TYPE_REDIST_REGION (rw, 64-bit)
+      The attribute data pointed to by kvm_device_attr.addr is a __u64 value:
+      bits:     | 63   ....  52  |  51   ....   16 | 15 - 12  |11 - 0
+      values:   |     count      |       base      |  flags   | index
+      - index encodes the unique redistributor region index
+      - flags: reserved for future use, currently 0
+      - base field encodes bits [51:16] of the guest physical base address
+        of the first redistributor in the region.
+      - count encodes the number of redistributors in the region. Must be
+        greater than 0.
+      There are two 64K pages for each redistributor in the region and
+      redistributors are laid out contiguously within the region. Regions
+      are filled with redistributors in the index order. The sum of all
+      region count fields must be greater than or equal to the number of
+      VCPUs. Redistributor regions must be registered in the incremental
+      index order, starting from index 0.
+      The characteristics of a specific redistributor region can be read
+      by presetting the index field in the attr data.
+      Only valid for KVM_DEV_TYPE_ARM_VGIC_V3.
+
+  It is invalid to mix calls with KVM_VGIC_V3_ADDR_TYPE_REDIST and
+  KVM_VGIC_V3_ADDR_TYPE_REDIST_REGION attributes.
+
   Errors:
     -E2BIG:  Address outside of addressable IPA range
-    -EINVAL: Incorrectly aligned address
+    -EINVAL: Incorrectly aligned address, bad redistributor region
+             count/index, mixed redistributor region attribute usage
     -EEXIST: Address already configured
+    -ENOENT: Attempt to read the characteristics of a non existing
+             redistributor region
     -ENXIO:  The group or attribute is unknown/unsupported for this device
              or hardware support is missing.
     -EFAULT: Invalid user pointer for attr->addr.
-
 
 
   KVM_DEV_ARM_VGIC_GRP_DIST_REGS
@@ -118,7 +144,7 @@ Groups:
     -EBUSY: One or more VCPUs are running
 
 
-  KVM_DEV_ARM_VGIC_CPU_SYSREGS
+  KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS
   Attributes:
     The attr field of kvm_device_attr encodes two values:
     bits:     | 63      ....       32 | 31  ....  16 | 15  ....  0 |
@@ -139,13 +165,15 @@ Groups:
     All system regs accessed through this API are (rw, 64-bit) and
     kvm_device_attr.addr points to a __u64 value.
 
-    KVM_DEV_ARM_VGIC_CPU_SYSREGS accesses the CPU interface registers for the
+    KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS accesses the CPU interface registers for the
     CPU specified by the mpidr field.
 
+    CPU interface registers access is not implemented for AArch32 mode.
+    Error -ENXIO is returned when accessed in AArch32 mode.
   Errors:
     -ENXIO: Getting or setting this register is not yet supported
     -EBUSY: VCPU is running
-    -EINVAL: Invalid mpidr supplied
+    -EINVAL: Invalid mpidr or register value supplied
 
 
   KVM_DEV_ARM_VGIC_GRP_NR_IRQS
@@ -165,11 +193,17 @@ Groups:
     KVM_DEV_ARM_VGIC_CTRL_INIT
       request the initialization of the VGIC, no additional parameter in
       kvm_device_attr.addr.
+    KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES
+      save all LPI pending bits into guest RAM pending tables.
+
+      The first kB of the pending table is not altered by this operation.
   Errors:
     -ENXIO: VGIC not properly configured as required prior to calling
      this attribute
     -ENODEV: no online VCPU
     -ENOMEM: memory shortage when allocating vgic internal data
+    -EFAULT: Invalid guest ram access
+    -EBUSY:  One or more VCPUS are running
 
 
   KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO
@@ -204,3 +238,6 @@ Groups:
     architecture defined MPIDR, and the field is encoded as follows:
       | 63 .... 56 | 55 .... 48 | 47 .... 40 | 39 .... 32 |
       |    Aff3    |    Aff2    |    Aff1    |    Aff0    |
+  Errors:
+    -EINVAL: vINTID is not multiple of 32 or
+     info field is not VGIC_LEVEL_INFO_LINE_LEVEL

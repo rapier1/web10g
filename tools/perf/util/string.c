@@ -1,5 +1,10 @@
-#include "util.h"
-#include "linux/string.h"
+// SPDX-License-Identifier: GPL-2.0
+#include "string2.h"
+#include <linux/kernel.h>
+#include <linux/string.h>
+#include <stdlib.h>
+
+#include "sane_ctype.h"
 
 #define K 1024LL
 /*
@@ -21,6 +26,8 @@ s64 perf_atoll(const char *str)
 		case 'b': case 'B':
 			if (*p)
 				goto out_err;
+
+			__fallthrough;
 		case '\0':
 			return length;
 		default:
@@ -97,8 +104,10 @@ static int count_argc(const char *str)
 void argv_free(char **argv)
 {
 	char **p;
-	for (p = argv; *p; p++)
-		zfree(p);
+	for (p = argv; *p; p++) {
+		free(*p);
+		*p = NULL;
+	}
 
 	free(argv);
 }
@@ -118,7 +127,7 @@ void argv_free(char **argv)
 char **argv_split(const char *str, int *argcp)
 {
 	int argc = count_argc(str);
-	char **argv = zalloc(sizeof(*argv) * (argc+1));
+	char **argv = calloc(argc + 1, sizeof(*argv));
 	char **argvp;
 
 	if (argv == NULL)
@@ -320,12 +329,8 @@ char *strxfrchar(char *s, char from, char to)
  */
 char *ltrim(char *s)
 {
-	int len = strlen(s);
-
-	while (len && isspace(*s)) {
-		len--;
+	while (isspace(*s))
 		s++;
-	}
 
 	return s;
 }
@@ -379,7 +384,7 @@ char *asprintf_expr_inout_ints(const char *var, bool in, size_t nints, int *ints
 				goto out_err_overflow;
 
 			if (i > 0)
-				printed += snprintf(e + printed, size - printed, " %s ", or_and);
+				printed += scnprintf(e + printed, size - printed, " %s ", or_and);
 			printed += scnprintf(e + printed, size - printed,
 					     "%s %s %d", var, eq_neq, ints[i]);
 		}
@@ -390,4 +395,50 @@ char *asprintf_expr_inout_ints(const char *var, bool in, size_t nints, int *ints
 out_err_overflow:
 	free(expr);
 	return NULL;
+}
+
+/* Like strpbrk(), but not break if it is right after a backslash (escaped) */
+char *strpbrk_esc(char *str, const char *stopset)
+{
+	char *ptr;
+
+	do {
+		ptr = strpbrk(str, stopset);
+		if (ptr == str ||
+		    (ptr == str + 1 && *(ptr - 1) != '\\'))
+			break;
+		str = ptr + 1;
+	} while (ptr && *(ptr - 1) == '\\' && *(ptr - 2) != '\\');
+
+	return ptr;
+}
+
+/* Like strdup, but do not copy a single backslash */
+char *strdup_esc(const char *str)
+{
+	char *s, *d, *p, *ret = strdup(str);
+
+	if (!ret)
+		return NULL;
+
+	d = strchr(ret, '\\');
+	if (!d)
+		return ret;
+
+	s = d + 1;
+	do {
+		if (*s == '\0') {
+			*d = '\0';
+			break;
+		}
+		p = strchr(s + 1, '\\');
+		if (p) {
+			memmove(d, s, p - s);
+			d += p - s;
+			s = p + 1;
+		} else
+			memmove(d, s, strlen(s) + 1);
+	} while (p);
+
+	return ret;
 }

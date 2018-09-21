@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 FILES=                                          \
          test-all.bin                           \
          test-backtrace.bin                     \
@@ -12,6 +13,7 @@ FILES=                                          \
          test-hello.bin                         \
          test-libaudit.bin                      \
          test-libbfd.bin                        \
+         test-disassembler-four-args.bin        \
          test-liberty.bin                       \
          test-liberty-z.bin                     \
          test-cplus-demangle.bin                \
@@ -36,6 +38,7 @@ FILES=                                          \
          test-libunwind-debug-frame-arm.bin     \
          test-libunwind-debug-frame-aarch64.bin \
          test-pthread-attr-setaffinity-np.bin   \
+         test-pthread-barrier.bin		\
          test-stackprotector-all.bin            \
          test-timerfd.bin                       \
          test-libdw-dwarf-unwind.bin            \
@@ -48,21 +51,27 @@ FILES=                                          \
          test-get_cpuid.bin                     \
          test-sdt.bin                           \
          test-cxx.bin                           \
-         test-jvmti.bin
+         test-jvmti.bin				\
+         test-sched_getcpu.bin			\
+         test-setns.bin				\
+         test-libopencsd.bin			\
+         test-clang.bin				\
+         test-llvm.bin				\
+         test-llvm-version.bin
 
 FILES := $(addprefix $(OUTPUT),$(FILES))
 
-CC := $(CROSS_COMPILE)gcc -MD
-CXX := $(CROSS_COMPILE)g++ -MD
-PKG_CONFIG := $(CROSS_COMPILE)pkg-config
+CC ?= $(CROSS_COMPILE)gcc
+CXX ?= $(CROSS_COMPILE)g++
+PKG_CONFIG ?= $(CROSS_COMPILE)pkg-config
 LLVM_CONFIG ?= llvm-config
 
 all: $(FILES)
 
-__BUILD = $(CC) $(CFLAGS) -Wall -Werror -o $@ $(patsubst %.bin,%.c,$(@F)) $(LDFLAGS)
+__BUILD = $(CC) $(CFLAGS) -MD -Wall -Werror -o $@ $(patsubst %.bin,%.c,$(@F)) $(LDFLAGS)
   BUILD = $(__BUILD) > $(@:.bin=.make.output) 2>&1
 
-__BUILDXX = $(CXX) $(CXXFLAGS) -Wall -Werror -o $@ $(patsubst %.bin,%.cpp,$(@F)) $(LDFLAGS)
+__BUILDXX = $(CXX) $(CXXFLAGS) -MD -Wall -Werror -o $@ $(patsubst %.bin,%.cpp,$(@F)) $(LDFLAGS)
   BUILDXX = $(__BUILDXX) > $(@:.bin=.make.output) 2>&1
 
 ###############################
@@ -75,6 +84,9 @@ $(OUTPUT)test-hello.bin:
 
 $(OUTPUT)test-pthread-attr-setaffinity-np.bin:
 	$(BUILD) -D_GNU_SOURCE -lpthread
+
+$(OUTPUT)test-pthread-barrier.bin:
+	$(BUILD) -lpthread
 
 $(OUTPUT)test-stackprotector-all.bin:
 	$(BUILD) -fstack-protector-all
@@ -90,6 +102,16 @@ $(OUTPUT)test-libelf.bin:
 
 $(OUTPUT)test-glibc.bin:
 	$(BUILD)
+
+$(OUTPUT)test-sched_getcpu.bin:
+	$(BUILD)
+
+$(OUTPUT)test-setns.bin:
+	$(BUILD)
+
+$(OUTPUT)test-libopencsd.bin:
+	$(BUILD) # -lopencsd_c_api -lopencsd provided by
+		 # $(FEATURE_CHECK_LDFLAGS-libopencsd)
 
 DWARFLIBS := -ldw
 ifeq ($(findstring -static,${LDFLAGS}),-static)
@@ -171,13 +193,16 @@ $(OUTPUT)test-libperl.bin:
 	$(BUILD) $(FLAGS_PERL_EMBED)
 
 $(OUTPUT)test-libpython.bin:
-	$(BUILD)
+	$(BUILD) $(FLAGS_PYTHON_EMBED)
 
 $(OUTPUT)test-libpython-version.bin:
 	$(BUILD)
 
 $(OUTPUT)test-libbfd.bin:
 	$(BUILD) -DPACKAGE='"perf"' -lbfd -lz -liberty -ldl
+
+$(OUTPUT)test-disassembler-four-args.bin:
+	$(BUILD) -DPACKAGE='"perf"' -lbfd -lopcodes
 
 $(OUTPUT)test-liberty.bin:
 	$(CC) $(CFLAGS) -Wall -Werror -o $@ test-libbfd.c -DPACKAGE='"perf"' $(LDFLAGS) -lbfd -ldl -liberty
@@ -235,11 +260,13 @@ $(OUTPUT)test-llvm.bin:
 		-I$(shell $(LLVM_CONFIG) --includedir) 		\
 		-L$(shell $(LLVM_CONFIG) --libdir)		\
 		$(shell $(LLVM_CONFIG) --libs Core BPF)		\
-		$(shell $(LLVM_CONFIG) --system-libs)
+		$(shell $(LLVM_CONFIG) --system-libs)		\
+		> $(@:.bin=.make.output) 2>&1
 
 $(OUTPUT)test-llvm-version.bin:
 	$(BUILDXX) -std=gnu++11 				\
-		-I$(shell $(LLVM_CONFIG) --includedir)
+		-I$(shell $(LLVM_CONFIG) --includedir)		\
+		> $(@:.bin=.make.output) 2>&1
 
 $(OUTPUT)test-clang.bin:
 	$(BUILDXX) -std=gnu++11 				\
@@ -249,7 +276,8 @@ $(OUTPUT)test-clang.bin:
 		  -lclangFrontend -lclangEdit -lclangLex	\
 		  -lclangAST -Wl,--end-group 			\
 		$(shell $(LLVM_CONFIG) --libs Core option)	\
-		$(shell $(LLVM_CONFIG) --system-libs)
+		$(shell $(LLVM_CONFIG) --system-libs)		\
+		> $(@:.bin=.make.output) 2>&1
 
 -include $(OUTPUT)*.d
 

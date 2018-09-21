@@ -102,7 +102,7 @@ struct qedi_endpoint {
 #define QEDI_SQ_WQES_MIN	16
 
 struct qedi_io_bdt {
-	struct iscsi_sge *sge_tbl;
+	struct scsi_sge *sge_tbl;
 	dma_addr_t sge_tbl_dma;
 	u16 sge_valid;
 };
@@ -182,7 +182,7 @@ struct qedi_cmd {
 	struct scsi_cmnd *scsi_cmd;
 	struct scatterlist *sg;
 	struct qedi_io_bdt io_tbl;
-	struct iscsi_task_context request;
+	struct e4_iscsi_task_context request;
 	unsigned char *sense_buffer;
 	dma_addr_t sense_buffer_dma;
 	u16 task_id;
@@ -221,6 +221,12 @@ struct qedi_work_map {
 #define QEDI_WORK_EXIT		3
 
 	struct work_struct *ptr_tmf_work;
+};
+
+struct qedi_boot_target {
+	char ip_addr[64];
+	char iscsi_name[255];
+	u32 ipv6_en;
 };
 
 #define qedi_set_itt(task_id, itt) ((u32)(((task_id) & 0xffff) | ((itt) << 16)))

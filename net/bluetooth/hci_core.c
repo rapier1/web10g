@@ -76,19 +76,15 @@ static ssize_t dut_mode_write(struct file *file, const char __user *user_buf,
 {
 	struct hci_dev *hdev = file->private_data;
 	struct sk_buff *skb;
-	char buf[32];
-	size_t buf_size = min(count, (sizeof(buf)-1));
 	bool enable;
+	int err;
 
 	if (!test_bit(HCI_UP, &hdev->flags))
 		return -ENETDOWN;
 
-	if (copy_from_user(buf, user_buf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = '\0';
-	if (strtobool(buf, &enable))
-		return -EINVAL;
+	err = kstrtobool_from_user(user_buf, count, &enable);
+	if (err)
+		return err;
 
 	if (enable == hci_dev_test_flag(hdev, HCI_DUT_MODE))
 		return -EALREADY;
@@ -135,26 +131,21 @@ static ssize_t vendor_diag_write(struct file *file, const char __user *user_buf,
 				 size_t count, loff_t *ppos)
 {
 	struct hci_dev *hdev = file->private_data;
-	char buf[32];
-	size_t buf_size = min(count, (sizeof(buf)-1));
 	bool enable;
 	int err;
 
-	if (copy_from_user(buf, user_buf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = '\0';
-	if (strtobool(buf, &enable))
-		return -EINVAL;
+	err = kstrtobool_from_user(user_buf, count, &enable);
+	if (err)
+		return err;
 
 	/* When the diagnostic flags are not persistent and the transport
-	 * is not active, then there is no need for the vendor callback.
-	 *
-	 * Instead just store the desired value. If needed the setting
-	 * will be programmed when the controller gets powered on.
+	 * is not active or in user channel operation, then there is no need
+	 * for the vendor callback. Instead just store the desired value and
+	 * the setting will be programmed when the controller gets powered on.
 	 */
 	if (test_bit(HCI_QUIRK_NON_PERSISTENT_DIAG, &hdev->quirks) &&
-	    !test_bit(HCI_RUNNING, &hdev->flags))
+	    (!test_bit(HCI_RUNNING, &hdev->flags) ||
+	     hci_dev_test_flag(hdev, HCI_USER_CHANNEL)))
 		goto done;
 
 	hci_req_sync_lock(hdev);
@@ -267,7 +258,7 @@ static int hci_init1_req(struct hci_request *req, unsigned long opt)
 		amp_init1(req);
 		break;
 	default:
-		BT_ERR("Unknown device type %d", hdev->dev_type);
+		bt_dev_err(hdev, "Unknown device type %d", hdev->dev_type);
 		break;
 	}
 
@@ -548,6 +539,7 @@ static void hci_set_event_mask_page_2(struct hci_request *req)
 {
 	struct hci_dev *hdev = req->hdev;
 	u8 events[8] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+	bool changed = false;
 
 	/* If Connectionless Slave Broadcast master role is supported
 	 * enable all necessary events for it.
@@ -557,6 +549,7 @@ static void hci_set_event_mask_page_2(struct hci_request *req)
 		events[1] |= 0x80;	/* Synchronization Train Complete */
 		events[2] |= 0x10;	/* Slave Page Response Timeout */
 		events[2] |= 0x20;	/* CSB Channel Map Change */
+		changed = true;
 	}
 
 	/* If Connectionless Slave Broadcast slave role is supported
@@ -567,13 +560,24 @@ static void hci_set_event_mask_page_2(struct hci_request *req)
 		events[2] |= 0x02;	/* CSB Receive */
 		events[2] |= 0x04;	/* CSB Timeout */
 		events[2] |= 0x08;	/* Truncated Page Complete */
+		changed = true;
 	}
 
 	/* Enable Authenticated Payload Timeout Expired event if supported */
-	if (lmp_ping_capable(hdev) || hdev->le_features[0] & HCI_LE_PING)
+	if (lmp_ping_capable(hdev) || hdev->le_features[0] & HCI_LE_PING) {
 		events[2] |= 0x80;
+		changed = true;
+	}
 
-	hci_req_add(req, HCI_OP_SET_EVENT_MASK_PAGE_2, sizeof(events), events);
+	/* Some Broadcom based controllers indicate support for Set Event
+	 * Mask Page 2 command, but then actually do not support it. Since
+	 * the default value is all bits set to zero, the command is only
+	 * required if the event mask has to be changed. In case no change
+	 * to the event mask is needed, skip this command.
+	 */
+	if (changed)
+		hci_req_add(req, HCI_OP_SET_EVENT_MASK_PAGE_2,
+			    sizeof(events), events);
 }
 
 static int hci_init3_req(struct hci_request *req, unsigned long opt)
@@ -635,6 +639,14 @@ static int hci_init3_req(struct hci_request *req, unsigned long opt)
 						 * Report
 						 */
 
+		/* If the controller supports Channel Selection Algorithm #2
+		 * feature, enable the corresponding event.
+		 */
+		if (hdev->le_features[1] & HCI_LE_CHAN_SEL_ALG2)
+			events[2] |= 0x08;	/* LE Channel Selection
+						 * Algorithm
+						 */
+
 		/* If the controller supports the LE Set Scan Enable command,
 		 * enable the corresponding advertising report event.
 		 */
@@ -676,6 +688,12 @@ static int hci_init3_req(struct hci_request *req, unsigned long opt)
 		 */
 		if (hdev->commands[34] & 0x04)
 			events[1] |= 0x01;	/* LE Generate DHKey Complete */
+
+		/* If the controller supports the LE Set Default PHY or
+		 * LE Set PHY commands, enable the corresponding event.
+		 */
+		if (hdev->commands[35] & (0x20 | 0x40))
+			events[1] |= 0x08;        /* LE PHY Update Complete */
 
 		hci_req_add(req, HCI_OP_LE_SET_EVENT_MASK, sizeof(events),
 			    events);
@@ -769,6 +787,27 @@ static int hci_init4_req(struct hci_request *req, unsigned long opt)
 
 		hci_req_add(req, HCI_OP_WRITE_SC_SUPPORT,
 			    sizeof(support), &support);
+	}
+
+	/* Set Suggested Default Data Length to maximum if supported */
+	if (hdev->le_features[0] & HCI_LE_DATA_LEN_EXT) {
+		struct hci_cp_le_write_def_data_len cp;
+
+		cp.tx_len = hdev->le_max_tx_len;
+		cp.tx_time = hdev->le_max_tx_time;
+		hci_req_add(req, HCI_OP_LE_WRITE_DEF_DATA_LEN, sizeof(cp), &cp);
+	}
+
+	/* Set Default PHY parameters if command is supported */
+	if (hdev->commands[35] & 0x20) {
+		struct hci_cp_le_set_default_phy cp;
+
+		/* No transmitter PHY or receiver PHY preferences */
+		cp.all_phys = 0x03;
+		cp.tx_phys = 0;
+		cp.rx_phys = 0;
+
+		hci_req_add(req, HCI_OP_LE_SET_DEFAULT_PHY, sizeof(cp), &cp);
 	}
 
 	return 0;
@@ -1242,7 +1281,7 @@ int hci_inquiry(void __user *arg)
 	/* cache_dump can't sleep. Therefore we allocate temp buffer and then
 	 * copy it to the user space.
 	 */
-	buf = kmalloc(sizeof(struct inquiry_info) * max_rsp, GFP_KERNEL);
+	buf = kmalloc_array(max_rsp, sizeof(struct inquiry_info), GFP_KERNEL);
 	if (!buf) {
 		err = -ENOMEM;
 		goto done;
@@ -1384,6 +1423,7 @@ static int hci_dev_do_open(struct hci_dev *hdev)
 	 * completed.
 	 */
 	if (test_bit(HCI_QUIRK_NON_PERSISTENT_DIAG, &hdev->quirks) &&
+	    !hci_dev_test_flag(hdev, HCI_USER_CHANNEL) &&
 	    hci_dev_test_flag(hdev, HCI_VENDOR_DIAG) && hdev->set_diag)
 		ret = hdev->set_diag(hdev, true);
 
@@ -2101,8 +2141,7 @@ static void hci_error_reset(struct work_struct *work)
 	if (hdev->hw_error)
 		hdev->hw_error(hdev, hdev->hw_error_code);
 	else
-		BT_ERR("%s hardware error 0x%2.2x", hdev->name,
-		       hdev->hw_error_code);
+		bt_dev_err(hdev, "hardware error 0x%2.2x", hdev->hw_error_code);
 
 	if (hci_dev_do_close(hdev))
 		return;
@@ -2475,9 +2514,9 @@ static void hci_cmd_timeout(struct work_struct *work)
 		struct hci_command_hdr *sent = (void *) hdev->sent_cmd->data;
 		u16 opcode = __le16_to_cpu(sent->opcode);
 
-		BT_ERR("%s command 0x%4.4x tx timeout", hdev->name, opcode);
+		bt_dev_err(hdev, "command 0x%4.4x tx timeout", opcode);
 	} else {
-		BT_ERR("%s command tx timeout", hdev->name);
+		bt_dev_err(hdev, "command tx timeout");
 	}
 
 	atomic_set(&hdev->cmd_cnt, 1);
@@ -2809,7 +2848,7 @@ struct hci_conn_params *hci_conn_params_add(struct hci_dev *hdev,
 
 	params = kzalloc(sizeof(*params), GFP_KERNEL);
 	if (!params) {
-		BT_ERR("Out of memory");
+		bt_dev_err(hdev, "out of memory");
 		return NULL;
 	}
 
@@ -2950,8 +2989,8 @@ struct hci_dev *hci_alloc_dev(void)
 	hdev->le_adv_max_interval = 0x0800;
 	hdev->le_scan_interval = 0x0060;
 	hdev->le_scan_window = 0x0030;
-	hdev->le_conn_min_interval = 0x0028;
-	hdev->le_conn_max_interval = 0x0038;
+	hdev->le_conn_min_interval = 0x0018;
+	hdev->le_conn_max_interval = 0x0028;
 	hdev->le_conn_latency = 0x0000;
 	hdev->le_supv_timeout = 0x002a;
 	hdev->le_def_tx_len = 0x001b;
@@ -3047,15 +3086,14 @@ int hci_register_dev(struct hci_dev *hdev)
 
 	BT_DBG("%p name %s bus %d", hdev, hdev->name, hdev->bus);
 
-	hdev->workqueue = alloc_workqueue("%s", WQ_HIGHPRI | WQ_UNBOUND |
-					  WQ_MEM_RECLAIM, 1, hdev->name);
+	hdev->workqueue = alloc_ordered_workqueue("%s", WQ_HIGHPRI, hdev->name);
 	if (!hdev->workqueue) {
 		error = -ENOMEM;
 		goto err;
 	}
 
-	hdev->req_workqueue = alloc_workqueue("%s", WQ_HIGHPRI | WQ_UNBOUND |
-					      WQ_MEM_RECLAIM, 1, hdev->name);
+	hdev->req_workqueue = alloc_ordered_workqueue("%s", WQ_HIGHPRI,
+						      hdev->name);
 	if (!hdev->req_workqueue) {
 		destroy_workqueue(hdev->workqueue);
 		error = -ENOMEM;
@@ -3217,7 +3255,7 @@ int hci_reset_dev(struct hci_dev *hdev)
 		return -ENOMEM;
 
 	hci_skb_pkt_type(skb) = HCI_EVENT_PKT;
-	memcpy(skb_put(skb, 3), hw_err, 3);
+	skb_put_data(skb, hw_err, 3);
 
 	/* Send Hardware Error to upper stack */
 	return hci_recv_frame(hdev, skb);
@@ -3345,7 +3383,7 @@ static void hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 
 	err = hdev->send(hdev, skb);
 	if (err < 0) {
-		BT_ERR("%s sending frame failed (%d)", hdev->name, err);
+		bt_dev_err(hdev, "sending frame failed (%d)", err);
 		kfree_skb(skb);
 	}
 }
@@ -3360,7 +3398,7 @@ int hci_send_cmd(struct hci_dev *hdev, __u16 opcode, __u32 plen,
 
 	skb = hci_prepare_cmd(hdev, opcode, plen, param);
 	if (!skb) {
-		BT_ERR("%s no memory for command", hdev->name);
+		bt_dev_err(hdev, "no memory for command");
 		return -ENOMEM;
 	}
 
@@ -3374,6 +3412,37 @@ int hci_send_cmd(struct hci_dev *hdev, __u16 opcode, __u32 plen,
 
 	return 0;
 }
+
+int __hci_cmd_send(struct hci_dev *hdev, u16 opcode, u32 plen,
+		   const void *param)
+{
+	struct sk_buff *skb;
+
+	if (hci_opcode_ogf(opcode) != 0x3f) {
+		/* A controller receiving a command shall respond with either
+		 * a Command Status Event or a Command Complete Event.
+		 * Therefore, all standard HCI commands must be sent via the
+		 * standard API, using hci_send_cmd or hci_cmd_sync helpers.
+		 * Some vendors do not comply with this rule for vendor-specific
+		 * commands and do not return any event. We want to support
+		 * unresponded commands for such cases only.
+		 */
+		bt_dev_err(hdev, "unresponded command not supported");
+		return -EINVAL;
+	}
+
+	skb = hci_prepare_cmd(hdev, opcode, plen, param);
+	if (!skb) {
+		bt_dev_err(hdev, "no memory for command (opcode 0x%4.4x)",
+			   opcode);
+		return -ENOMEM;
+	}
+
+	hci_send_frame(hdev, skb);
+
+	return 0;
+}
+EXPORT_SYMBOL(__hci_cmd_send);
 
 /* Get data from the previously sent command */
 void *hci_sent_cmd_data(struct hci_dev *hdev, __u16 opcode)
@@ -3445,7 +3514,7 @@ static void hci_queue_acl(struct hci_chan *chan, struct sk_buff_head *queue,
 		hci_add_acl_hdr(skb, chan->handle, flags);
 		break;
 	default:
-		BT_ERR("%s unknown dev_type %d", hdev->name, hdev->dev_type);
+		bt_dev_err(hdev, "unknown dev_type %d", hdev->dev_type);
 		return;
 	}
 
@@ -3570,7 +3639,7 @@ static struct hci_conn *hci_low_sent(struct hci_dev *hdev, __u8 type,
 			break;
 		default:
 			cnt = 0;
-			BT_ERR("Unknown link type");
+			bt_dev_err(hdev, "unknown link type %d", conn->type);
 		}
 
 		q = cnt / num;
@@ -3587,15 +3656,15 @@ static void hci_link_tx_to(struct hci_dev *hdev, __u8 type)
 	struct hci_conn_hash *h = &hdev->conn_hash;
 	struct hci_conn *c;
 
-	BT_ERR("%s link tx timeout", hdev->name);
+	bt_dev_err(hdev, "link tx timeout");
 
 	rcu_read_lock();
 
 	/* Kill stalled connections */
 	list_for_each_entry_rcu(c, &h->list, list) {
 		if (c->type == type && c->sent) {
-			BT_ERR("%s killing stalled connection %pMR",
-			       hdev->name, &c->dst);
+			bt_dev_err(hdev, "killing stalled connection %pMR",
+				   &c->dst);
 			hci_disconnect(c, HCI_ERROR_REMOTE_USER_TERM);
 		}
 	}
@@ -3676,7 +3745,7 @@ static struct hci_chan *hci_chan_sent(struct hci_dev *hdev, __u8 type,
 		break;
 	default:
 		cnt = 0;
-		BT_ERR("Unknown link type");
+		bt_dev_err(hdev, "unknown link type %d", chan->conn->type);
 	}
 
 	q = cnt / num;
@@ -4018,8 +4087,8 @@ static void hci_acldata_packet(struct hci_dev *hdev, struct sk_buff *skb)
 		l2cap_recv_acldata(conn, skb, flags);
 		return;
 	} else {
-		BT_ERR("%s ACL packet for unknown connection handle %d",
-		       hdev->name, handle);
+		bt_dev_err(hdev, "ACL packet for unknown connection handle %d",
+			   handle);
 	}
 
 	kfree_skb(skb);
@@ -4049,8 +4118,8 @@ static void hci_scodata_packet(struct hci_dev *hdev, struct sk_buff *skb)
 		sco_recv_scodata(conn, skb);
 		return;
 	} else {
-		BT_ERR("%s SCO packet for unknown connection handle %d",
-		       hdev->name, handle);
+		bt_dev_err(hdev, "SCO packet for unknown connection handle %d",
+			   handle);
 	}
 
 	kfree_skb(skb);

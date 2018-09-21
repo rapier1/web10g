@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (c) 1999-2002 Vojtech Pavlik
  *
@@ -20,10 +21,21 @@
 
 /*
  * The event structure itself
+ * Note that __USE_TIME_BITS64 is defined by libc based on
+ * application's request to use 64 bit time_t.
  */
 
 struct input_event {
+#if (__BITS_PER_LONG != 32 || !defined(__USE_TIME_BITS64)) && !defined(__KERNEL)
 	struct timeval time;
+#define input_event_sec time.tv_sec
+#define input_event_usec time.tv_usec
+#else
+	__kernel_ulong_t __sec;
+	__kernel_ulong_t __usec;
+#define input_event_sec  __sec
+#define input_event_usec __usec
+#endif
 	__u16 type;
 	__u16 code;
 	__s32 value;
@@ -61,9 +73,14 @@ struct input_id {
  * Note that input core does not clamp reported values to the
  * [minimum, maximum] limits, such task is left to userspace.
  *
- * Resolution for main axes (ABS_X, ABS_Y, ABS_Z) is reported in
- * units per millimeter (units/mm), resolution for rotational axes
- * (ABS_RX, ABS_RY, ABS_RZ) is reported in units per radian.
+ * The default resolution for main axes (ABS_X, ABS_Y, ABS_Z)
+ * is reported in units per millimeter (units/mm), resolution
+ * for rotational axes (ABS_RX, ABS_RY, ABS_RZ) is reported
+ * in units per radian.
+ * When INPUT_PROP_ACCELEROMETER is set the resolution changes.
+ * The main axes (ABS_X, ABS_Y, ABS_Z) are then reported in
+ * in units per g (units/g) and in units per degree per second
+ * (units/deg/s) for rotational axes (ABS_RX, ABS_RY, ABS_RZ).
  */
 struct input_absinfo {
 	__s32 value;

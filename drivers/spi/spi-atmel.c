@@ -269,6 +269,7 @@ struct atmel_spi_caps {
 	bool	is_spi2;
 	bool	has_wdrbt;
 	bool	has_dma_support;
+	bool	has_pdc_support;
 };
 
 /*
@@ -290,6 +291,10 @@ struct atmel_spi {
 	struct spi_transfer	*current_transfer;
 	int			current_remaining_bytes;
 	int			done_status;
+	dma_addr_t		dma_addr_rx_bbuf;
+	dma_addr_t		dma_addr_tx_bbuf;
+	void			*addr_rx_bbuf;
+	void			*addr_tx_bbuf;
 
 	struct completion	xfer_completion;
 
@@ -435,6 +440,11 @@ static void atmel_spi_unlock(struct atmel_spi *as) __releases(&as->lock)
 	spin_unlock_irqrestore(&as->lock, as->flags);
 }
 
+static inline bool atmel_spi_is_vmalloc_xfer(struct spi_transfer *xfer)
+{
+	return is_vmalloc_addr(xfer->tx_buf) || is_vmalloc_addr(xfer->rx_buf);
+}
+
 static inline bool atmel_spi_use_dma(struct atmel_spi *as,
 				struct spi_transfer *xfer)
 {
@@ -447,7 +457,12 @@ static bool atmel_spi_can_dma(struct spi_master *master,
 {
 	struct atmel_spi *as = spi_master_get_devdata(master);
 
-	return atmel_spi_use_dma(as, xfer);
+	if (IS_ENABLED(CONFIG_SOC_SAM_V4_V5))
+		return atmel_spi_use_dma(as, xfer) &&
+			!atmel_spi_is_vmalloc_xfer(xfer);
+	else
+		return atmel_spi_use_dma(as, xfer);
+
 }
 
 static int atmel_spi_dma_slave_config(struct atmel_spi *as,
@@ -593,6 +608,11 @@ static void dma_callback(void *data)
 	struct spi_master	*master = data;
 	struct atmel_spi	*as = spi_master_get_devdata(master);
 
+	if (is_vmalloc_addr(as->current_transfer->rx_buf) &&
+	    IS_ENABLED(CONFIG_SOC_SAM_V4_V5)) {
+		memcpy(as->current_transfer->rx_buf, as->addr_rx_bbuf,
+		       as->current_transfer->len);
+	}
 	complete(&as->xfer_completion);
 }
 
@@ -743,17 +763,41 @@ static int atmel_spi_next_xfer_dma_submit(struct spi_master *master,
 		goto err_exit;
 
 	/* Send both scatterlists */
-	rxdesc = dmaengine_prep_slave_sg(rxchan,
-					 xfer->rx_sg.sgl, xfer->rx_sg.nents,
-					 DMA_FROM_DEVICE,
-					 DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	if (atmel_spi_is_vmalloc_xfer(xfer) &&
+	    IS_ENABLED(CONFIG_SOC_SAM_V4_V5)) {
+		rxdesc = dmaengine_prep_slave_single(rxchan,
+						     as->dma_addr_rx_bbuf,
+						     xfer->len,
+						     DMA_DEV_TO_MEM,
+						     DMA_PREP_INTERRUPT |
+						     DMA_CTRL_ACK);
+	} else {
+		rxdesc = dmaengine_prep_slave_sg(rxchan,
+						 xfer->rx_sg.sgl,
+						 xfer->rx_sg.nents,
+						 DMA_DEV_TO_MEM,
+						 DMA_PREP_INTERRUPT |
+						 DMA_CTRL_ACK);
+	}
 	if (!rxdesc)
 		goto err_dma;
 
-	txdesc = dmaengine_prep_slave_sg(txchan,
-					 xfer->tx_sg.sgl, xfer->tx_sg.nents,
-					 DMA_TO_DEVICE,
-					 DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	if (atmel_spi_is_vmalloc_xfer(xfer) &&
+	    IS_ENABLED(CONFIG_SOC_SAM_V4_V5)) {
+		memcpy(as->addr_tx_bbuf, xfer->tx_buf, xfer->len);
+		txdesc = dmaengine_prep_slave_single(txchan,
+						     as->dma_addr_tx_bbuf,
+						     xfer->len, DMA_MEM_TO_DEV,
+						     DMA_PREP_INTERRUPT |
+						     DMA_CTRL_ACK);
+	} else {
+		txdesc = dmaengine_prep_slave_sg(txchan,
+						 xfer->tx_sg.sgl,
+						 xfer->tx_sg.nents,
+						 DMA_MEM_TO_DEV,
+						 DMA_PREP_INTERRUPT |
+						 DMA_CTRL_ACK);
+	}
 	if (!txdesc)
 		goto err_dma;
 
@@ -1422,11 +1466,11 @@ static void atmel_get_caps(struct atmel_spi *as)
 	unsigned int version;
 
 	version = atmel_get_version(as);
-	dev_info(&as->pdev->dev, "version: 0x%x\n", version);
 
 	as->caps.is_spi2 = version > 0x121;
 	as->caps.has_wdrbt = version >= 0x210;
 	as->caps.has_dma_support = version >= 0x212;
+	as->caps.has_pdc_support = version < 0x212;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -1462,6 +1506,27 @@ static int atmel_spi_gpio_cs(struct platform_device *pdev)
 	}
 
 	return 0;
+}
+
+static void atmel_spi_init(struct atmel_spi *as)
+{
+	spi_writel(as, CR, SPI_BIT(SWRST));
+	spi_writel(as, CR, SPI_BIT(SWRST)); /* AT91SAM9263 Rev B workaround */
+
+	/* It is recommended to enable FIFOs first thing after reset */
+	if (as->fifo_size)
+		spi_writel(as, CR, SPI_BIT(FIFOEN));
+
+	if (as->caps.has_wdrbt) {
+		spi_writel(as, MR, SPI_BIT(WDRBT) | SPI_BIT(MODFDIS)
+				| SPI_BIT(MSTR));
+	} else {
+		spi_writel(as, MR, SPI_BIT(MSTR) | SPI_BIT(MODFDIS));
+	}
+
+	if (as->use_pdc)
+		spi_writel(as, PTCR, SPI_BIT(RXTDIS) | SPI_BIT(TXTDIS));
+	spi_writel(as, CR, SPI_BIT(SPIEN));
 }
 
 static int atmel_spi_probe(struct platform_device *pdev)
@@ -1548,8 +1613,32 @@ static int atmel_spi_probe(struct platform_device *pdev)
 		} else if (ret == -EPROBE_DEFER) {
 			return ret;
 		}
-	} else {
+	} else if (as->caps.has_pdc_support) {
 		as->use_pdc = true;
+	}
+
+	if (IS_ENABLED(CONFIG_SOC_SAM_V4_V5)) {
+		as->addr_rx_bbuf = dma_alloc_coherent(&pdev->dev,
+						      SPI_MAX_DMA_XFER,
+						      &as->dma_addr_rx_bbuf,
+						      GFP_KERNEL | GFP_DMA);
+		if (!as->addr_rx_bbuf) {
+			as->use_dma = false;
+		} else {
+			as->addr_tx_bbuf = dma_alloc_coherent(&pdev->dev,
+					SPI_MAX_DMA_XFER,
+					&as->dma_addr_tx_bbuf,
+					GFP_KERNEL | GFP_DMA);
+			if (!as->addr_tx_bbuf) {
+				as->use_dma = false;
+				dma_free_coherent(&pdev->dev, SPI_MAX_DMA_XFER,
+						  as->addr_rx_bbuf,
+						  as->dma_addr_rx_bbuf);
+			}
+		}
+		if (!as->use_dma)
+			dev_info(master->dev.parent,
+				 "  can not allocate dma coherent memory\n");
 	}
 
 	if (as->caps.has_dma_support && !as->use_dma)
@@ -1572,25 +1661,13 @@ static int atmel_spi_probe(struct platform_device *pdev)
 
 	as->spi_clk = clk_get_rate(clk);
 
-	spi_writel(as, CR, SPI_BIT(SWRST));
-	spi_writel(as, CR, SPI_BIT(SWRST)); /* AT91SAM9263 Rev B workaround */
-	if (as->caps.has_wdrbt) {
-		spi_writel(as, MR, SPI_BIT(WDRBT) | SPI_BIT(MODFDIS)
-				| SPI_BIT(MSTR));
-	} else {
-		spi_writel(as, MR, SPI_BIT(MSTR) | SPI_BIT(MODFDIS));
-	}
-
-	if (as->use_pdc)
-		spi_writel(as, PTCR, SPI_BIT(RXTDIS) | SPI_BIT(TXTDIS));
-	spi_writel(as, CR, SPI_BIT(SPIEN));
-
 	as->fifo_size = 0;
 	if (!of_property_read_u32(pdev->dev.of_node, "atmel,fifo-size",
 				  &as->fifo_size)) {
 		dev_info(&pdev->dev, "Using FIFO (%u data)\n", as->fifo_size);
-		spi_writel(as, CR, SPI_BIT(FIFOEN));
 	}
+
+	atmel_spi_init(as);
 
 	pm_runtime_set_autosuspend_delay(&pdev->dev, AUTOSUSPEND_TIMEOUT);
 	pm_runtime_use_autosuspend(&pdev->dev);
@@ -1602,8 +1679,9 @@ static int atmel_spi_probe(struct platform_device *pdev)
 		goto out_free_dma;
 
 	/* go! */
-	dev_info(&pdev->dev, "Atmel SPI Controller at 0x%08lx (irq %d)\n",
-			(unsigned long)regs->start, irq);
+	dev_info(&pdev->dev, "Atmel SPI Controller version 0x%x at 0x%08lx (irq %d)\n",
+			atmel_get_version(as), (unsigned long)regs->start,
+			irq);
 
 	return 0;
 
@@ -1632,12 +1710,20 @@ static int atmel_spi_remove(struct platform_device *pdev)
 	pm_runtime_get_sync(&pdev->dev);
 
 	/* reset the hardware and block queue progress */
-	spin_lock_irq(&as->lock);
 	if (as->use_dma) {
 		atmel_spi_stop_dma(master);
 		atmel_spi_release_dma(master);
+		if (IS_ENABLED(CONFIG_SOC_SAM_V4_V5)) {
+			dma_free_coherent(&pdev->dev, SPI_MAX_DMA_XFER,
+					  as->addr_tx_bbuf,
+					  as->dma_addr_tx_bbuf);
+			dma_free_coherent(&pdev->dev, SPI_MAX_DMA_XFER,
+					  as->addr_rx_bbuf,
+					  as->dma_addr_rx_bbuf);
+		}
 	}
 
+	spin_lock_irq(&as->lock);
 	spi_writel(as, CR, SPI_BIT(SWRST));
 	spi_writel(as, CR, SPI_BIT(SWRST)); /* AT91SAM9263 Rev B workaround */
 	spi_readl(as, SR);
@@ -1695,7 +1781,16 @@ static int atmel_spi_suspend(struct device *dev)
 static int atmel_spi_resume(struct device *dev)
 {
 	struct spi_master *master = dev_get_drvdata(dev);
+	struct atmel_spi *as = spi_master_get_devdata(master);
 	int ret;
+
+	ret = clk_prepare_enable(as->clk);
+	if (ret)
+		return ret;
+
+	atmel_spi_init(as);
+
+	clk_disable_unprepare(as->clk);
 
 	if (!pm_runtime_suspended(dev)) {
 		ret = atmel_spi_runtime_resume(dev);

@@ -64,7 +64,6 @@ static int ecryptfs_inode_set(struct inode *inode, void *opaque)
 	/* i_size will be overwritten for encrypted regular files */
 	fsstack_copy_inode_size(inode, lower_inode);
 	inode->i_ino = lower_inode->i_ino;
-	inode->i_version++;
 	inode->i_mapping->a_ops = &ecryptfs_aops;
 
 	if (S_ISLNK(inode->i_mode))
@@ -284,8 +283,7 @@ ecryptfs_create(struct inode *directory_inode, struct dentry *ecryptfs_dentry,
 		iget_failed(ecryptfs_inode);
 		goto out;
 	}
-	unlock_new_inode(ecryptfs_inode);
-	d_instantiate(ecryptfs_dentry, ecryptfs_inode);
+	d_instantiate_new(ecryptfs_dentry, ecryptfs_inode);
 out:
 	return rc;
 }
@@ -334,9 +332,6 @@ static struct dentry *ecryptfs_lookup_interpose(struct dentry *dentry,
 
 	dentry_info = kmem_cache_alloc(ecryptfs_dentry_info_cache, GFP_KERNEL);
 	if (!dentry_info) {
-		printk(KERN_ERR "%s: Out of memory whilst attempting "
-		       "to allocate ecryptfs_dentry_info struct\n",
-			__func__);
 		dput(lower_dentry);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -399,8 +394,7 @@ static struct dentry *ecryptfs_lookup(struct inode *ecryptfs_dir_inode,
 
 	mount_crypt_stat = &ecryptfs_superblock_to_private(
 				ecryptfs_dentry->d_sb)->mount_crypt_stat;
-	if (mount_crypt_stat
-	    && (mount_crypt_stat->flags & ECRYPTFS_GLOBAL_ENCRYPT_FILENAMES)) {
+	if (mount_crypt_stat->flags & ECRYPTFS_GLOBAL_ENCRYPT_FILENAMES) {
 		rc = ecryptfs_encrypt_and_encode_filename(
 			&encrypted_and_encoded_name, &len,
 			mount_crypt_stat, name, len);
@@ -959,9 +953,10 @@ out:
 	return rc;
 }
 
-static int ecryptfs_getattr_link(struct vfsmount *mnt, struct dentry *dentry,
-				 struct kstat *stat)
+static int ecryptfs_getattr_link(const struct path *path, struct kstat *stat,
+				 u32 request_mask, unsigned int flags)
 {
+	struct dentry *dentry = path->dentry;
 	struct ecryptfs_mount_crypt_stat *mount_crypt_stat;
 	int rc = 0;
 
@@ -983,13 +978,15 @@ static int ecryptfs_getattr_link(struct vfsmount *mnt, struct dentry *dentry,
 	return rc;
 }
 
-static int ecryptfs_getattr(struct vfsmount *mnt, struct dentry *dentry,
-			    struct kstat *stat)
+static int ecryptfs_getattr(const struct path *path, struct kstat *stat,
+			    u32 request_mask, unsigned int flags)
 {
+	struct dentry *dentry = path->dentry;
 	struct kstat lower_stat;
 	int rc;
 
-	rc = vfs_getattr(ecryptfs_dentry_to_lower_path(dentry), &lower_stat);
+	rc = vfs_getattr(ecryptfs_dentry_to_lower_path(dentry), &lower_stat,
+			 request_mask, flags);
 	if (!rc) {
 		fsstack_copy_attr_all(d_inode(dentry),
 				      ecryptfs_inode_to_lower(d_inode(dentry)));

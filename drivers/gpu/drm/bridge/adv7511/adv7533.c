@@ -32,14 +32,6 @@ static const struct reg_sequence adv7533_cec_fixed_registers[] = {
 	{ 0x05, 0xc8 },
 };
 
-static const struct regmap_config adv7533_cec_regmap_config = {
-	.reg_bits = 8,
-	.val_bits = 8,
-
-	.max_register = 0xff,
-	.cache_type = REGCACHE_RBTREE,
-};
-
 static void adv7511_dsi_config_timing_gen(struct adv7511 *adv)
 {
 	struct mipi_dsi_device *dsi = adv->dsi;
@@ -145,37 +137,11 @@ int adv7533_patch_registers(struct adv7511 *adv)
 				     ARRAY_SIZE(adv7533_fixed_registers));
 }
 
-void adv7533_uninit_cec(struct adv7511 *adv)
+int adv7533_patch_cec_registers(struct adv7511 *adv)
 {
-	i2c_unregister_device(adv->i2c_cec);
-}
-
-int adv7533_init_cec(struct adv7511 *adv)
-{
-	int ret;
-
-	adv->i2c_cec = i2c_new_dummy(adv->i2c_main->adapter,
-				     adv->i2c_main->addr - 1);
-	if (!adv->i2c_cec)
-		return -ENOMEM;
-
-	adv->regmap_cec = devm_regmap_init_i2c(adv->i2c_cec,
-					&adv7533_cec_regmap_config);
-	if (IS_ERR(adv->regmap_cec)) {
-		ret = PTR_ERR(adv->regmap_cec);
-		goto err;
-	}
-
-	ret = regmap_register_patch(adv->regmap_cec,
+	return regmap_register_patch(adv->regmap_cec,
 				    adv7533_cec_fixed_registers,
 				    ARRAY_SIZE(adv7533_cec_fixed_registers));
-	if (ret)
-		goto err;
-
-	return 0;
-err:
-	adv7533_uninit_cec(adv);
-	return ret;
 }
 
 int adv7533_attach_dsi(struct adv7511 *adv)
@@ -232,7 +198,6 @@ void adv7533_detach_dsi(struct adv7511 *adv)
 int adv7533_parse_dt(struct device_node *np, struct adv7511 *adv)
 {
 	u32 num_lanes;
-	struct device_node *endpoint;
 
 	of_property_read_u32(np, "adi,dsi-lanes", &num_lanes);
 
@@ -241,17 +206,10 @@ int adv7533_parse_dt(struct device_node *np, struct adv7511 *adv)
 
 	adv->num_dsi_lanes = num_lanes;
 
-	endpoint = of_graph_get_next_endpoint(np, NULL);
-	if (!endpoint)
+	adv->host_node = of_graph_get_remote_node(np, 0, 0);
+	if (!adv->host_node)
 		return -ENODEV;
 
-	adv->host_node = of_graph_get_remote_port_parent(endpoint);
-	if (!adv->host_node) {
-		of_node_put(endpoint);
-		return -ENODEV;
-	}
-
-	of_node_put(endpoint);
 	of_node_put(adv->host_node);
 
 	adv->use_timing_gen = !of_property_read_bool(np,

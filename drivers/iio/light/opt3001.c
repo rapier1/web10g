@@ -585,7 +585,6 @@ err:
 }
 
 static const struct iio_info opt3001_info = {
-	.driver_module = THIS_MODULE,
 	.attrs = &opt3001_attribute_group,
 	.read_raw = opt3001_read_raw,
 	.write_raw = opt3001_write_raw,
@@ -840,6 +839,7 @@ static const struct of_device_id opt3001_of_match[] = {
 	{ .compatible = "ti,opt3001" },
 	{ }
 };
+MODULE_DEVICE_TABLE(of, opt3001_of_match);
 
 static struct i2c_driver opt3001_driver = {
 	.probe = opt3001_probe,

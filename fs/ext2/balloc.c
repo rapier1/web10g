@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ext2/balloc.c
  *
@@ -15,6 +16,7 @@
 #include <linux/quotaops.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/cred.h>
 #include <linux/buffer_head.h>
 #include <linux/capability.h>
 
@@ -546,7 +548,7 @@ do_more:
 	}
 
 	mark_buffer_dirty(bitmap_bh);
-	if (sb->s_flags & MS_SYNCHRONOUS)
+	if (sb->s_flags & SB_SYNCHRONOUS)
 		sync_dirty_buffer(bitmap_bh);
 
 	group_adjust_blocks(sb, block_group, desc, bh2, group_freed);
@@ -1422,7 +1424,7 @@ allocated:
 	percpu_counter_sub(&sbi->s_freeblocks_counter, num);
 
 	mark_buffer_dirty(bitmap_bh);
-	if (sb->s_flags & MS_SYNCHRONOUS)
+	if (sb->s_flags & SB_SYNCHRONOUS)
 		sync_dirty_buffer(bitmap_bh);
 
 	*errp = 0;

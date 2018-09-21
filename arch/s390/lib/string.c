@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Optimized string functions
  *
@@ -9,7 +10,8 @@
 #define IN_ARCH_STRING_C 1
 
 #include <linux/types.h>
-#include <linux/module.h>
+#include <linux/string.h>
+#include <linux/export.h>
 
 /*
  * Helper functions to find the end of a string
@@ -54,7 +56,7 @@ EXPORT_SYMBOL(strlen);
  *
  * returns the minimum of the length of @s and @n
  */
-size_t strnlen(const char * s, size_t n)
+size_t strnlen(const char *s, size_t n)
 {
 	return __strnend(s, n) - s;
 }
@@ -193,14 +195,14 @@ EXPORT_SYMBOL(strncat);
 
 /**
  * strcmp - Compare two strings
- * @cs: One string
- * @ct: Another string
+ * @s1: One string
+ * @s2: Another string
  *
- * returns   0 if @cs and @ct are equal,
- *         < 0 if @cs is less than @ct
- *         > 0 if @cs is greater than @ct
+ * returns   0 if @s1 and @s2 are equal,
+ *	   < 0 if @s1 is less than @s2
+ *	   > 0 if @s1 is greater than @s2
  */
-int strcmp(const char *cs, const char *ct)
+int strcmp(const char *s1, const char *s2)
 {
 	register int r0 asm("0") = 0;
 	int ret = 0;
@@ -212,7 +214,7 @@ int strcmp(const char *cs, const char *ct)
 		      "   ic   %1,0(%3)\n"
 		      "   sr   %0,%1\n"
 		      "1:"
-		      : "+d" (ret), "+d" (r0), "+a" (cs), "+a" (ct)
+		      : "+d" (ret), "+d" (r0), "+a" (s1), "+a" (s2)
 		      : : "cc", "memory");
 	return ret;
 }
@@ -223,7 +225,7 @@ EXPORT_SYMBOL(strcmp);
  * @s: The string to be searched
  * @c: The character to search for
  */
-char * strrchr(const char * s, int c)
+char *strrchr(const char *s, int c)
 {
        size_t len = __strend(s) - s;
 
@@ -259,7 +261,7 @@ static inline int clcle(const char *s1, unsigned long l1,
  * @s1: The string to be searched
  * @s2: The string to search for
  */
-char * strstr(const char * s1,const char * s2)
+char *strstr(const char *s1, const char *s2)
 {
 	int l1, l2;
 
@@ -305,15 +307,15 @@ EXPORT_SYMBOL(memchr);
 
 /**
  * memcmp - Compare two areas of memory
- * @cs: One area of memory
- * @ct: Another area of memory
+ * @s1: One area of memory
+ * @s2: Another area of memory
  * @count: The size of the area.
  */
-int memcmp(const void *cs, const void *ct, size_t n)
+int memcmp(const void *s1, const void *s2, size_t n)
 {
 	int ret;
 
-	ret = clcle(cs, n, ct, n);
+	ret = clcle(s1, n, s2, n);
 	if (ret)
 		ret = ret == 1 ? -1 : 1;
 	return ret;

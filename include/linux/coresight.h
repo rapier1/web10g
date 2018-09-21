@@ -1,13 +1,6 @@
-/* Copyright (c) 2012, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2012, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _LINUX_CORESIGHT_H
@@ -201,7 +194,7 @@ struct coresight_ops_sink {
 			  void *sink_config);
 	unsigned long (*reset_buffer)(struct coresight_device *csdev,
 				      struct perf_output_handle *handle,
-				      void *sink_config, bool *lost);
+				      void *sink_config);
 	void (*update_buffer)(struct coresight_device *csdev,
 			      struct perf_output_handle *handle,
 			      void *sink_config);
@@ -263,11 +256,15 @@ static inline int coresight_timeout(void __iomem *addr, u32 offset,
 #endif
 
 #ifdef CONFIG_OF
-extern struct coresight_platform_data *of_get_coresight_platform_data(
-				struct device *dev, struct device_node *node);
+extern int of_coresight_get_cpu(const struct device_node *node);
+extern struct coresight_platform_data *
+of_get_coresight_platform_data(struct device *dev,
+			       const struct device_node *node);
 #else
+static inline int of_coresight_get_cpu(const struct device_node *node)
+{ return 0; }
 static inline struct coresight_platform_data *of_get_coresight_platform_data(
-	struct device *dev, struct device_node *node) { return NULL; }
+	struct device *dev, const struct device_node *node) { return NULL; }
 #endif
 
 #ifdef CONFIG_PID_NS

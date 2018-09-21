@@ -64,7 +64,7 @@ static void i965_write_fence_reg(struct drm_i915_fence_reg *fence,
 	int fence_pitch_shift;
 	u64 val;
 
-	if (INTEL_INFO(fence->i915)->gen >= 6) {
+	if (INTEL_GEN(fence->i915) >= 6) {
 		fence_reg_lo = FENCE_REG_GEN6_LO(fence->id);
 		fence_reg_hi = FENCE_REG_GEN6_HI(fence->id);
 		fence_pitch_shift = GEN6_FENCE_PITCH_SHIFT;
@@ -77,16 +77,17 @@ static void i965_write_fence_reg(struct drm_i915_fence_reg *fence,
 
 	val = 0;
 	if (vma) {
-		unsigned int tiling = i915_gem_object_get_tiling(vma->obj);
-		bool is_y_tiled = tiling == I915_TILING_Y;
 		unsigned int stride = i915_gem_object_get_stride(vma->obj);
-		u32 row_size = stride * (is_y_tiled ? 32 : 8);
-		u32 size = rounddown((u32)vma->node.size, row_size);
 
-		val = ((vma->node.start + size - 4096) & 0xfffff000) << 32;
-		val |= vma->node.start & 0xfffff000;
+		GEM_BUG_ON(!i915_vma_is_map_and_fenceable(vma));
+		GEM_BUG_ON(!IS_ALIGNED(vma->node.start, I965_FENCE_PAGE));
+		GEM_BUG_ON(!IS_ALIGNED(vma->fence_size, I965_FENCE_PAGE));
+		GEM_BUG_ON(!IS_ALIGNED(stride, 128));
+
+		val = (vma->node.start + vma->fence_size - I965_FENCE_PAGE) << 32;
+		val |= vma->node.start;
 		val |= (u64)((stride / 128) - 1) << fence_pitch_shift;
-		if (is_y_tiled)
+		if (i915_gem_object_get_tiling(vma->obj) == I915_TILING_Y)
 			val |= BIT(I965_FENCE_TILING_Y_SHIFT);
 		val |= I965_FENCE_REG_VALID;
 	}
@@ -122,31 +123,24 @@ static void i915_write_fence_reg(struct drm_i915_fence_reg *fence,
 		unsigned int tiling = i915_gem_object_get_tiling(vma->obj);
 		bool is_y_tiled = tiling == I915_TILING_Y;
 		unsigned int stride = i915_gem_object_get_stride(vma->obj);
-		int pitch_val;
-		int tile_width;
 
-		WARN((vma->node.start & ~I915_FENCE_START_MASK) ||
-		     !is_power_of_2(vma->node.size) ||
-		     (vma->node.start & (vma->node.size - 1)),
-		     "object 0x%08llx [fenceable? %d] not 1M or pot-size (0x%08llx) aligned\n",
-		     vma->node.start,
-		     i915_vma_is_map_and_fenceable(vma),
-		     vma->node.size);
+		GEM_BUG_ON(!i915_vma_is_map_and_fenceable(vma));
+		GEM_BUG_ON(vma->node.start & ~I915_FENCE_START_MASK);
+		GEM_BUG_ON(!is_power_of_2(vma->fence_size));
+		GEM_BUG_ON(!IS_ALIGNED(vma->node.start, vma->fence_size));
 
 		if (is_y_tiled && HAS_128_BYTE_Y_TILING(fence->i915))
-			tile_width = 128;
+			stride /= 128;
 		else
-			tile_width = 512;
-
-		/* Note: pitch better be a power of two tile widths */
-		pitch_val = stride / tile_width;
-		pitch_val = ffs(pitch_val) - 1;
+			stride /= 512;
+		GEM_BUG_ON(!is_power_of_2(stride));
 
 		val = vma->node.start;
 		if (is_y_tiled)
 			val |= BIT(I830_FENCE_TILING_Y_SHIFT);
-		val |= I915_FENCE_SIZE_BITS(vma->node.size);
-		val |= pitch_val << I830_FENCE_PITCH_SHIFT;
+		val |= I915_FENCE_SIZE_BITS(vma->fence_size);
+		val |= ilog2(stride) << I830_FENCE_PITCH_SHIFT;
+
 		val |= I830_FENCE_REG_VALID;
 	}
 
@@ -166,25 +160,19 @@ static void i830_write_fence_reg(struct drm_i915_fence_reg *fence,
 
 	val = 0;
 	if (vma) {
-		unsigned int tiling = i915_gem_object_get_tiling(vma->obj);
-		bool is_y_tiled = tiling == I915_TILING_Y;
 		unsigned int stride = i915_gem_object_get_stride(vma->obj);
-		u32 pitch_val;
 
-		WARN((vma->node.start & ~I830_FENCE_START_MASK) ||
-		     !is_power_of_2(vma->node.size) ||
-		     (vma->node.start & (vma->node.size - 1)),
-		     "object 0x%08llx not 512K or pot-size 0x%08llx aligned\n",
-		     vma->node.start, vma->node.size);
-
-		pitch_val = stride / 128;
-		pitch_val = ffs(pitch_val) - 1;
+		GEM_BUG_ON(!i915_vma_is_map_and_fenceable(vma));
+		GEM_BUG_ON(vma->node.start & ~I830_FENCE_START_MASK);
+		GEM_BUG_ON(!is_power_of_2(vma->fence_size));
+		GEM_BUG_ON(!is_power_of_2(stride / 128));
+		GEM_BUG_ON(!IS_ALIGNED(vma->node.start, vma->fence_size));
 
 		val = vma->node.start;
-		if (is_y_tiled)
+		if (i915_gem_object_get_tiling(vma->obj) == I915_TILING_Y)
 			val |= BIT(I830_FENCE_TILING_Y_SHIFT);
-		val |= I830_FENCE_SIZE_BITS(vma->node.size);
-		val |= pitch_val << I830_FENCE_PITCH_SHIFT;
+		val |= I830_FENCE_SIZE_BITS(vma->fence_size);
+		val |= ilog2(stride / 128) << I830_FENCE_PITCH_SHIFT;
 		val |= I830_FENCE_REG_VALID;
 	}
 
@@ -242,17 +230,22 @@ static int fence_update(struct drm_i915_fence_reg *fence,
 	}
 
 	if (fence->vma) {
-		ret = i915_gem_active_retire(&fence->vma->last_fence,
-				      &fence->vma->obj->base.dev->struct_mutex);
+		struct i915_vma *old = fence->vma;
+
+		ret = i915_gem_active_retire(&old->last_fence,
+					     &old->obj->base.dev->struct_mutex);
 		if (ret)
 			return ret;
+
+		i915_vma_flush_writes(old);
 	}
 
 	if (fence->vma && fence->vma != vma) {
 		/* Ensure that all userspace CPU access is completed before
 		 * stealing the fence.
 		 */
-		i915_gem_release_mmap(fence->vma->obj);
+		GEM_BUG_ON(fence->vma->fence != fence);
+		i915_vma_revoke_mmap(fence->vma);
 
 		fence->vma->fence = NULL;
 		fence->vma = NULL;
@@ -260,7 +253,14 @@ static int fence_update(struct drm_i915_fence_reg *fence,
 		list_move(&fence->link, &fence->i915->mm.fence_list);
 	}
 
-	fence_write(fence, vma);
+	/* We only need to update the register itself if the device is awake.
+	 * If the device is currently powered down, we will defer the write
+	 * to the runtime resume, see i915_gem_restore_fences().
+	 */
+	if (intel_runtime_pm_get_if_in_use(fence->i915)) {
+		fence_write(fence, vma);
+		intel_runtime_pm_put(fence->i915);
+	}
 
 	if (vma) {
 		if (fence->vma != vma) {
@@ -285,12 +285,9 @@ static int fence_update(struct drm_i915_fence_reg *fence,
  *
  * 0 on success, negative error code on failure.
  */
-int
-i915_vma_put_fence(struct i915_vma *vma)
+int i915_vma_put_fence(struct i915_vma *vma)
 {
 	struct drm_i915_fence_reg *fence = vma->fence;
-
-	assert_rpm_wakelock_held(to_i915(vma->vm->dev));
 
 	if (!fence)
 		return 0;
@@ -306,6 +303,8 @@ static struct drm_i915_fence_reg *fence_find(struct drm_i915_private *dev_priv)
 	struct drm_i915_fence_reg *fence;
 
 	list_for_each_entry(fence, &dev_priv->mm.fence_list, link) {
+		GEM_BUG_ON(fence->vma && fence->vma->fence != fence);
+
 		if (fence->pin_count)
 			continue;
 
@@ -313,14 +312,14 @@ static struct drm_i915_fence_reg *fence_find(struct drm_i915_private *dev_priv)
 	}
 
 	/* Wait for completion of pending flips which consume fences */
-	if (intel_has_pending_fb_unpin(&dev_priv->drm))
+	if (intel_has_pending_fb_unpin(dev_priv))
 		return ERR_PTR(-EAGAIN);
 
 	return ERR_PTR(-EDEADLK);
 }
 
 /**
- * i915_vma_get_fence - set up fencing for a vma
+ * i915_vma_pin_fence - set up fencing for a vma
  * @vma: vma to map through a fence reg
  *
  * When mapping objects through the GTT, userspace wants to be able to write
@@ -338,32 +337,127 @@ static struct drm_i915_fence_reg *fence_find(struct drm_i915_private *dev_priv)
  * 0 on success, negative error code on failure.
  */
 int
-i915_vma_get_fence(struct i915_vma *vma)
+i915_vma_pin_fence(struct i915_vma *vma)
 {
 	struct drm_i915_fence_reg *fence;
 	struct i915_vma *set = i915_gem_object_is_tiled(vma->obj) ? vma : NULL;
+	int err;
 
 	/* Note that we revoke fences on runtime suspend. Therefore the user
 	 * must keep the device awake whilst using the fence.
 	 */
-	assert_rpm_wakelock_held(to_i915(vma->vm->dev));
+	assert_rpm_wakelock_held(vma->vm->i915);
 
 	/* Just update our place in the LRU if our fence is getting reused. */
 	if (vma->fence) {
 		fence = vma->fence;
+		GEM_BUG_ON(fence->vma != vma);
+		fence->pin_count++;
 		if (!fence->dirty) {
 			list_move_tail(&fence->link,
 				       &fence->i915->mm.fence_list);
 			return 0;
 		}
 	} else if (set) {
-		fence = fence_find(to_i915(vma->vm->dev));
+		fence = fence_find(vma->vm->i915);
 		if (IS_ERR(fence))
 			return PTR_ERR(fence);
+
+		GEM_BUG_ON(fence->pin_count);
+		fence->pin_count++;
 	} else
 		return 0;
 
-	return fence_update(fence, set);
+	err = fence_update(fence, set);
+	if (err)
+		goto out_unpin;
+
+	GEM_BUG_ON(fence->vma != set);
+	GEM_BUG_ON(vma->fence != (set ? fence : NULL));
+
+	if (set)
+		return 0;
+
+out_unpin:
+	fence->pin_count--;
+	return err;
+}
+
+/**
+ * i915_reserve_fence - Reserve a fence for vGPU
+ * @dev_priv: i915 device private
+ *
+ * This function walks the fence regs looking for a free one and remove
+ * it from the fence_list. It is used to reserve fence for vGPU to use.
+ */
+struct drm_i915_fence_reg *
+i915_reserve_fence(struct drm_i915_private *dev_priv)
+{
+	struct drm_i915_fence_reg *fence;
+	int count;
+	int ret;
+
+	lockdep_assert_held(&dev_priv->drm.struct_mutex);
+
+	/* Keep at least one fence available for the display engine. */
+	count = 0;
+	list_for_each_entry(fence, &dev_priv->mm.fence_list, link)
+		count += !fence->pin_count;
+	if (count <= 1)
+		return ERR_PTR(-ENOSPC);
+
+	fence = fence_find(dev_priv);
+	if (IS_ERR(fence))
+		return fence;
+
+	if (fence->vma) {
+		/* Force-remove fence from VMA */
+		ret = fence_update(fence, NULL);
+		if (ret)
+			return ERR_PTR(ret);
+	}
+
+	list_del(&fence->link);
+	return fence;
+}
+
+/**
+ * i915_unreserve_fence - Reclaim a reserved fence
+ * @fence: the fence reg
+ *
+ * This function add a reserved fence register from vGPU to the fence_list.
+ */
+void i915_unreserve_fence(struct drm_i915_fence_reg *fence)
+{
+	lockdep_assert_held(&fence->i915->drm.struct_mutex);
+
+	list_add(&fence->link, &fence->i915->mm.fence_list);
+}
+
+/**
+ * i915_gem_revoke_fences - revoke fence state
+ * @dev_priv: i915 device private
+ *
+ * Removes all GTT mmappings via the fence registers. This forces any user
+ * of the fence to reacquire that fence before continuing with their access.
+ * One use is during GPU reset where the fence register is lost and we need to
+ * revoke concurrent userspace access via GTT mmaps until the hardware has been
+ * reset and the fence registers have been restored.
+ */
+void i915_gem_revoke_fences(struct drm_i915_private *dev_priv)
+{
+	int i;
+
+	lockdep_assert_held(&dev_priv->drm.struct_mutex);
+
+	for (i = 0; i < dev_priv->num_fence_regs; i++) {
+		struct drm_i915_fence_reg *fence = &dev_priv->fence_regs[i];
+
+		GEM_BUG_ON(fence->vma && fence->vma->fence != fence);
+
+		if (fence->vma)
+			i915_vma_revoke_mmap(fence->vma);
+	}
 }
 
 /**
@@ -382,13 +476,15 @@ void i915_gem_restore_fences(struct drm_i915_private *dev_priv)
 		struct drm_i915_fence_reg *reg = &dev_priv->fence_regs[i];
 		struct i915_vma *vma = reg->vma;
 
+		GEM_BUG_ON(vma && vma->fence != reg);
+
 		/*
 		 * Commit delayed tiling changes if we have an object still
 		 * attached to the fence, otherwise just clear the fence.
 		 */
 		if (vma && !i915_gem_object_is_tiled(vma->obj)) {
 			GEM_BUG_ON(!reg->dirty);
-			GEM_BUG_ON(!list_empty(&vma->obj->userfault_link));
+			GEM_BUG_ON(i915_vma_has_userfault(vma));
 
 			list_move(&reg->link, &dev_priv->mm.fence_list);
 			vma->fence = NULL;
@@ -512,8 +608,8 @@ i915_gem_detect_bit_6_swizzle(struct drm_i915_private *dev_priv)
 		 */
 		swizzle_x = I915_BIT_6_SWIZZLE_NONE;
 		swizzle_y = I915_BIT_6_SWIZZLE_NONE;
-	} else if (IS_MOBILE(dev_priv) || (IS_GEN3(dev_priv) &&
-		   !IS_G33(dev_priv))) {
+	} else if (IS_MOBILE(dev_priv) ||
+		   IS_I915G(dev_priv) || IS_I945G(dev_priv)) {
 		uint32_t dcc;
 
 		/* On 9xx chipsets, channel interleave by the CPU is

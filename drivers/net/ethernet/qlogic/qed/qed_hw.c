@@ -1,9 +1,33 @@
 /* QLogic qed NIC Driver
- * Copyright (c) 2015 QLogic Corporation
+ * Copyright (c) 2015-2017  QLogic Corporation
  *
- * This software is available under the terms of the GNU General Public License
- * (GPL) Version 2, available from the file COPYING in the main directory of
- * this source tree.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and /or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include <linux/types.h>
@@ -34,6 +58,7 @@ struct qed_ptt {
 	struct list_head	list_entry;
 	unsigned int		idx;
 	struct pxp_ptt_entry	pxp;
+	u8			hwfn_id;
 };
 
 struct qed_ptt_pool {
@@ -55,6 +80,7 @@ int qed_ptt_pool_alloc(struct qed_hwfn *p_hwfn)
 		p_pool->ptts[i].idx = i;
 		p_pool->ptts[i].pxp.offset = QED_BAR_INVALID_OFFSET;
 		p_pool->ptts[i].pxp.pretend.control = 0;
+		p_pool->ptts[i].hwfn_id = p_hwfn->my_id;
 		if (i >= RESERVED_PTT_MAX)
 			list_add(&p_pool->ptts[i].list_entry,
 				 &p_pool->free_list);
@@ -168,6 +194,11 @@ static u32 qed_set_ptt(struct qed_hwfn *p_hwfn,
 	u32 offset;
 
 	offset = hw_addr - win_hw_addr;
+
+	if (p_ptt->hwfn_id != p_hwfn->my_id)
+		DP_NOTICE(p_hwfn,
+			  "ptt[%d] of hwfn[%02x] is used by hwfn[%02x]!\n",
+			  p_ptt->idx, p_ptt->hwfn_id, p_hwfn->my_id);
 
 	/* Verify the address is within the window */
 	if (hw_addr < win_hw_addr ||
@@ -323,6 +354,26 @@ void qed_port_unpretend(struct qed_hwfn *p_hwfn, struct qed_ptt *p_ptt)
 
 	p_ptt->pxp.pretend.control = cpu_to_le16(control);
 
+	REG_WR(p_hwfn,
+	       qed_ptt_config_addr(p_ptt) +
+	       offsetof(struct pxp_ptt_entry, pretend),
+	       *(u32 *)&p_ptt->pxp.pretend);
+}
+
+void qed_port_fid_pretend(struct qed_hwfn *p_hwfn,
+			  struct qed_ptt *p_ptt, u8 port_id, u16 fid)
+{
+	u16 control = 0;
+
+	SET_FIELD(control, PXP_PRETEND_CMD_PORT, port_id);
+	SET_FIELD(control, PXP_PRETEND_CMD_USE_PORT, 1);
+	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_PORT, 1);
+	SET_FIELD(control, PXP_PRETEND_CMD_IS_CONCRETE, 1);
+	SET_FIELD(control, PXP_PRETEND_CMD_PRETEND_FUNCTION, 1);
+	if (!GET_FIELD(fid, PXP_CONCRETE_FID_VFVALID))
+		fid = GET_FIELD(fid, PXP_CONCRETE_FID_PFID);
+	p_ptt->pxp.pretend.control = cpu_to_le16(control);
+	p_ptt->pxp.pretend.fid.concrete_fid.fid = cpu_to_le16(fid);
 	REG_WR(p_hwfn,
 	       qed_ptt_config_addr(p_ptt) +
 	       offsetof(struct pxp_ptt_entry, pretend),
@@ -776,52 +827,71 @@ int qed_dmae_host2host(struct qed_hwfn *p_hwfn,
 	return rc;
 }
 
-u16 qed_get_qm_pq(struct qed_hwfn *p_hwfn,
-		  enum protocol_type proto, union qed_qm_pq_params *p_params)
+int qed_dmae_sanity(struct qed_hwfn *p_hwfn,
+		    struct qed_ptt *p_ptt, const char *phase)
 {
-	u16 pq_id = 0;
+	u32 size = PAGE_SIZE / 2, val;
+	struct qed_dmae_params params;
+	int rc = 0;
+	dma_addr_t p_phys;
+	void *p_virt;
+	u32 *p_tmp;
 
-	if ((proto == PROTOCOLID_CORE ||
-	     proto == PROTOCOLID_ETH ||
-	     proto == PROTOCOLID_ISCSI ||
-	     proto == PROTOCOLID_ROCE) && !p_params) {
+	p_virt = dma_alloc_coherent(&p_hwfn->cdev->pdev->dev,
+				    2 * size, &p_phys, GFP_KERNEL);
+	if (!p_virt) {
 		DP_NOTICE(p_hwfn,
-			  "Protocol %d received NULL PQ params\n", proto);
-		return 0;
+			  "DMAE sanity [%s]: failed to allocate memory\n",
+			  phase);
+		return -ENOMEM;
 	}
 
-	switch (proto) {
-	case PROTOCOLID_CORE:
-		if (p_params->core.tc == LB_TC)
-			pq_id = p_hwfn->qm_info.pure_lb_pq;
-		else if (p_params->core.tc == OOO_LB_TC)
-			pq_id = p_hwfn->qm_info.ooo_pq;
-		else
-			pq_id = p_hwfn->qm_info.offload_pq;
-		break;
-	case PROTOCOLID_ETH:
-		pq_id = p_params->eth.tc;
-		if (p_params->eth.is_vf)
-			pq_id += p_hwfn->qm_info.vf_queues_offset +
-				 p_params->eth.vf_id;
-		break;
-	case PROTOCOLID_ISCSI:
-		if (p_params->iscsi.q_idx == 1)
-			pq_id = p_hwfn->qm_info.pure_ack_pq;
-		break;
-	case PROTOCOLID_ROCE:
-		if (p_params->roce.dcqcn)
-			pq_id = p_params->roce.qpid;
-		else
-			pq_id = p_hwfn->qm_info.offload_pq;
-		if (pq_id > p_hwfn->qm_info.num_pf_rls)
-			pq_id = p_hwfn->qm_info.offload_pq;
-		break;
-	default:
-		pq_id = 0;
+	/* Fill the bottom half of the allocated memory with a known pattern */
+	for (p_tmp = (u32 *)p_virt;
+	     p_tmp < (u32 *)((u8 *)p_virt + size); p_tmp++) {
+		/* Save the address itself as the value */
+		val = (u32)(uintptr_t)p_tmp;
+		*p_tmp = val;
 	}
 
-	pq_id = CM_TX_PQ_BASE + pq_id + RESC_START(p_hwfn, QED_PQ);
+	/* Zero the top half of the allocated memory */
+	memset((u8 *)p_virt + size, 0, size);
 
-	return pq_id;
+	DP_VERBOSE(p_hwfn,
+		   QED_MSG_SP,
+		   "DMAE sanity [%s]: src_addr={phys 0x%llx, virt %p}, dst_addr={phys 0x%llx, virt %p}, size 0x%x\n",
+		   phase,
+		   (u64)p_phys,
+		   p_virt, (u64)(p_phys + size), (u8 *)p_virt + size, size);
+
+	memset(&params, 0, sizeof(params));
+	rc = qed_dmae_host2host(p_hwfn, p_ptt, p_phys, p_phys + size,
+				size / 4 /* size_in_dwords */, &params);
+	if (rc) {
+		DP_NOTICE(p_hwfn,
+			  "DMAE sanity [%s]: qed_dmae_host2host() failed. rc = %d.\n",
+			  phase, rc);
+		goto out;
+	}
+
+	/* Verify that the top half of the allocated memory has the pattern */
+	for (p_tmp = (u32 *)((u8 *)p_virt + size);
+	     p_tmp < (u32 *)((u8 *)p_virt + (2 * size)); p_tmp++) {
+		/* The corresponding address in the bottom half */
+		val = (u32)(uintptr_t)p_tmp - size;
+
+		if (*p_tmp != val) {
+			DP_NOTICE(p_hwfn,
+				  "DMAE sanity [%s]: addr={phys 0x%llx, virt %p}, read_val 0x%08x, expected_val 0x%08x\n",
+				  phase,
+				  (u64)p_phys + ((u8 *)p_tmp - (u8 *)p_virt),
+				  p_tmp, *p_tmp, val);
+			rc = -EINVAL;
+			goto out;
+		}
+	}
+
+out:
+	dma_free_coherent(&p_hwfn->cdev->pdev->dev, 2 * size, p_virt, p_phys);
+	return rc;
 }

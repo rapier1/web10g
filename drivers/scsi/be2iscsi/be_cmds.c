@@ -1,18 +1,15 @@
-/**
- * Copyright (C) 2005 - 2016 Broadcom
- * All rights reserved.
+/*
+ * Copyright 2017 Broadcom. All Rights Reserved.
+ * The term "Broadcom" refers to Broadcom Limited and/or its subsidiaries.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.  The full GNU General
+ * as published by the Free Software Foundation. The full GNU General
  * Public License is included in this distribution in the file called COPYING.
  *
  * Contact Information:
  * linux-drivers@broadcom.com
  *
- * Emulex
- * 3333 Susan Street
- * Costa Mesa, CA 92626
  */
 
 #include <scsi/iscsi_proto.h>
@@ -245,6 +242,12 @@ int beiscsi_mccq_compl_wait(struct beiscsi_hba *phba,
 			    struct be_dma_mem *mbx_cmd_mem)
 {
 	int rc = 0;
+
+	if (!tag || tag > MAX_MCC_CMD) {
+		__beiscsi_log(phba, KERN_ERR,
+			      "BC_%d : invalid tag %u\n", tag);
+		return -EINVAL;
+	}
 
 	if (beiscsi_hba_in_error(phba)) {
 		clear_bit(MCC_TAG_STATE_RUNNING,
@@ -672,20 +675,20 @@ static int be_mbox_notify(struct be_ctrl_info *ctrl)
 	return status;
 }
 
-void be_wrb_hdr_prepare(struct be_mcc_wrb *wrb, int payload_len,
-				bool embedded, u8 sge_cnt)
+void be_wrb_hdr_prepare(struct be_mcc_wrb *wrb, u32 payload_len,
+			bool embedded, u8 sge_cnt)
 {
 	if (embedded)
-		wrb->embedded |= MCC_WRB_EMBEDDED_MASK;
+		wrb->emb_sgecnt_special |= MCC_WRB_EMBEDDED_MASK;
 	else
-		wrb->embedded |= (sge_cnt & MCC_WRB_SGE_CNT_MASK) <<
-						MCC_WRB_SGE_CNT_SHIFT;
+		wrb->emb_sgecnt_special |= (sge_cnt & MCC_WRB_SGE_CNT_MASK) <<
+					   MCC_WRB_SGE_CNT_SHIFT;
 	wrb->payload_length = payload_len;
 	be_dws_cpu_to_le(wrb, 8);
 }
 
 void be_cmd_hdr_prepare(struct be_cmd_req_hdr *req_hdr,
-			u8 subsystem, u8 opcode, int cmd_len)
+			u8 subsystem, u8 opcode, u32 cmd_len)
 {
 	req_hdr->opcode = opcode;
 	req_hdr->subsystem = subsystem;
@@ -944,7 +947,6 @@ int beiscsi_cmd_q_destroy(struct be_ctrl_info *ctrl, struct be_queue_info *q,
 	default:
 		mutex_unlock(&ctrl->mbox_lock);
 		BUG();
-		return -ENXIO;
 	}
 	be_cmd_hdr_prepare(&req->hdr, subsys, opcode, sizeof(*req));
 	if (queue_type != QTYPE_SGL)
@@ -1519,6 +1521,52 @@ int beiscsi_get_port_name(struct be_ctrl_info *ctrl, struct beiscsi_hba *phba)
 	return ret;
 }
 
+int beiscsi_set_host_data(struct beiscsi_hba *phba)
+{
+	struct be_ctrl_info *ctrl = &phba->ctrl;
+	struct be_cmd_set_host_data *ioctl;
+	struct be_mcc_wrb *wrb;
+	int ret = 0;
+
+	if (is_chip_be2_be3r(phba))
+		return ret;
+
+	mutex_lock(&ctrl->mbox_lock);
+	wrb = wrb_from_mbox(&ctrl->mbox_mem);
+	memset(wrb, 0, sizeof(*wrb));
+	ioctl = embedded_payload(wrb);
+
+	be_wrb_hdr_prepare(wrb, sizeof(*ioctl), true, 0);
+	be_cmd_hdr_prepare(&ioctl->h.req_hdr, CMD_SUBSYSTEM_COMMON,
+			   OPCODE_COMMON_SET_HOST_DATA,
+			   EMBED_MBX_MAX_PAYLOAD_SIZE);
+	ioctl->param.req.param_id = BE_CMD_SET_HOST_PARAM_ID;
+	ioctl->param.req.param_len =
+		snprintf((char *)ioctl->param.req.param_data,
+			 sizeof(ioctl->param.req.param_data),
+			 "Linux iSCSI v%s", BUILD_STR);
+	ioctl->param.req.param_len = ALIGN(ioctl->param.req.param_len, 4);
+	if (ioctl->param.req.param_len > BE_CMD_MAX_DRV_VERSION)
+		ioctl->param.req.param_len = BE_CMD_MAX_DRV_VERSION;
+	ret = be_mbox_notify(ctrl);
+	if (!ret) {
+		beiscsi_log(phba, KERN_INFO, BEISCSI_LOG_INIT,
+			    "BG_%d : HBA set host driver version\n");
+	} else {
+		/**
+		 * Check "MCC_STATUS_INVALID_LENGTH" for SKH.
+		 * Older FW versions return this error.
+		 */
+		if (ret == MCC_STATUS_ILLEGAL_REQUEST ||
+				ret == MCC_STATUS_INVALID_LENGTH)
+			__beiscsi_log(phba, KERN_INFO,
+				      "BG_%d : HBA failed to set host driver version\n");
+	}
+
+	mutex_unlock(&ctrl->mbox_lock);
+	return ret;
+}
+
 int beiscsi_set_uer_feature(struct beiscsi_hba *phba)
 {
 	struct be_ctrl_info *ctrl = &phba->ctrl;
@@ -1599,7 +1647,7 @@ int beiscsi_cmd_function_reset(struct beiscsi_hba *phba)
 {
 	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
-	struct be_post_sgl_pages_req *req = embedded_payload(wrb);
+	struct be_post_sgl_pages_req *req;
 	int status;
 
 	mutex_lock(&ctrl->mbox_lock);
@@ -1700,31 +1748,34 @@ int beiscsi_cmd_iscsi_cleanup(struct beiscsi_hba *phba, unsigned short ulp)
 	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct iscsi_cleanup_req_v1 *req_v1;
 	struct iscsi_cleanup_req *req;
+	u16 hdr_ring_id, data_ring_id;
 	struct be_mcc_wrb *wrb;
 	int status;
 
 	mutex_lock(&ctrl->mbox_lock);
 	wrb = wrb_from_mbox(&ctrl->mbox_mem);
-	req = embedded_payload(wrb);
-	be_wrb_hdr_prepare(wrb, sizeof(*req), true, 0);
-	be_cmd_hdr_prepare(&req->hdr, CMD_SUBSYSTEM_ISCSI,
-			   OPCODE_COMMON_ISCSI_CLEANUP, sizeof(*req));
 
-       /**
-	* TODO: Check with FW folks the chute value to be set.
-	* For now, use the ULP_MASK as the chute value.
-	*/
+	hdr_ring_id = HWI_GET_DEF_HDRQ_ID(phba, ulp);
+	data_ring_id = HWI_GET_DEF_BUFQ_ID(phba, ulp);
 	if (is_chip_be2_be3r(phba)) {
+		req = embedded_payload(wrb);
+		be_wrb_hdr_prepare(wrb, sizeof(*req), true, 0);
+		be_cmd_hdr_prepare(&req->hdr, CMD_SUBSYSTEM_ISCSI,
+				   OPCODE_COMMON_ISCSI_CLEANUP, sizeof(*req));
 		req->chute = (1 << ulp);
-		req->hdr_ring_id = HWI_GET_DEF_HDRQ_ID(phba, ulp);
-		req->data_ring_id = HWI_GET_DEF_BUFQ_ID(phba, ulp);
+		/* BE2/BE3 FW creates 8-bit ring id */
+		req->hdr_ring_id = hdr_ring_id;
+		req->data_ring_id = data_ring_id;
 	} else {
-		req_v1 = (struct iscsi_cleanup_req_v1 *)req;
+		req_v1 = embedded_payload(wrb);
+		be_wrb_hdr_prepare(wrb, sizeof(*req_v1), true, 0);
+		be_cmd_hdr_prepare(&req_v1->hdr, CMD_SUBSYSTEM_ISCSI,
+				   OPCODE_COMMON_ISCSI_CLEANUP,
+				   sizeof(*req_v1));
 		req_v1->hdr.version = 1;
-		req_v1->hdr_ring_id = cpu_to_le16(HWI_GET_DEF_HDRQ_ID(phba,
-								      ulp));
-		req_v1->data_ring_id = cpu_to_le16(HWI_GET_DEF_BUFQ_ID(phba,
-								       ulp));
+		req_v1->chute = (1 << ulp);
+		req_v1->hdr_ring_id = cpu_to_le16(hdr_ring_id);
+		req_v1->data_ring_id = cpu_to_le16(data_ring_id);
 	}
 
 	status = be_mbox_notify(ctrl);

@@ -37,10 +37,12 @@ Modeset Helper Reference for Common Vtables
 ===========================================
 
 .. kernel-doc:: include/drm/drm_modeset_helper_vtables.h
-   :internal:
+   :doc: overview
 
 .. kernel-doc:: include/drm/drm_modeset_helper_vtables.h
-   :doc: overview
+   :internal:
+
+.. _drm_atomic_helper:
 
 Atomic Modeset Helper Functions Reference
 =========================================
@@ -72,17 +74,11 @@ Helper Functions Reference
 .. kernel-doc:: drivers/gpu/drm/drm_atomic_helper.c
    :export:
 
-Legacy CRTC/Modeset Helper Functions Reference
-==============================================
-
-.. kernel-doc:: drivers/gpu/drm/drm_crtc_helper.c
-   :doc: overview
-
-.. kernel-doc:: drivers/gpu/drm/drm_crtc_helper.c
-   :export:
-
 Simple KMS Helper Reference
 ===========================
+
+.. kernel-doc:: drivers/gpu/drm/drm_simple_kms_helper.c
+   :doc: overview
 
 .. kernel-doc:: include/drm/drm_simple_kms_helper.h
    :internal:
@@ -90,20 +86,17 @@ Simple KMS Helper Reference
 .. kernel-doc:: drivers/gpu/drm/drm_simple_kms_helper.c
    :export:
 
-.. kernel-doc:: drivers/gpu/drm/drm_simple_kms_helper.c
-   :doc: overview
-
 fbdev Helper Functions Reference
 ================================
 
 .. kernel-doc:: drivers/gpu/drm/drm_fb_helper.c
    :doc: fbdev helpers
 
-.. kernel-doc:: drivers/gpu/drm/drm_fb_helper.c
-   :export:
-
 .. kernel-doc:: include/drm/drm_fb_helper.h
    :internal:
+
+.. kernel-doc:: drivers/gpu/drm/drm_fb_helper.c
+   :export:
 
 Framebuffer CMA Helper Functions Reference
 ==========================================
@@ -113,6 +106,8 @@ Framebuffer CMA Helper Functions Reference
 
 .. kernel-doc:: drivers/gpu/drm/drm_fb_cma_helper.c
    :export:
+
+.. _drm_bridges:
 
 Bridges
 =======
@@ -139,8 +134,19 @@ Bridge Helper Reference
 .. kernel-doc:: drivers/gpu/drm/drm_bridge.c
    :export:
 
+Panel-Bridge Helper Reference
+-----------------------------
+
+.. kernel-doc:: drivers/gpu/drm/bridge/panel.c
+   :export:
+
+.. _drm_panel_helper:
+
 Panel Helper Reference
 ======================
+
+.. kernel-doc:: drivers/gpu/drm/drm_panel.c
+   :doc: drm panel
 
 .. kernel-doc:: include/drm/drm_panel.h
    :internal:
@@ -148,8 +154,8 @@ Panel Helper Reference
 .. kernel-doc:: drivers/gpu/drm/drm_panel.c
    :export:
 
-.. kernel-doc:: drivers/gpu/drm/drm_panel.c
-   :doc: drm panel
+.. kernel-doc:: drivers/gpu/drm/drm_panel_orientation_quirks.c
+   :export:
 
 Display Port Helper Functions Reference
 =======================================
@@ -217,6 +223,18 @@ EDID Helper Functions Reference
 .. kernel-doc:: drivers/gpu/drm/drm_edid.c
    :export:
 
+SCDC Helper Functions Reference
+===============================
+
+.. kernel-doc:: drivers/gpu/drm/drm_scdc_helper.c
+   :doc: scdc helpers
+
+.. kernel-doc:: include/drm/drm_scdc_helper.h
+   :internal:
+
+.. kernel-doc:: drivers/gpu/drm/drm_scdc_helper.c
+   :export:
+
 Rectangle Utilities Reference
 =============================
 
@@ -255,15 +273,6 @@ Flip-work Helper Reference
 .. kernel-doc:: drivers/gpu/drm/drm_flip_work.c
    :export:
 
-Plane Helper Reference
-======================
-
-.. kernel-doc:: drivers/gpu/drm/drm_plane_helper.c
-   :doc: overview
-
-.. kernel-doc:: drivers/gpu/drm/drm_plane_helper.c
-   :export:
-
 Auxiliary Modeset Helpers
 =========================
 
@@ -271,4 +280,31 @@ Auxiliary Modeset Helpers
    :doc: aux kms helpers
 
 .. kernel-doc:: drivers/gpu/drm/drm_modeset_helper.c
+   :export:
+
+Framebuffer GEM Helper Reference
+================================
+
+.. kernel-doc:: drivers/gpu/drm/drm_gem_framebuffer_helper.c
+   :doc: overview
+
+.. kernel-doc:: drivers/gpu/drm/drm_gem_framebuffer_helper.c
+   :export:
+
+Legacy Plane Helper Reference
+=============================
+
+.. kernel-doc:: drivers/gpu/drm/drm_plane_helper.c
+   :doc: overview
+
+.. kernel-doc:: drivers/gpu/drm/drm_plane_helper.c
+   :export:
+
+Legacy CRTC/Modeset Helper Functions Reference
+==============================================
+
+.. kernel-doc:: drivers/gpu/drm/drm_crtc_helper.c
+   :doc: overview
+
+.. kernel-doc:: drivers/gpu/drm/drm_crtc_helper.c
    :export:

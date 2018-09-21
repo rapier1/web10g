@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ARMv6 Performance counter handling code.
  *
@@ -302,12 +303,10 @@ static void armv6pmu_enable_event(struct perf_event *event)
 }
 
 static irqreturn_t
-armv6pmu_handle_irq(int irq_num,
-		    void *dev)
+armv6pmu_handle_irq(struct arm_pmu *cpu_pmu)
 {
 	unsigned long pmcr = armv6_pmcr_read();
 	struct perf_sample_data data;
-	struct arm_pmu *cpu_pmu = (struct arm_pmu *)dev;
 	struct pmu_hw_events *cpuc = this_cpu_ptr(cpu_pmu->hw_events);
 	struct pt_regs *regs;
 	int idx;
@@ -552,7 +551,7 @@ static int armv6mpcore_pmu_init(struct arm_pmu *cpu_pmu)
 	return 0;
 }
 
-static struct of_device_id armv6_pmu_of_device_ids[] = {
+static const struct of_device_id armv6_pmu_of_device_ids[] = {
 	{.compatible = "arm,arm11mpcore-pmu",	.data = armv6mpcore_pmu_init},
 	{.compatible = "arm,arm1176-pmu",	.data = armv6_1176_pmu_init},
 	{.compatible = "arm,arm1136-pmu",	.data = armv6_1136_pmu_init},
@@ -581,9 +580,5 @@ static struct platform_driver armv6_pmu_driver = {
 	.probe		= armv6_pmu_device_probe,
 };
 
-static int __init register_armv6_pmu_driver(void)
-{
-	return platform_driver_register(&armv6_pmu_driver);
-}
-device_initcall(register_armv6_pmu_driver);
+builtin_platform_driver(armv6_pmu_driver);
 #endif	/* CONFIG_CPU_V6 || CONFIG_CPU_V6K */

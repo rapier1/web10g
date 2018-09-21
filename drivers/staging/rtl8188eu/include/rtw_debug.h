@@ -70,7 +70,7 @@ extern u32 GlobalDebugLevel;
 #define DBG_88E_LEVEL(_level, fmt, arg...)				\
 	do {								\
 		if (_level <= GlobalDebugLevel)				\
-			pr_info(DRIVER_PREFIX"ERROR " fmt, ##arg);	\
+			pr_info(DRIVER_PREFIX fmt, ##arg);	\
 	} while (0)
 
 #define DBG_88E(...)							\
@@ -106,9 +106,9 @@ extern u32 GlobalDebugLevel;
 					 (((__i + 1) % 4) == 0) ?	\
 					 "  " : " ");	\
 				if (((__i + 1) % 16) == 0)		\
-					printk("\n");			\
+					pr_cont("\n");			\
 			}						\
-			printk("\n");					\
+			pr_cont("\n");					\
 		}							\
 	} while (0)
 

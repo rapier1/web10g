@@ -13,14 +13,14 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/sysctl.h>
+#include <linux/uaccess.h>
 
 #include <asm/cpufeature.h>
 #include <asm/insn.h>
 #include <asm/sysreg.h>
 #include <asm/system_misc.h>
 #include <asm/traps.h>
-#include <linux/uaccess.h>
-#include <asm/cpufeature.h>
+#include <asm/kprobes.h>
 
 #define CREATE_TRACE_POINTS
 #include "trace-events-emulation.h"
@@ -227,23 +227,15 @@ ret:
 	return ret;
 }
 
-static struct ctl_table ctl_abi[] = {
-	{
-		.procname = "abi",
-		.mode = 0555,
-	},
-	{ }
-};
-
-static void __init register_insn_emulation_sysctl(struct ctl_table *table)
+static void __init register_insn_emulation_sysctl(void)
 {
 	unsigned long flags;
 	int i = 0;
 	struct insn_emulation *insn;
 	struct ctl_table *insns_sysctl, *sysctl;
 
-	insns_sysctl = kzalloc(sizeof(*sysctl) * (nr_insn_emulated + 1),
-			      GFP_KERNEL);
+	insns_sysctl = kcalloc(nr_insn_emulated + 1, sizeof(*sysctl),
+			       GFP_KERNEL);
 
 	raw_spin_lock_irqsave(&insn_emulation_lock, flags);
 	list_for_each_entry(insn, &insn_emulation, node) {
@@ -261,8 +253,7 @@ static void __init register_insn_emulation_sysctl(struct ctl_table *table)
 	}
 	raw_spin_unlock_irqrestore(&insn_emulation_lock, flags);
 
-	table->child = insns_sysctl;
-	register_sysctl_table(table);
+	register_sysctl("abi", insns_sysctl);
 }
 
 /*
@@ -305,7 +296,8 @@ do {								\
 	_ASM_EXTABLE(0b, 4b)					\
 	_ASM_EXTABLE(1b, 4b)					\
 	: "=&r" (res), "+r" (data), "=&r" (temp), "=&r" (temp2)	\
-	: "r" (addr), "i" (-EAGAIN), "i" (-EFAULT),		\
+	: "r" ((unsigned long)addr), "i" (-EAGAIN),		\
+	  "i" (-EFAULT),					\
 	  "i" (__SWP_LL_SC_LOOPS)				\
 	: "memory");						\
 	uaccess_disable();					\
@@ -377,6 +369,7 @@ static unsigned int __kprobes aarch32_check_condition(u32 opcode, u32 psr)
 static int swp_handler(struct pt_regs *regs, u32 instr)
 {
 	u32 destreg, data, type, address = 0;
+	const void __user *user_ptr;
 	int rn, rt2, res = 0;
 
 	perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, regs->pc);
@@ -408,7 +401,8 @@ static int swp_handler(struct pt_regs *regs, u32 instr)
 		aarch32_insn_extract_reg_num(instr, A32_RT2_OFFSET), data);
 
 	/* Check access in reasonable access range for both SWP and SWPB */
-	if (!access_ok(VERIFY_WRITE, (address & ~3), 4)) {
+	user_ptr = (const void __user *)(unsigned long)(address & ~3);
+	if (!access_ok(VERIFY_WRITE, user_ptr, 4)) {
 		pr_debug("SWP{B} emulation: access to 0x%08x not allowed!\n",
 			address);
 		goto fault;
@@ -429,12 +423,12 @@ ret:
 	pr_warn_ratelimited("\"%s\" (%ld) uses obsolete SWP{B} instruction at 0x%llx\n",
 			current->comm, (unsigned long)current->pid, regs->pc);
 
-	regs->pc += 4;
+	arm64_skip_faulting_instruction(regs, 4);
 	return 0;
 
 fault:
 	pr_debug("SWP{B} emulation: access caused memory abort!\n");
-	arm64_notify_segfault(regs, address);
+	arm64_notify_segfault(address);
 
 	return 0;
 }
@@ -510,7 +504,7 @@ ret:
 	pr_warn_ratelimited("\"%s\" (%ld) uses deprecated CP15 Barrier instruction at 0x%llx\n",
 			current->comm, (unsigned long)current->pid, regs->pc);
 
-	regs->pc += 4;
+	arm64_skip_faulting_instruction(regs, 4);
 	return 0;
 }
 
@@ -584,14 +578,14 @@ static int compat_setend_handler(struct pt_regs *regs, u32 big_endian)
 static int a32_setend_handler(struct pt_regs *regs, u32 instr)
 {
 	int rc = compat_setend_handler(regs, (instr >> 9) & 1);
-	regs->pc += 4;
+	arm64_skip_faulting_instruction(regs, 4);
 	return rc;
 }
 
 static int t16_setend_handler(struct pt_regs *regs, u32 instr)
 {
 	int rc = compat_setend_handler(regs, (instr >> 3) & 1);
-	regs->pc += 2;
+	arm64_skip_faulting_instruction(regs, 2);
 	return rc;
 }
 
@@ -636,15 +630,15 @@ static int __init armv8_deprecated_init(void)
 		if(system_supports_mixed_endian_el0())
 			register_insn_emulation(&setend_ops);
 		else
-			pr_info("setend instruction emulation is not supported on the system");
+			pr_info("setend instruction emulation is not supported on this system\n");
 	}
 
 	cpuhp_setup_state_nocalls(CPUHP_AP_ARM64_ISNDEP_STARTING,
 				  "arm64/isndep:starting",
 				  run_all_insn_set_hw_mode, NULL);
-	register_insn_emulation_sysctl(ctl_abi);
+	register_insn_emulation_sysctl();
 
 	return 0;
 }
 
-late_initcall(armv8_deprecated_init);
+core_initcall(armv8_deprecated_init);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NET_GENERIC_NETLINK_H
 #define __NET_GENERIC_NETLINK_H
 
@@ -84,6 +85,7 @@ struct nlattr **genl_family_attrbuf(const struct genl_family *family);
  * @attrs: netlink attributes
  * @_net: network namespace
  * @user_ptr: user pointers
+ * @extack: extended ACK report struct
  */
 struct genl_info {
 	u32			snd_seq;
@@ -94,6 +96,7 @@ struct genl_info {
 	struct nlattr **	attrs;
 	possible_net_t		_net;
 	void *			user_ptr[2];
+	struct netlink_ext_ack *extack;
 };
 
 static inline struct net *genl_info_net(struct genl_info *info)
@@ -106,6 +109,16 @@ static inline void genl_info_net_set(struct genl_info *info, struct net *net)
 	write_pnet(&info->_net, net);
 }
 
+#define GENL_SET_ERR_MSG(info, msg) NL_SET_ERR_MSG((info)->extack, msg)
+
+static inline int genl_err_attr(struct genl_info *info, int err,
+				struct nlattr *attr)
+{
+	info->extack->bad_attr = attr;
+
+	return err;
+}
+
 /**
  * struct genl_ops - generic netlink operations
  * @cmd: command identifier
@@ -116,7 +129,6 @@ static inline void genl_info_net_set(struct genl_info *info, struct net *net)
  * @start: start callback for dumps
  * @dumpit: callback for dumpers
  * @done: completion callback for dumps
- * @ops_list: operations list
  */
 struct genl_ops {
 	const struct nla_policy	*policy;
@@ -142,15 +154,12 @@ void *genlmsg_put(struct sk_buff *skb, u32 portid, u32 seq,
 /**
  * genlmsg_nlhdr - Obtain netlink header from user specified header
  * @user_hdr: user header as returned from genlmsg_put()
- * @family: generic netlink family
  *
  * Returns pointer to netlink header.
  */
-static inline struct nlmsghdr *
-genlmsg_nlhdr(void *user_hdr, const struct genl_family *family)
+static inline struct nlmsghdr *genlmsg_nlhdr(void *user_hdr)
 {
 	return (struct nlmsghdr *)((char *)user_hdr -
-				   family->hdrsize -
 				   GENL_HDRLEN -
 				   NLMSG_HDRLEN);
 }
@@ -162,30 +171,30 @@ genlmsg_nlhdr(void *user_hdr, const struct genl_family *family)
  * @tb: destination array with maxtype+1 elements
  * @maxtype: maximum attribute type to be expected
  * @policy: validation policy
- * */
+ * @extack: extended ACK report struct
+ */
 static inline int genlmsg_parse(const struct nlmsghdr *nlh,
 				const struct genl_family *family,
 				struct nlattr *tb[], int maxtype,
-				const struct nla_policy *policy)
+				const struct nla_policy *policy,
+				struct netlink_ext_ack *extack)
 {
 	return nlmsg_parse(nlh, family->hdrsize + GENL_HDRLEN, tb, maxtype,
-			   policy);
+			   policy, extack);
 }
 
 /**
  * genl_dump_check_consistent - check if sequence is consistent and advertise if not
  * @cb: netlink callback structure that stores the sequence number
  * @user_hdr: user header as returned from genlmsg_put()
- * @family: generic netlink family
  *
  * Cf. nl_dump_check_consistent(), this just provides a wrapper to make it
  * simpler to use with generic netlink.
  */
 static inline void genl_dump_check_consistent(struct netlink_callback *cb,
-					      void *user_hdr,
-					      const struct genl_family *family)
+					      void *user_hdr)
 {
-	nl_dump_check_consistent(cb, genlmsg_nlhdr(user_hdr, family));
+	nl_dump_check_consistent(cb, genlmsg_nlhdr(user_hdr));
 }
 
 /**

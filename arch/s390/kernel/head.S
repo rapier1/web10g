@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright IBM Corp. 1999, 2010
  *
@@ -25,7 +26,6 @@
 #include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
-#include <asm/facility.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 
@@ -66,7 +66,7 @@ __HEAD
 # subroutine to wait for end I/O
 #
 .Lirqwait:
-	mvc	0x1f0(16),.Lnewpsw	# set up IO interrupt psw
+	mvc	__LC_IO_NEW_PSW(16),.Lnewpsw	# set up IO interrupt psw
 	lpsw	.Lwaitpsw
 .Lioint:
 	br	%r14
@@ -98,7 +98,7 @@ __HEAD
 	bnz	.Llderr
 .Lwait4irq:
 	bas	%r14,.Lirqwait
-	c	%r1,0xb8		# compare subchannel number
+	c	%r1,__LC_SUBCHANNEL_ID	# compare subchannel number
 	bne	.Lwait4irq
 	tsch	0(%r5)
 
@@ -156,9 +156,9 @@ iplstart:
 	.fill	16,4,0x0
 0:	lmh	%r0,%r15,0(%r13)	# clear high-order half of gprs
 	sam31				# switch to 31 bit addressing mode
-	lh	%r1,0xb8		# test if subchannel number
+	lh	%r1,__LC_SUBCHANNEL_ID	# test if subchannel number
 	bct	%r1,.Lnoload		#  is valid
-	l	%r1,0xb8		# load ipl subchannel number
+	l	%r1,__LC_SUBCHANNEL_ID	# load ipl subchannel number
 	la	%r2,IPL_BS		# load start address
 	bas	%r14,.Lloader		# load rest of ipl image
 	l	%r12,.Lparm		# pointer to parameter area
@@ -239,7 +239,7 @@ iplstart:
 	bz	.Lnoreset
 .Lwaitforirq:
 	bas	%r14,.Lirqwait		# wait for IO interrupt
-	c	%r1,0xb8		# compare subchannel number
+	c	%r1,__LC_SUBCHANNEL_ID	# compare subchannel number
 	bne	.Lwaitforirq
 	la	%r5,.Lirb
 	tsch	0(%r5)
@@ -303,7 +303,8 @@ ENTRY(startup_kdump)
 	xc	0xe00(256),0xe00
 	xc	0xf00(256),0xf00
 	lctlg	%c0,%c15,0x200(%r0)	# initialize control registers
-	stck	__LC_LAST_UPDATE_CLOCK
+	stcke	__LC_BOOT_CLOCK
+	mvc	__LC_LAST_UPDATE_CLOCK(8),__LC_BOOT_CLOCK+1
 	spt	6f-.LPG0(%r13)
 	mvc	__LC_LAST_UPDATE_TIMER(8),6f-.LPG0(%r13)
 	l	%r15,.Lstack-.LPG0(%r13)

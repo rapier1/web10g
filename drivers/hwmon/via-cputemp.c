@@ -88,8 +88,8 @@ static ssize_t show_temp(struct device *dev,
 	return sprintf(buf, "%lu\n", ((unsigned long)eax & 0xffffff) * 1000);
 }
 
-static ssize_t show_cpu_vid(struct device *dev,
-			    struct device_attribute *devattr, char *buf)
+static ssize_t cpu0_vid_show(struct device *dev,
+			     struct device_attribute *devattr, char *buf)
 {
 	struct via_cputemp_data *data = dev_get_drvdata(dev);
 	u32 eax, edx;
@@ -119,7 +119,7 @@ static const struct attribute_group via_cputemp_group = {
 };
 
 /* Optional attributes */
-static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_cpu_vid, NULL);
+static DEVICE_ATTR_RO(cpu0_vid);
 
 static int via_cputemp_probe(struct platform_device *pdev)
 {
@@ -136,20 +136,24 @@ static int via_cputemp_probe(struct platform_device *pdev)
 	data->id = pdev->id;
 	data->name = "via_cputemp";
 
-	switch (c->x86_model) {
-	case 0xA:
-		/* C7 A */
-	case 0xD:
-		/* C7 D */
-		data->msr_temp = 0x1169;
-		data->msr_vid = 0x198;
-		break;
-	case 0xF:
-		/* Nano */
+	if (c->x86 == 7) {
 		data->msr_temp = 0x1423;
-		break;
-	default:
-		return -ENODEV;
+	} else {
+		switch (c->x86_model) {
+		case 0xA:
+			/* C7 A */
+		case 0xD:
+			/* C7 D */
+			data->msr_temp = 0x1169;
+			data->msr_vid = 0x198;
+			break;
+		case 0xF:
+			/* Nano */
+			data->msr_temp = 0x1423;
+			break;
+		default:
+			return -ENODEV;
+		}
 	}
 
 	/* test if we can access the TEMPERATURE MSR */
@@ -283,6 +287,7 @@ static const struct x86_cpu_id __initconst cputemp_ids[] = {
 	{ X86_VENDOR_CENTAUR, 6, 0xa, }, /* C7 A */
 	{ X86_VENDOR_CENTAUR, 6, 0xd, }, /* C7 D */
 	{ X86_VENDOR_CENTAUR, 6, 0xf, }, /* Nano */
+	{ X86_VENDOR_CENTAUR, 7, X86_MODEL_ANY, },
 	{}
 };
 MODULE_DEVICE_TABLE(x86cpu, cputemp_ids);

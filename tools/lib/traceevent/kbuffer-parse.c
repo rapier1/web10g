@@ -24,8 +24,8 @@
 
 #include "kbuffer.h"
 
-#define MISSING_EVENTS (1 << 31)
-#define MISSING_STORED (1 << 30)
+#define MISSING_EVENTS (1UL << 31)
+#define MISSING_STORED (1UL << 30)
 
 #define COMMIT_MASK ((1 << 27) - 1)
 
@@ -315,6 +315,7 @@ static unsigned int old_update_pointers(struct kbuffer *kbuf)
 		extend += delta;
 		delta = extend;
 		ptr += 4;
+		length = 0;
 		break;
 
 	case OLD_RINGBUF_TYPE_TIME_STAMP:

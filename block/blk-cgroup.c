@@ -17,6 +17,7 @@
 #include <linux/ioprio.h>
 #include <linux/kdev_t.h>
 #include <linux/module.h>
+#include <linux/sched/signal.h>
 #include <linux/err.h>
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
@@ -73,7 +74,7 @@ static void blkg_free(struct blkcg_gq *blkg)
 			blkcg_policy[i]->pd_free_fn(blkg->pd[i]);
 
 	if (blkg->blkcg != &blkcg_root)
-		blk_exit_rl(&blkg->rl);
+		blk_exit_rl(blkg->q, &blkg->rl);
 
 	blkg_rwstat_exit(&blkg->stat_ios);
 	blkg_rwstat_exit(&blkg->stat_bytes);
@@ -184,7 +185,7 @@ static struct blkcg_gq *blkg_create(struct blkcg *blkcg,
 		goto err_free_blkg;
 	}
 
-	wb_congested = wb_congested_get_create(&q->backing_dev_info,
+	wb_congested = wb_congested_get_create(q->backing_dev_info,
 					       blkcg->css.id,
 					       GFP_NOWAIT | __GFP_NOWARN);
 	if (!wb_congested) {
@@ -306,11 +307,28 @@ struct blkcg_gq *blkg_lookup_create(struct blkcg *blkcg,
 	}
 }
 
+static void blkg_pd_offline(struct blkcg_gq *blkg)
+{
+	int i;
+
+	lockdep_assert_held(blkg->q->queue_lock);
+	lockdep_assert_held(&blkg->blkcg->lock);
+
+	for (i = 0; i < BLKCG_MAX_POLS; i++) {
+		struct blkcg_policy *pol = blkcg_policy[i];
+
+		if (blkg->pd[i] && !blkg->pd[i]->offline &&
+		    pol->pd_offline_fn) {
+			pol->pd_offline_fn(blkg->pd[i]);
+			blkg->pd[i]->offline = true;
+		}
+	}
+}
+
 static void blkg_destroy(struct blkcg_gq *blkg)
 {
 	struct blkcg *blkcg = blkg->blkcg;
 	struct blkcg_gq *parent = blkg->parent;
-	int i;
 
 	lockdep_assert_held(blkg->q->queue_lock);
 	lockdep_assert_held(&blkcg->lock);
@@ -318,13 +336,6 @@ static void blkg_destroy(struct blkcg_gq *blkg)
 	/* Something wrong if we are trying to remove same group twice */
 	WARN_ON_ONCE(list_empty(&blkg->q_node));
 	WARN_ON_ONCE(hlist_unhashed(&blkg->blkcg_node));
-
-	for (i = 0; i < BLKCG_MAX_POLS; i++) {
-		struct blkcg_policy *pol = blkcg_policy[i];
-
-		if (blkg->pd[i] && pol->pd_offline_fn)
-			pol->pd_offline_fn(blkg->pd[i]);
-	}
 
 	if (parent) {
 		blkg_rwstat_add_aux(&parent->stat_bytes, &blkg->stat_bytes);
@@ -368,6 +379,7 @@ static void blkg_destroy_all(struct request_queue *q)
 		struct blkcg *blkcg = blkg->blkcg;
 
 		spin_lock(&blkcg->lock);
+		blkg_pd_offline(blkg);
 		blkg_destroy(blkg);
 		spin_unlock(&blkcg->lock);
 	}
@@ -469,8 +481,8 @@ static int blkcg_reset_stats(struct cgroup_subsys_state *css,
 const char *blkg_dev_name(struct blkcg_gq *blkg)
 {
 	/* some drivers (floppy) instantiate a queue w/o disk registered */
-	if (blkg->q->backing_dev_info.dev)
-		return dev_name(blkg->q->backing_dev_info.dev);
+	if (blkg->q->backing_dev_info->dev)
+		return dev_name(blkg->q->backing_dev_info->dev);
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(blkg_dev_name);
@@ -771,6 +783,27 @@ struct blkg_rwstat blkg_rwstat_recursive_sum(struct blkcg_gq *blkg,
 }
 EXPORT_SYMBOL_GPL(blkg_rwstat_recursive_sum);
 
+/* Performs queue bypass and policy enabled checks then looks up blkg. */
+static struct blkcg_gq *blkg_lookup_check(struct blkcg *blkcg,
+					  const struct blkcg_policy *pol,
+					  struct request_queue *q)
+{
+	WARN_ON_ONCE(!rcu_read_lock_held());
+	lockdep_assert_held(q->queue_lock);
+
+	if (!blkcg_policy_enabled(q, pol))
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/*
+	 * This could be the first entry point of blkcg implementation and
+	 * we shouldn't allow anything to go through for a bypassing queue.
+	 */
+	if (unlikely(blk_queue_bypass(q)))
+		return ERR_PTR(blk_queue_dying(q) ? -ENODEV : -EBUSY);
+
+	return __blkg_lookup(blkcg, q, true /* update_hint */);
+}
+
 /**
  * blkg_conf_prep - parse and prepare for per-blkg config update
  * @blkcg: target block cgroup
@@ -788,8 +821,8 @@ int blkg_conf_prep(struct blkcg *blkcg, const struct blkcg_policy *pol,
 	__acquires(rcu) __acquires(disk->queue->queue_lock)
 {
 	struct gendisk *disk;
+	struct request_queue *q;
 	struct blkcg_gq *blkg;
-	struct module *owner;
 	unsigned int major, minor;
 	int key_len, part, ret;
 	char *body;
@@ -806,44 +839,93 @@ int blkg_conf_prep(struct blkcg *blkcg, const struct blkcg_policy *pol,
 	if (!disk)
 		return -ENODEV;
 	if (part) {
-		owner = disk->fops->owner;
-		put_disk(disk);
-		module_put(owner);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto fail;
 	}
+
+	q = disk->queue;
 
 	rcu_read_lock();
-	spin_lock_irq(disk->queue->queue_lock);
+	spin_lock_irq(q->queue_lock);
 
-	if (blkcg_policy_enabled(disk->queue, pol))
-		blkg = blkg_lookup_create(blkcg, disk->queue);
-	else
-		blkg = ERR_PTR(-EOPNOTSUPP);
-
+	blkg = blkg_lookup_check(blkcg, pol, q);
 	if (IS_ERR(blkg)) {
 		ret = PTR_ERR(blkg);
-		rcu_read_unlock();
-		spin_unlock_irq(disk->queue->queue_lock);
-		owner = disk->fops->owner;
-		put_disk(disk);
-		module_put(owner);
-		/*
-		 * If queue was bypassing, we should retry.  Do so after a
-		 * short msleep().  It isn't strictly necessary but queue
-		 * can be bypassing for some time and it's always nice to
-		 * avoid busy looping.
-		 */
-		if (ret == -EBUSY) {
-			msleep(10);
-			ret = restart_syscall();
-		}
-		return ret;
+		goto fail_unlock;
 	}
 
+	if (blkg)
+		goto success;
+
+	/*
+	 * Create blkgs walking down from blkcg_root to @blkcg, so that all
+	 * non-root blkgs have access to their parents.
+	 */
+	while (true) {
+		struct blkcg *pos = blkcg;
+		struct blkcg *parent;
+		struct blkcg_gq *new_blkg;
+
+		parent = blkcg_parent(blkcg);
+		while (parent && !__blkg_lookup(parent, q, false)) {
+			pos = parent;
+			parent = blkcg_parent(parent);
+		}
+
+		/* Drop locks to do new blkg allocation with GFP_KERNEL. */
+		spin_unlock_irq(q->queue_lock);
+		rcu_read_unlock();
+
+		new_blkg = blkg_alloc(pos, q, GFP_KERNEL);
+		if (unlikely(!new_blkg)) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+
+		rcu_read_lock();
+		spin_lock_irq(q->queue_lock);
+
+		blkg = blkg_lookup_check(pos, pol, q);
+		if (IS_ERR(blkg)) {
+			ret = PTR_ERR(blkg);
+			goto fail_unlock;
+		}
+
+		if (blkg) {
+			blkg_free(new_blkg);
+		} else {
+			blkg = blkg_create(pos, q, new_blkg);
+			if (unlikely(IS_ERR(blkg))) {
+				ret = PTR_ERR(blkg);
+				goto fail_unlock;
+			}
+		}
+
+		if (pos == blkcg)
+			goto success;
+	}
+success:
 	ctx->disk = disk;
 	ctx->blkg = blkg;
 	ctx->body = body;
 	return 0;
+
+fail_unlock:
+	spin_unlock_irq(q->queue_lock);
+	rcu_read_unlock();
+fail:
+	put_disk_and_module(disk);
+	/*
+	 * If queue was bypassing, we should retry.  Do so after a
+	 * short msleep().  It isn't strictly necessary but queue
+	 * can be bypassing for some time and it's always nice to
+	 * avoid busy looping.
+	 */
+	if (ret == -EBUSY) {
+		msleep(10);
+		ret = restart_syscall();
+	}
+	return ret;
 }
 EXPORT_SYMBOL_GPL(blkg_conf_prep);
 
@@ -857,13 +939,9 @@ EXPORT_SYMBOL_GPL(blkg_conf_prep);
 void blkg_conf_finish(struct blkg_conf_ctx *ctx)
 	__releases(ctx->disk->queue->queue_lock) __releases(rcu)
 {
-	struct module *owner;
-
 	spin_unlock_irq(ctx->disk->queue->queue_lock);
 	rcu_read_unlock();
-	owner = ctx->disk->fops->owner;
-	put_disk(ctx->disk);
-	module_put(owner);
+	put_disk_and_module(ctx->disk);
 }
 EXPORT_SYMBOL_GPL(blkg_conf_finish);
 
@@ -928,25 +1006,25 @@ static struct cftype blkcg_legacy_files[] = {
  * @css: css of interest
  *
  * This function is called when @css is about to go away and responsible
- * for shooting down all blkgs associated with @css.  blkgs should be
- * removed while holding both q and blkcg locks.  As blkcg lock is nested
- * inside q lock, this function performs reverse double lock dancing.
+ * for offlining all blkgs pd and killing all wbs associated with @css.
+ * blkgs pd offline should be done while holding both q and blkcg locks.
+ * As blkcg lock is nested inside q lock, this function performs reverse
+ * double lock dancing.
  *
  * This is the blkcg counterpart of ioc_release_fn().
  */
 static void blkcg_css_offline(struct cgroup_subsys_state *css)
 {
 	struct blkcg *blkcg = css_to_blkcg(css);
+	struct blkcg_gq *blkg;
 
 	spin_lock_irq(&blkcg->lock);
 
-	while (!hlist_empty(&blkcg->blkg_list)) {
-		struct blkcg_gq *blkg = hlist_entry(blkcg->blkg_list.first,
-						struct blkcg_gq, blkcg_node);
+	hlist_for_each_entry(blkg, &blkcg->blkg_list, blkcg_node) {
 		struct request_queue *q = blkg->q;
 
 		if (spin_trylock(q->queue_lock)) {
-			blkg_destroy(blkg);
+			blkg_pd_offline(blkg);
 			spin_unlock(q->queue_lock);
 		} else {
 			spin_unlock_irq(&blkcg->lock);
@@ -960,10 +1038,42 @@ static void blkcg_css_offline(struct cgroup_subsys_state *css)
 	wb_blkcg_offline(blkcg);
 }
 
+/**
+ * blkcg_destroy_all_blkgs - destroy all blkgs associated with a blkcg
+ * @blkcg: blkcg of interest
+ *
+ * This function is called when blkcg css is about to free and responsible for
+ * destroying all blkgs associated with @blkcg.
+ * blkgs should be removed while holding both q and blkcg locks. As blkcg lock
+ * is nested inside q lock, this function performs reverse double lock dancing.
+ */
+static void blkcg_destroy_all_blkgs(struct blkcg *blkcg)
+{
+	spin_lock_irq(&blkcg->lock);
+	while (!hlist_empty(&blkcg->blkg_list)) {
+		struct blkcg_gq *blkg = hlist_entry(blkcg->blkg_list.first,
+						    struct blkcg_gq,
+						    blkcg_node);
+		struct request_queue *q = blkg->q;
+
+		if (spin_trylock(q->queue_lock)) {
+			blkg_destroy(blkg);
+			spin_unlock(q->queue_lock);
+		} else {
+			spin_unlock_irq(&blkcg->lock);
+			cpu_relax();
+			spin_lock_irq(&blkcg->lock);
+		}
+	}
+	spin_unlock_irq(&blkcg->lock);
+}
+
 static void blkcg_css_free(struct cgroup_subsys_state *css)
 {
 	struct blkcg *blkcg = css_to_blkcg(css);
 	int i;
+
+	blkcg_destroy_all_blkgs(blkcg);
 
 	mutex_lock(&blkcg_pol_mutex);
 
@@ -993,7 +1103,7 @@ blkcg_css_alloc(struct cgroup_subsys_state *parent_css)
 		blkcg = kzalloc(sizeof(*blkcg), GFP_KERNEL);
 		if (!blkcg) {
 			ret = ERR_PTR(-ENOMEM);
-			goto free_blkcg;
+			goto unlock;
 		}
 	}
 
@@ -1037,8 +1147,10 @@ free_pd_blkcg:
 	for (i--; i >= 0; i--)
 		if (blkcg->cpd[i])
 			blkcg_policy[i]->cpd_free_fn(blkcg->cpd[i]);
-free_blkcg:
-	kfree(blkcg);
+
+	if (blkcg != &blkcg_root)
+		kfree(blkcg);
+unlock:
 	mutex_unlock(&blkcg_pol_mutex);
 	return ret;
 }
@@ -1065,27 +1177,19 @@ int blkcg_init_queue(struct request_queue *q)
 
 	preloaded = !radix_tree_preload(GFP_KERNEL);
 
-	/*
-	 * Make sure the root blkg exists and count the existing blkgs.  As
-	 * @q is bypassing at this point, blkg_lookup_create() can't be
-	 * used.  Open code insertion.
-	 */
+	/* Make sure the root blkg exists. */
 	rcu_read_lock();
 	spin_lock_irq(q->queue_lock);
 	blkg = blkg_create(&blkcg_root, q, new_blkg);
+	if (IS_ERR(blkg))
+		goto err_unlock;
+	q->root_blkg = blkg;
+	q->root_rl.blkg = blkg;
 	spin_unlock_irq(q->queue_lock);
 	rcu_read_unlock();
 
 	if (preloaded)
 		radix_tree_preload_end();
-
-	if (IS_ERR(blkg)) {
-		blkg_free(new_blkg);
-		return PTR_ERR(blkg);
-	}
-
-	q->root_blkg = blkg;
-	q->root_rl.blkg = blkg;
 
 	ret = blk_throtl_init(q);
 	if (ret) {
@@ -1094,6 +1198,13 @@ int blkcg_init_queue(struct request_queue *q)
 		spin_unlock_irq(q->queue_lock);
 	}
 	return ret;
+
+err_unlock:
+	spin_unlock_irq(q->queue_lock);
+	rcu_read_unlock();
+	if (preloaded)
+		radix_tree_preload_end();
+	return PTR_ERR(blkg);
 }
 
 /**
@@ -1223,7 +1334,10 @@ int blkcg_activate_policy(struct request_queue *q,
 	if (blkcg_policy_enabled(q, pol))
 		return 0;
 
-	blk_queue_bypass_start(q);
+	if (q->mq_ops)
+		blk_mq_freeze_queue(q);
+	else
+		blk_queue_bypass_start(q);
 pd_prealloc:
 	if (!pd_prealloc) {
 		pd_prealloc = pol->pd_alloc_fn(GFP_KERNEL, q->node);
@@ -1261,7 +1375,10 @@ pd_prealloc:
 
 	spin_unlock_irq(q->queue_lock);
 out_bypass_end:
-	blk_queue_bypass_end(q);
+	if (q->mq_ops)
+		blk_mq_unfreeze_queue(q);
+	else
+		blk_queue_bypass_end(q);
 	if (pd_prealloc)
 		pol->pd_free_fn(pd_prealloc);
 	return ret;
@@ -1284,27 +1401,33 @@ void blkcg_deactivate_policy(struct request_queue *q,
 	if (!blkcg_policy_enabled(q, pol))
 		return;
 
-	blk_queue_bypass_start(q);
+	if (q->mq_ops)
+		blk_mq_freeze_queue(q);
+	else
+		blk_queue_bypass_start(q);
+
 	spin_lock_irq(q->queue_lock);
 
 	__clear_bit(pol->plid, q->blkcg_pols);
 
 	list_for_each_entry(blkg, &q->blkg_list, q_node) {
-		/* grab blkcg lock too while removing @pd from @blkg */
-		spin_lock(&blkg->blkcg->lock);
-
 		if (blkg->pd[pol->plid]) {
-			if (pol->pd_offline_fn)
+			if (!blkg->pd[pol->plid]->offline &&
+			    pol->pd_offline_fn) {
 				pol->pd_offline_fn(blkg->pd[pol->plid]);
+				blkg->pd[pol->plid]->offline = true;
+			}
 			pol->pd_free_fn(blkg->pd[pol->plid]);
 			blkg->pd[pol->plid] = NULL;
 		}
-
-		spin_unlock(&blkg->blkcg->lock);
 	}
 
 	spin_unlock_irq(q->queue_lock);
-	blk_queue_bypass_end(q);
+
+	if (q->mq_ops)
+		blk_mq_unfreeze_queue(q);
+	else
+		blk_queue_bypass_end(q);
 }
 EXPORT_SYMBOL_GPL(blkcg_deactivate_policy);
 
@@ -1329,6 +1452,11 @@ int blkcg_policy_register(struct blkcg_policy *pol)
 		if (!blkcg_policy[i])
 			break;
 	if (i >= BLKCG_MAX_POLS)
+		goto err_unlock;
+
+	/* Make sure cpd/pd_alloc_fn and cpd/pd_free_fn in pairs */
+	if ((!pol->cpd_alloc_fn ^ !pol->cpd_free_fn) ||
+		(!pol->pd_alloc_fn ^ !pol->pd_free_fn))
 		goto err_unlock;
 
 	/* register @pol */
@@ -1364,7 +1492,7 @@ int blkcg_policy_register(struct blkcg_policy *pol)
 	return 0;
 
 err_free_cpds:
-	if (pol->cpd_alloc_fn) {
+	if (pol->cpd_free_fn) {
 		list_for_each_entry(blkcg, &all_blkcgs, all_blkcgs_node) {
 			if (blkcg->cpd[pol->plid]) {
 				pol->cpd_free_fn(blkcg->cpd[pol->plid]);
@@ -1404,7 +1532,7 @@ void blkcg_policy_unregister(struct blkcg_policy *pol)
 	/* remove cpds and unregister */
 	mutex_lock(&blkcg_pol_mutex);
 
-	if (pol->cpd_alloc_fn) {
+	if (pol->cpd_free_fn) {
 		list_for_each_entry(blkcg, &all_blkcgs, all_blkcgs_node) {
 			if (blkcg->cpd[pol->plid]) {
 				pol->cpd_free_fn(blkcg->cpd[pol->plid]);

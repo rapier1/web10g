@@ -12,7 +12,7 @@
 #include <linux/sched.h>
 #include <linux/topology.h>
 
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/proto.h>
 #include <asm/dma.h>
 #include <asm/amd_nb.h>
@@ -136,13 +136,13 @@ static int __init numa_add_memblk_to(int nid, u64 start, u64 end,
 
 	/* whine about and ignore invalid blks */
 	if (start > end || nid < 0 || nid >= MAX_NUMNODES) {
-		pr_warning("NUMA: Warning: invalid memblk node %d [mem %#010Lx-%#010Lx]\n",
-			   nid, start, end - 1);
+		pr_warn("Warning: invalid memblk node %d [mem %#010Lx-%#010Lx]\n",
+			nid, start, end - 1);
 		return 0;
 	}
 
 	if (mi->nr_blks >= NR_NODE_MEMBLKS) {
-		pr_err("NUMA: too many memblk ranges\n");
+		pr_err("too many memblk ranges\n");
 		return -EINVAL;
 	}
 
@@ -201,7 +201,7 @@ static void __init alloc_node_data(int nid)
 		nd_pa = __memblock_alloc_base(nd_size, SMP_CACHE_BYTES,
 					      MEMBLOCK_ALLOC_ACCESSIBLE);
 		if (!nd_pa) {
-			pr_err("Cannot find %zu bytes in node %d\n",
+			pr_err("Cannot find %zu bytes in any node (initial node: %d)\n",
 			       nd_size, nid);
 			return;
 		}
@@ -225,7 +225,7 @@ static void __init alloc_node_data(int nid)
  * numa_cleanup_meminfo - Cleanup a numa_meminfo
  * @mi: numa_meminfo to clean up
  *
- * Sanitize @mi by merging and removing unncessary memblks.  Also check for
+ * Sanitize @mi by merging and removing unnecessary memblks.  Also check for
  * conflicts and clear unused memblks.
  *
  * RETURNS:
@@ -267,14 +267,14 @@ int __init numa_cleanup_meminfo(struct numa_meminfo *mi)
 			 */
 			if (bi->end > bj->start && bi->start < bj->end) {
 				if (bi->nid != bj->nid) {
-					pr_err("NUMA: node %d [mem %#010Lx-%#010Lx] overlaps with node %d [mem %#010Lx-%#010Lx]\n",
+					pr_err("node %d [mem %#010Lx-%#010Lx] overlaps with node %d [mem %#010Lx-%#010Lx]\n",
 					       bi->nid, bi->start, bi->end - 1,
 					       bj->nid, bj->start, bj->end - 1);
 					return -EINVAL;
 				}
-				pr_warning("NUMA: Warning: node %d [mem %#010Lx-%#010Lx] overlaps with itself [mem %#010Lx-%#010Lx]\n",
-					   bi->nid, bi->start, bi->end - 1,
-					   bj->start, bj->end - 1);
+				pr_warn("Warning: node %d [mem %#010Lx-%#010Lx] overlaps with itself [mem %#010Lx-%#010Lx]\n",
+					bi->nid, bi->start, bi->end - 1,
+					bj->start, bj->end - 1);
 			}
 
 			/*
@@ -364,7 +364,7 @@ static int __init numa_alloc_distance(void)
 	phys = memblock_find_in_range(0, PFN_PHYS(max_pfn_mapped),
 				      size, PAGE_SIZE);
 	if (!phys) {
-		pr_warning("NUMA: Warning: can't allocate distance table!\n");
+		pr_warn("Warning: can't allocate distance table!\n");
 		/* don't retry until explicitly reset */
 		numa_distance = (void *)1LU;
 		return -ENOMEM;
@@ -410,14 +410,14 @@ void __init numa_set_distance(int from, int to, int distance)
 
 	if (from >= numa_distance_cnt || to >= numa_distance_cnt ||
 			from < 0 || to < 0) {
-		pr_warn_once("NUMA: Warning: node ids are out of bound, from=%d to=%d distance=%d\n",
-			    from, to, distance);
+		pr_warn_once("Warning: node ids are out of bound, from=%d to=%d distance=%d\n",
+			     from, to, distance);
 		return;
 	}
 
 	if ((u8)distance != distance ||
 	    (from == to && distance != LOCAL_DISTANCE)) {
-		pr_warn_once("NUMA: Warning: invalid distance parameter, from=%d to=%d distance=%d\n",
+		pr_warn_once("Warning: invalid distance parameter, from=%d to=%d distance=%d\n",
 			     from, to, distance);
 		return;
 	}

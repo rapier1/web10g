@@ -1,4 +1,5 @@
-/* Copyright (C) 2007-2016  B.A.T.M.A.N. contributors:
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (C) 2007-2018  B.A.T.M.A.N. contributors:
  *
  * Marek Lindner, Simon Wunderlich
  *
@@ -23,8 +24,7 @@
 #include <linux/compiler.h>
 #include <linux/spinlock.h>
 #include <linux/types.h>
-
-#include "packet.h"
+#include <uapi/linux/batadv_packet.h>
 
 struct sk_buff;
 
@@ -34,11 +34,13 @@ struct batadv_forw_packet *
 batadv_forw_packet_alloc(struct batadv_hard_iface *if_incoming,
 			 struct batadv_hard_iface *if_outgoing,
 			 atomic_t *queue_left,
-			 struct batadv_priv *bat_priv);
+			 struct batadv_priv *bat_priv,
+			 struct sk_buff *skb);
 bool batadv_forw_packet_steal(struct batadv_forw_packet *packet, spinlock_t *l);
 void batadv_forw_packet_ogmv1_queue(struct batadv_priv *bat_priv,
 				    struct batadv_forw_packet *forw_packet,
 				    unsigned long send_time);
+bool batadv_forw_packet_is_rebroadcast(struct batadv_forw_packet *forw_packet);
 
 int batadv_send_skb_to_orig(struct sk_buff *skb,
 			    struct batadv_orig_node *orig_node,
@@ -74,7 +76,7 @@ int batadv_send_skb_via_gw(struct batadv_priv *bat_priv, struct sk_buff *skb,
 			   unsigned short vid);
 
 /**
- * batadv_send_skb_via_tt - send an skb via TT lookup
+ * batadv_send_skb_via_tt() - send an skb via TT lookup
  * @bat_priv: the bat priv with all the soft interface information
  * @skb: the payload to send
  * @dst_hint: can be used to override the destination contained in the skb
@@ -95,7 +97,7 @@ static inline int batadv_send_skb_via_tt(struct batadv_priv *bat_priv,
 }
 
 /**
- * batadv_send_skb_via_tt_4addr - send an skb via TT lookup
+ * batadv_send_skb_via_tt_4addr() - send an skb via TT lookup
  * @bat_priv: the bat priv with all the soft interface information
  * @skb: the payload to send
  * @packet_subtype: the unicast 4addr packet subtype to use

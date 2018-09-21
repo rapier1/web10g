@@ -165,7 +165,7 @@ static int xgene_ahci_restart_engine(struct ata_port *ap)
 				    PORT_CMD_ISSUE, 0x0, 1, 100))
 		  return -EBUSY;
 
-	ahci_stop_engine(ap);
+	hpriv->stop_engine(ap);
 	ahci_start_fis_rx(ap);
 
 	/*
@@ -421,7 +421,7 @@ static int xgene_ahci_hardreset(struct ata_link *link, unsigned int *class,
 	portrxfis_saved = readl(port_mmio + PORT_FIS_ADDR);
 	portrxfishi_saved = readl(port_mmio + PORT_FIS_ADDR_HI);
 
-	ahci_stop_engine(ap);
+	hpriv->stop_engine(ap);
 
 	rc = xgene_ahci_do_hardreset(link, deadline, &online);
 
@@ -821,8 +821,10 @@ static int xgene_ahci_probe(struct platform_device *pdev)
 				dev_warn(&pdev->dev, "%s: Error reading device info. Assume version1\n",
 					__func__);
 				version = XGENE_AHCI_V1;
-			} else if (info->valid & ACPI_VALID_CID) {
-				version = XGENE_AHCI_V2;
+			} else {
+				if (info->valid & ACPI_VALID_CID)
+					version = XGENE_AHCI_V2;
+				kfree(info);
 			}
 		}
 	}

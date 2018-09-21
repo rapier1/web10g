@@ -19,8 +19,6 @@
 #include <linux/platform_data/brcmfmac.h>
 #include "fwil_types.h"
 
-extern const u8 ALLFFMAC[ETH_ALEN];
-
 #define BRCMF_FW_ALTPATH_LEN			256
 
 /* Definitions for the module global and device specific settings are defined
@@ -58,12 +56,15 @@ struct brcmf_mp_device {
 	unsigned int	feature_disable;
 	int		fcmode;
 	bool		roamoff;
+	bool		iapp;
 	bool		ignore_probe_fail;
 	struct brcmfmac_pd_cc *country_codes;
 	union {
 		struct brcmfmac_sdio_pd sdio;
 	} bus;
 };
+
+void brcmf_c_set_joinpref_default(struct brcmf_if *ifp);
 
 struct brcmf_mp_device *brcmf_get_module_param(struct device *dev,
 					       enum brcmf_bus_type bus_type,

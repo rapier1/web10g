@@ -21,7 +21,7 @@
  *
  */
 
-#include "drmP.h"
+#include <drm/drmP.h>
 #include "amdgpu.h"
 #include "amdgpu_pm.h"
 #include "cikd.h"
@@ -42,7 +42,8 @@
 #define KV_MINIMUM_ENGINE_CLOCK         800
 #define SMC_RAM_END                     0x40000
 
-static void kv_dpm_set_dpm_funcs(struct amdgpu_device *adev);
+static const struct amd_pm_funcs kv_dpm_funcs;
+
 static void kv_dpm_set_irq_funcs(struct amdgpu_device *adev);
 static int kv_enable_nb_dpm(struct amdgpu_device *adev,
 			    bool enable);
@@ -64,7 +65,7 @@ static int kv_set_thermal_temperature_range(struct amdgpu_device *adev,
 					    int min_temp, int max_temp);
 static int kv_init_fps_limits(struct amdgpu_device *adev);
 
-static void kv_dpm_powergate_uvd(struct amdgpu_device *adev, bool gate);
+static void kv_dpm_powergate_uvd(void *handle, bool gate);
 static void kv_dpm_powergate_vce(struct amdgpu_device *adev, bool gate);
 static void kv_dpm_powergate_samu(struct amdgpu_device *adev, bool gate);
 static void kv_dpm_powergate_acp(struct amdgpu_device *adev, bool gate);
@@ -1230,6 +1231,7 @@ static void kv_update_current_ps(struct amdgpu_device *adev,
 	pi->current_rps = *rps;
 	pi->current_ps = *new_ps;
 	pi->current_rps.ps_priv = &pi->current_ps;
+	adev->pm.dpm.current_ps = &pi->current_rps;
 }
 
 static void kv_update_requested_ps(struct amdgpu_device *adev,
@@ -1241,10 +1243,12 @@ static void kv_update_requested_ps(struct amdgpu_device *adev,
 	pi->requested_rps = *rps;
 	pi->requested_ps = *new_ps;
 	pi->requested_rps.ps_priv = &pi->requested_ps;
+	adev->pm.dpm.requested_ps = &pi->requested_rps;
 }
 
-static void kv_dpm_enable_bapm(struct amdgpu_device *adev, bool enable)
+static void kv_dpm_enable_bapm(void *handle, bool enable)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	int ret;
 
@@ -1548,11 +1552,6 @@ static int kv_update_vce_dpm(struct amdgpu_device *adev,
 
 	if (amdgpu_new_state->evclk > 0 && amdgpu_current_state->evclk == 0) {
 		kv_dpm_powergate_vce(adev, false);
-		/* turn the clocks on when encoding */
-		ret = amdgpu_set_clockgating_state(adev, AMD_IP_BLOCK_TYPE_VCE,
-						    AMD_CG_STATE_UNGATE);
-		if (ret)
-			return ret;
 		if (pi->caps_stable_p_state)
 			pi->vce_boot_level = table->count - 1;
 		else
@@ -1571,15 +1570,9 @@ static int kv_update_vce_dpm(struct amdgpu_device *adev,
 			amdgpu_kv_send_msg_to_smc_with_parameter(adev,
 							  PPSMC_MSG_VCEDPM_SetEnabledMask,
 							  (1 << pi->vce_boot_level));
-
 		kv_enable_vce_dpm(adev, true);
 	} else if (amdgpu_new_state->evclk == 0 && amdgpu_current_state->evclk > 0) {
 		kv_enable_vce_dpm(adev, false);
-		/* turn the clocks off when not encoding */
-		ret = amdgpu_set_clockgating_state(adev, AMD_IP_BLOCK_TYPE_VCE,
-						    AMD_CG_STATE_GATE);
-		if (ret)
-			return ret;
 		kv_dpm_powergate_vce(adev, true);
 	}
 
@@ -1681,75 +1674,50 @@ static int kv_update_acp_dpm(struct amdgpu_device *adev, bool gate)
 	return kv_enable_acp_dpm(adev, !gate);
 }
 
-static void kv_dpm_powergate_uvd(struct amdgpu_device *adev, bool gate)
+static void kv_dpm_powergate_uvd(void *handle, bool gate)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	int ret;
-
-	if (pi->uvd_power_gated == gate)
-		return;
 
 	pi->uvd_power_gated = gate;
 
 	if (gate) {
-		if (pi->caps_uvd_pg) {
-			/* disable clockgating so we can properly shut down the block */
-			ret = amdgpu_set_clockgating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
-							    AMD_CG_STATE_UNGATE);
-			/* shutdown the UVD block */
-			ret = amdgpu_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
-							    AMD_PG_STATE_GATE);
-			/* XXX: check for errors */
-		}
+		/* stop the UVD block */
+		ret = amdgpu_device_ip_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
+							     AMD_PG_STATE_GATE);
 		kv_update_uvd_dpm(adev, gate);
 		if (pi->caps_uvd_pg)
 			/* power off the UVD block */
 			amdgpu_kv_notify_message_to_smu(adev, PPSMC_MSG_UVDPowerOFF);
 	} else {
-		if (pi->caps_uvd_pg) {
+		if (pi->caps_uvd_pg)
 			/* power on the UVD block */
 			amdgpu_kv_notify_message_to_smu(adev, PPSMC_MSG_UVDPowerON);
 			/* re-init the UVD block */
-			ret = amdgpu_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
-							    AMD_PG_STATE_UNGATE);
-			/* enable clockgating. hw will dynamically gate/ungate clocks on the fly */
-			ret = amdgpu_set_clockgating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
-							    AMD_CG_STATE_GATE);
-			/* XXX: check for errors */
-		}
 		kv_update_uvd_dpm(adev, gate);
+
+		ret = amdgpu_device_ip_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_UVD,
+							     AMD_PG_STATE_UNGATE);
 	}
 }
 
 static void kv_dpm_powergate_vce(struct amdgpu_device *adev, bool gate)
 {
 	struct kv_power_info *pi = kv_get_pi(adev);
-	int ret;
 
 	if (pi->vce_power_gated == gate)
 		return;
 
 	pi->vce_power_gated = gate;
 
-	if (gate) {
-		if (pi->caps_vce_pg) {
-			/* shutdown the VCE block */
-			ret = amdgpu_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_VCE,
-							    AMD_PG_STATE_GATE);
-			/* XXX: check for errors */
-			/* power off the VCE block */
-			amdgpu_kv_notify_message_to_smu(adev, PPSMC_MSG_VCEPowerOFF);
-		}
-	} else {
-		if (pi->caps_vce_pg) {
-			/* power on the VCE block */
-			amdgpu_kv_notify_message_to_smu(adev, PPSMC_MSG_VCEPowerON);
-			/* re-init the VCE block */
-			ret = amdgpu_set_powergating_state(adev, AMD_IP_BLOCK_TYPE_VCE,
-							    AMD_PG_STATE_UNGATE);
-			/* XXX: check for errors */
-		}
-	}
+	if (!pi->caps_vce_pg)
+		return;
+
+	if (gate)
+		amdgpu_kv_notify_message_to_smu(adev, PPSMC_MSG_VCEPowerOFF);
+	else
+		amdgpu_kv_notify_message_to_smu(adev, PPSMC_MSG_VCEPowerON);
 }
 
 static void kv_dpm_powergate_samu(struct amdgpu_device *adev, bool gate)
@@ -1903,20 +1871,21 @@ static int kv_enable_nb_dpm(struct amdgpu_device *adev,
 	return ret;
 }
 
-static int kv_dpm_force_performance_level(struct amdgpu_device *adev,
-					  enum amdgpu_dpm_forced_level level)
+static int kv_dpm_force_performance_level(void *handle,
+					  enum amd_dpm_forced_level level)
 {
 	int ret;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	if (level == AMDGPU_DPM_FORCED_LEVEL_HIGH) {
+	if (level == AMD_DPM_FORCED_LEVEL_HIGH) {
 		ret = kv_force_dpm_highest(adev);
 		if (ret)
 			return ret;
-	} else if (level == AMDGPU_DPM_FORCED_LEVEL_LOW) {
+	} else if (level == AMD_DPM_FORCED_LEVEL_LOW) {
 		ret = kv_force_dpm_lowest(adev);
 		if (ret)
 			return ret;
-	} else if (level == AMDGPU_DPM_FORCED_LEVEL_AUTO) {
+	} else if (level == AMD_DPM_FORCED_LEVEL_AUTO) {
 		ret = kv_unforce_levels(adev);
 		if (ret)
 			return ret;
@@ -1927,8 +1896,9 @@ static int kv_dpm_force_performance_level(struct amdgpu_device *adev,
 	return 0;
 }
 
-static int kv_dpm_pre_set_power_state(struct amdgpu_device *adev)
+static int kv_dpm_pre_set_power_state(void *handle)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	struct amdgpu_ps requested_ps = *adev->pm.dpm.requested_ps;
 	struct amdgpu_ps *new_ps = &requested_ps;
@@ -1942,8 +1912,9 @@ static int kv_dpm_pre_set_power_state(struct amdgpu_device *adev)
 	return 0;
 }
 
-static int kv_dpm_set_power_state(struct amdgpu_device *adev)
+static int kv_dpm_set_power_state(void *handle)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	struct amdgpu_ps *new_ps = &pi->requested_rps;
 	struct amdgpu_ps *old_ps = &pi->current_rps;
@@ -2016,8 +1987,9 @@ static int kv_dpm_set_power_state(struct amdgpu_device *adev)
 	return 0;
 }
 
-static void kv_dpm_post_set_power_state(struct amdgpu_device *adev)
+static void kv_dpm_post_set_power_state(void *handle)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	struct amdgpu_ps *new_ps = &pi->requested_rps;
 
@@ -2755,8 +2727,9 @@ static int kv_parse_power_table(struct amdgpu_device *adev)
 		(mode_info->atom_context->bios + data_offset +
 		 le16_to_cpu(power_info->pplib.usNonClockInfoArrayOffset));
 
-	adev->pm.dpm.ps = kzalloc(sizeof(struct amdgpu_ps) *
-				  state_array->ucNumEntries, GFP_KERNEL);
+	adev->pm.dpm.ps = kcalloc(state_array->ucNumEntries,
+				  sizeof(struct amdgpu_ps),
+				  GFP_KERNEL);
 	if (!adev->pm.dpm.ps)
 		return -ENOMEM;
 	power_state_offset = (u8 *)state_array->states;
@@ -2845,7 +2818,7 @@ static int kv_dpm_init(struct amdgpu_device *adev)
 		pi->caps_tcp_ramping = true;
 	}
 
-	if (amdgpu_pp_feature_mask & SCLK_DEEP_SLEEP_MASK)
+	if (adev->powerplay.pp_feature & PP_SCLK_DEEP_SLEEP_MASK)
 		pi->caps_sclk_ds = true;
 	else
 		pi->caps_sclk_ds = false;
@@ -2883,9 +2856,10 @@ static int kv_dpm_init(struct amdgpu_device *adev)
 }
 
 static void
-kv_dpm_debugfs_print_current_performance_level(struct amdgpu_device *adev,
+kv_dpm_debugfs_print_current_performance_level(void *handle,
 					       struct seq_file *m)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	u32 current_index =
 		(RREG32_SMC(ixTARGET_AND_CURRENT_PROFILE_INDEX) &
@@ -2910,11 +2884,12 @@ kv_dpm_debugfs_print_current_performance_level(struct amdgpu_device *adev,
 }
 
 static void
-kv_dpm_print_power_state(struct amdgpu_device *adev,
-			 struct amdgpu_ps *rps)
+kv_dpm_print_power_state(void *handle, void *request_ps)
 {
 	int i;
+	struct amdgpu_ps *rps = (struct amdgpu_ps *)request_ps;
 	struct kv_ps *ps = kv_get_ps(rps);
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	amdgpu_dpm_print_class_info(rps->class, rps->class2);
 	amdgpu_dpm_print_cap_info(rps->caps);
@@ -2940,13 +2915,14 @@ static void kv_dpm_fini(struct amdgpu_device *adev)
 	amdgpu_free_extended_power_table(adev);
 }
 
-static void kv_dpm_display_configuration_changed(struct amdgpu_device *adev)
+static void kv_dpm_display_configuration_changed(void *handle)
 {
 
 }
 
-static u32 kv_dpm_get_sclk(struct amdgpu_device *adev, bool low)
+static u32 kv_dpm_get_sclk(void *handle, bool low)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 	struct kv_ps *requested_state = kv_get_ps(&pi->requested_rps);
 
@@ -2956,18 +2932,20 @@ static u32 kv_dpm_get_sclk(struct amdgpu_device *adev, bool low)
 		return requested_state->levels[requested_state->num_levels - 1].sclk;
 }
 
-static u32 kv_dpm_get_mclk(struct amdgpu_device *adev, bool low)
+static u32 kv_dpm_get_mclk(void *handle, bool low)
 {
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct kv_power_info *pi = kv_get_pi(adev);
 
 	return pi->sys_info.bootup_uma_clk;
 }
 
 /* get temperature in millidegrees */
-static int kv_dpm_get_temp(struct amdgpu_device *adev)
+static int kv_dpm_get_temp(void *handle)
 {
 	u32 temp;
 	int actual_temp = 0;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	temp = RREG32_SMC(0xC0300E0C);
 
@@ -2985,7 +2963,8 @@ static int kv_dpm_early_init(void *handle)
 {
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	kv_dpm_set_dpm_funcs(adev);
+	adev->powerplay.pp_funcs = &kv_dpm_funcs;
+	adev->powerplay.pp_handle = adev;
 	kv_dpm_set_irq_funcs(adev);
 
 	return 0;
@@ -2995,20 +2974,12 @@ static int kv_dpm_late_init(void *handle)
 {
 	/* powerdown unused blocks for now */
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
-	int ret;
 
-	if (!amdgpu_dpm)
+	if (!adev->pm.dpm_enabled)
 		return 0;
-
-	/* init the sysfs and debugfs files late */
-	ret = amdgpu_pm_sysfs_init(adev);
-	if (ret)
-		return ret;
 
 	kv_dpm_powergate_acp(adev, true);
 	kv_dpm_powergate_samu(adev, true);
-	kv_dpm_powergate_vce(adev, true);
-	kv_dpm_powergate_uvd(adev, true);
 
 	return 0;
 }
@@ -3018,18 +2989,20 @@ static int kv_dpm_sw_init(void *handle)
 	int ret;
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	ret = amdgpu_irq_add_id(adev, 230, &adev->pm.dpm.thermal.irq);
+	ret = amdgpu_irq_add_id(adev, AMDGPU_IH_CLIENTID_LEGACY, 230,
+				&adev->pm.dpm.thermal.irq);
 	if (ret)
 		return ret;
 
-	ret = amdgpu_irq_add_id(adev, 231, &adev->pm.dpm.thermal.irq);
+	ret = amdgpu_irq_add_id(adev, AMDGPU_IH_CLIENTID_LEGACY, 231,
+				&adev->pm.dpm.thermal.irq);
 	if (ret)
 		return ret;
 
 	/* default to balanced state */
 	adev->pm.dpm.state = POWER_STATE_TYPE_BALANCED;
 	adev->pm.dpm.user_state = POWER_STATE_TYPE_BALANCED;
-	adev->pm.dpm.forced_level = AMDGPU_DPM_FORCED_LEVEL_AUTO;
+	adev->pm.dpm.forced_level = AMD_DPM_FORCED_LEVEL_AUTO;
 	adev->pm.default_sclk = adev->clock.default_sclk;
 	adev->pm.default_mclk = adev->clock.default_mclk;
 	adev->pm.current_sclk = adev->clock.default_sclk;
@@ -3066,7 +3039,6 @@ static int kv_dpm_sw_fini(void *handle)
 	flush_work(&adev->pm.dpm.thermal.work);
 
 	mutex_lock(&adev->pm.mutex);
-	amdgpu_pm_sysfs_fini(adev);
 	kv_dpm_fini(adev);
 	mutex_unlock(&adev->pm.mutex);
 
@@ -3077,6 +3049,9 @@ static int kv_dpm_hw_init(void *handle)
 {
 	int ret;
 	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	if (!amdgpu_dpm)
+		return 0;
 
 	mutex_lock(&adev->pm.mutex);
 	kv_dpm_setup_asic(adev);
@@ -3245,19 +3220,93 @@ static int kv_dpm_set_powergating_state(void *handle,
 	return 0;
 }
 
-static int kv_check_state_equal(struct amdgpu_device *adev,
-				struct amdgpu_ps *cps,
-				struct amdgpu_ps *rps,
+static inline bool kv_are_power_levels_equal(const struct kv_pl *kv_cpl1,
+						const struct kv_pl *kv_cpl2)
+{
+	return ((kv_cpl1->sclk == kv_cpl2->sclk) &&
+		  (kv_cpl1->vddc_index == kv_cpl2->vddc_index) &&
+		  (kv_cpl1->ds_divider_index == kv_cpl2->ds_divider_index) &&
+		  (kv_cpl1->force_nbp_state == kv_cpl2->force_nbp_state));
+}
+
+static int kv_check_state_equal(void *handle,
+				void *current_ps,
+				void *request_ps,
 				bool *equal)
 {
-	if (equal == NULL)
+	struct kv_ps *kv_cps;
+	struct kv_ps *kv_rps;
+	int i;
+	struct amdgpu_ps *cps = (struct amdgpu_ps *)current_ps;
+	struct amdgpu_ps *rps = (struct amdgpu_ps *)request_ps;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	if (adev == NULL || cps == NULL || rps == NULL || equal == NULL)
 		return -EINVAL;
 
-	*equal = false;
+	kv_cps = kv_get_ps(cps);
+	kv_rps = kv_get_ps(rps);
+
+	if (kv_cps == NULL) {
+		*equal = false;
+		return 0;
+	}
+
+	if (kv_cps->num_levels != kv_rps->num_levels) {
+		*equal = false;
+		return 0;
+	}
+
+	for (i = 0; i < kv_cps->num_levels; i++) {
+		if (!kv_are_power_levels_equal(&(kv_cps->levels[i]),
+					&(kv_rps->levels[i]))) {
+			*equal = false;
+			return 0;
+		}
+	}
+
+	/* If all performance levels are the same try to use the UVD clocks to break the tie.*/
+	*equal = ((cps->vclk == rps->vclk) && (cps->dclk == rps->dclk));
+	*equal &= ((cps->evclk == rps->evclk) && (cps->ecclk == rps->ecclk));
+
 	return 0;
 }
 
-const struct amd_ip_funcs kv_dpm_ip_funcs = {
+static int kv_dpm_read_sensor(void *handle, int idx,
+			      void *value, int *size)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	struct kv_power_info *pi = kv_get_pi(adev);
+	uint32_t sclk;
+	u32 pl_index =
+		(RREG32_SMC(ixTARGET_AND_CURRENT_PROFILE_INDEX) &
+		TARGET_AND_CURRENT_PROFILE_INDEX__CURR_SCLK_INDEX_MASK) >>
+		TARGET_AND_CURRENT_PROFILE_INDEX__CURR_SCLK_INDEX__SHIFT;
+
+	/* size must be at least 4 bytes for all sensors */
+	if (*size < 4)
+		return -EINVAL;
+
+	switch (idx) {
+	case AMDGPU_PP_SENSOR_GFX_SCLK:
+		if (pl_index < SMU__NUM_SCLK_DPM_STATE) {
+			sclk = be32_to_cpu(
+				pi->graphics_level[pl_index].SclkFrequency);
+			*((uint32_t *)value) = sclk;
+			*size = 4;
+			return 0;
+		}
+		return -EINVAL;
+	case AMDGPU_PP_SENSOR_GPU_TEMP:
+		*((uint32_t *)value) = kv_dpm_get_temp(adev);
+		*size = 4;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct amd_ip_funcs kv_dpm_ip_funcs = {
 	.name = "kv_dpm",
 	.early_init = kv_dpm_early_init,
 	.late_init = kv_dpm_late_init,
@@ -3274,8 +3323,16 @@ const struct amd_ip_funcs kv_dpm_ip_funcs = {
 	.set_powergating_state = kv_dpm_set_powergating_state,
 };
 
-static const struct amdgpu_dpm_funcs kv_dpm_funcs = {
-	.get_temperature = &kv_dpm_get_temp,
+const struct amdgpu_ip_block_version kv_smu_ip_block =
+{
+	.type = AMD_IP_BLOCK_TYPE_SMC,
+	.major = 1,
+	.minor = 0,
+	.rev = 0,
+	.funcs = &kv_dpm_ip_funcs,
+};
+
+static const struct amd_pm_funcs kv_dpm_funcs = {
 	.pre_set_power_state = &kv_dpm_pre_set_power_state,
 	.set_power_state = &kv_dpm_set_power_state,
 	.post_set_power_state = &kv_dpm_post_set_power_state,
@@ -3289,13 +3346,8 @@ static const struct amdgpu_dpm_funcs kv_dpm_funcs = {
 	.enable_bapm = &kv_dpm_enable_bapm,
 	.get_vce_clock_state = amdgpu_get_vce_clock_state,
 	.check_state_equal = kv_check_state_equal,
+	.read_sensor = &kv_dpm_read_sensor,
 };
-
-static void kv_dpm_set_dpm_funcs(struct amdgpu_device *adev)
-{
-	if (adev->pm.funcs == NULL)
-		adev->pm.funcs = &kv_dpm_funcs;
-}
 
 static const struct amdgpu_irq_src_funcs kv_dpm_irq_funcs = {
 	.set = kv_dpm_set_interrupt_state,
@@ -3307,12 +3359,3 @@ static void kv_dpm_set_irq_funcs(struct amdgpu_device *adev)
 	adev->pm.dpm.thermal.irq.num_types = AMDGPU_THERMAL_IRQ_LAST;
 	adev->pm.dpm.thermal.irq.funcs = &kv_dpm_irq_funcs;
 }
-
-const struct amdgpu_ip_block_version kv_dpm_ip_block =
-{
-	.type = AMD_IP_BLOCK_TYPE_SMC,
-	.major = 7,
-	.minor = 0,
-	.rev = 0,
-	.funcs = &kv_dpm_ip_funcs,
-};

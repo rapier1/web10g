@@ -37,8 +37,8 @@ EXPORT_SYMBOL(clear_page);
 	/* user mem (segment) */
 EXPORT_SYMBOL(__arch_copy_from_user);
 EXPORT_SYMBOL(__arch_copy_to_user);
-EXPORT_SYMBOL(__clear_user);
-EXPORT_SYMBOL(__copy_in_user);
+EXPORT_SYMBOL(__arch_clear_user);
+EXPORT_SYMBOL(__arch_copy_in_user);
 
 	/* physical memory */
 EXPORT_SYMBOL(memstart_addr);
@@ -73,5 +73,13 @@ NOKPROBE_SYMBOL(_mcount);
 #endif
 
 	/* arm-smccc */
-EXPORT_SYMBOL(arm_smccc_smc);
-EXPORT_SYMBOL(arm_smccc_hvc);
+EXPORT_SYMBOL(__arm_smccc_smc);
+EXPORT_SYMBOL(__arm_smccc_hvc);
+
+	/* tishift.S */
+extern long long __ashlti3(long long a, int b);
+EXPORT_SYMBOL(__ashlti3);
+extern long long __ashrti3(long long a, int b);
+EXPORT_SYMBOL(__ashrti3);
+extern long long __lshrti3(long long a, int b);
+EXPORT_SYMBOL(__lshrti3);

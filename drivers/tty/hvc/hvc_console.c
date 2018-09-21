@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2001 Anton Blanchard <anton@au.ibm.com>, IBM
  * Copyright (C) 2001 Paul Mackerras <paulus@au.ibm.com>, IBM
@@ -6,20 +7,6 @@
  *
  * Additional Author(s):
  *  Ryan S. Arnold <rsa@us.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- * 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/console.h>
@@ -29,7 +16,6 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
-#include <linux/init.h>
 #include <linux/major.h>
 #include <linux/atomic.h>
 #include <linux/sysrq.h>
@@ -921,17 +907,17 @@ int hvc_remove(struct hvc_struct *hp)
 
 	tty = tty_port_tty_get(&hp->port);
 
+	console_lock();
 	spin_lock_irqsave(&hp->lock, flags);
 	if (hp->index < MAX_NR_HVC_CONSOLES) {
-		console_lock();
 		vtermnos[hp->index] = -1;
 		cons_ops[hp->index] = NULL;
-		console_unlock();
 	}
 
 	/* Don't whack hp->irq because tty_hangup() will need to free the irq. */
 
 	spin_unlock_irqrestore(&hp->lock, flags);
+	console_unlock();
 
 	/*
 	 * We 'put' the instance that was grabbed when the kref instance

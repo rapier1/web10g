@@ -22,10 +22,79 @@ static DEFINE_RAW_SPINLOCK(mcip_lock);
 
 static char smp_cpuinfo_buf[128];
 
+/*
+ * Set mask to halt GFRC if any online core in SMP cluster is halted.
+ * Only works for ARC HS v3.0+, on earlier versions has no effect.
+ */
+static void mcip_update_gfrc_halt_mask(int cpu)
+{
+	struct bcr_generic gfrc;
+	unsigned long flags;
+	u32 gfrc_halt_mask;
+
+	READ_BCR(ARC_REG_GFRC_BUILD, gfrc);
+
+	/*
+	 * CMD_GFRC_SET_CORE and CMD_GFRC_READ_CORE commands were added in
+	 * GFRC 0x3 version.
+	 */
+	if (gfrc.ver < 0x3)
+		return;
+
+	raw_spin_lock_irqsave(&mcip_lock, flags);
+
+	__mcip_cmd(CMD_GFRC_READ_CORE, 0);
+	gfrc_halt_mask = read_aux_reg(ARC_REG_MCIP_READBACK);
+	gfrc_halt_mask |= BIT(cpu);
+	__mcip_cmd_data(CMD_GFRC_SET_CORE, 0, gfrc_halt_mask);
+
+	raw_spin_unlock_irqrestore(&mcip_lock, flags);
+}
+
+static void mcip_update_debug_halt_mask(int cpu)
+{
+	u32 mcip_mask = 0;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&mcip_lock, flags);
+
+	/*
+	 * mcip_mask is same for CMD_DEBUG_SET_SELECT and CMD_DEBUG_SET_MASK
+	 * commands. So read it once instead of reading both CMD_DEBUG_READ_MASK
+	 * and CMD_DEBUG_READ_SELECT.
+	 */
+	__mcip_cmd(CMD_DEBUG_READ_SELECT, 0);
+	mcip_mask = read_aux_reg(ARC_REG_MCIP_READBACK);
+
+	mcip_mask |= BIT(cpu);
+
+	__mcip_cmd_data(CMD_DEBUG_SET_SELECT, 0, mcip_mask);
+	/*
+	 * Parameter specified halt cause:
+	 * STATUS32[H]/actionpoint/breakpoint/self-halt
+	 * We choose all of them (0xF).
+	 */
+	__mcip_cmd_data(CMD_DEBUG_SET_MASK, 0xF, mcip_mask);
+
+	raw_spin_unlock_irqrestore(&mcip_lock, flags);
+}
+
 static void mcip_setup_per_cpu(int cpu)
 {
+	struct mcip_bcr mp;
+
+	READ_BCR(ARC_REG_MCIP_BCR, mp);
+
 	smp_ipi_irq_setup(cpu, IPI_IRQ);
 	smp_ipi_irq_setup(cpu, SOFTIRQ_IRQ);
+
+	/* Update GFRC halt mask as new CPU came online */
+	if (mp.gfrc)
+		mcip_update_gfrc_halt_mask(cpu);
+
+	/* Update MCIP debug mask as new CPU came online */
+	if (mp.dbg)
+		mcip_update_debug_halt_mask(cpu);
 }
 
 static void mcip_ipi_send(int cpu)
@@ -101,11 +170,6 @@ static void mcip_probe_n_setup(void)
 		IS_AVAIL1(mp.gfrc, "GFRC"));
 
 	cpuinfo_arc700[0].extn.gfrc = mp.gfrc;
-
-	if (mp.dbg) {
-		__mcip_cmd_data(CMD_DEBUG_SET_SELECT, 0, 0xf);
-		__mcip_cmd_data(CMD_DEBUG_SET_MASK, 0xf, 0xf);
-	}
 }
 
 struct plat_smp_ops plat_smp_ops = {
@@ -156,13 +220,18 @@ static void idu_set_mode(unsigned int cmn_irq, unsigned int lvl,
 	__mcip_cmd_data(CMD_IDU_SET_MODE, cmn_irq, data.word);
 }
 
-static void idu_irq_mask(struct irq_data *data)
+static void idu_irq_mask_raw(irq_hw_number_t hwirq)
 {
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&mcip_lock, flags);
-	__mcip_cmd_data(CMD_IDU_SET_MASK, data->hwirq, 1);
+	__mcip_cmd_data(CMD_IDU_SET_MASK, hwirq, 1);
 	raw_spin_unlock_irqrestore(&mcip_lock, flags);
+}
+
+static void idu_irq_mask(struct irq_data *data)
+{
+	idu_irq_mask_raw(data->hwirq);
 }
 
 static void idu_irq_unmask(struct irq_data *data)
@@ -230,14 +299,12 @@ static struct irq_chip idu_irq_chip = {
 
 };
 
-static irq_hw_number_t idu_first_hwirq;
-
 static void idu_cascade_isr(struct irq_desc *desc)
 {
 	struct irq_domain *idu_domain = irq_desc_get_handler_data(desc);
 	struct irq_chip *core_chip = irq_desc_get_chip(desc);
 	irq_hw_number_t core_hwirq = irqd_to_hwirq(irq_desc_get_irq_data(desc));
-	irq_hw_number_t idu_hwirq = core_hwirq - idu_first_hwirq;
+	irq_hw_number_t idu_hwirq = core_hwirq - FIRST_EXT_IRQ;
 
 	chained_irq_enter(core_chip, desc);
 	generic_handle_irq(irq_find_mapping(idu_domain, idu_hwirq));
@@ -252,23 +319,8 @@ static int idu_irq_map(struct irq_domain *d, unsigned int virq, irq_hw_number_t 
 	return 0;
 }
 
-static int idu_irq_xlate(struct irq_domain *d, struct device_node *n,
-			 const u32 *intspec, unsigned int intsize,
-			 irq_hw_number_t *out_hwirq, unsigned int *out_type)
-{
-	/*
-	 * Ignore value of interrupt distribution mode for common interrupts in
-	 * IDU which resides in intspec[1] since setting an affinity using value
-	 * from Device Tree is deprecated in ARC.
-	 */
-	*out_hwirq = intspec[0];
-	*out_type = IRQ_TYPE_NONE;
-
-	return 0;
-}
-
 static const struct irq_domain_ops idu_irq_ops = {
-	.xlate	= idu_irq_xlate,
+	.xlate	= irq_domain_xlate_onecell,
 	.map	= idu_irq_map,
 };
 
@@ -283,33 +335,37 @@ static int __init
 idu_of_init(struct device_node *intc, struct device_node *parent)
 {
 	struct irq_domain *domain;
-	/* Read IDU BCR to confirm nr_irqs */
-	int nr_irqs = of_irq_count(intc);
+	int nr_irqs;
 	int i, virq;
 	struct mcip_bcr mp;
+	struct mcip_idu_bcr idu_bcr;
 
 	READ_BCR(ARC_REG_MCIP_BCR, mp);
 
 	if (!mp.idu)
 		panic("IDU not detected, but DeviceTree using it");
 
-	pr_info("MCIP: IDU referenced from Devicetree %d irqs\n", nr_irqs);
+	READ_BCR(ARC_REG_MCIP_IDU_BCR, idu_bcr);
+	nr_irqs = mcip_idu_bcr_to_nr_irqs(idu_bcr);
+
+	pr_info("MCIP: IDU supports %u common irqs\n", nr_irqs);
 
 	domain = irq_domain_add_linear(intc, nr_irqs, &idu_irq_ops, NULL);
 
 	/* Parent interrupts (core-intc) are already mapped */
 
 	for (i = 0; i < nr_irqs; i++) {
+		/* Mask all common interrupts by default */
+		idu_irq_mask_raw(i);
+
 		/*
 		 * Return parent uplink IRQs (towards core intc) 24,25,.....
 		 * this step has been done before already
 		 * however we need it to get the parent virq and set IDU handler
 		 * as first level isr
 		 */
-		virq = irq_of_parse_and_map(intc, i);
-		if (!i)
-			idu_first_hwirq = irqd_to_hwirq(irq_get_irq_data(virq));
-
+		virq = irq_create_mapping(NULL, i + FIRST_EXT_IRQ);
+		BUG_ON(!virq);
 		irq_set_chained_handler_and_data(virq, idu_cascade_isr, domain);
 	}
 

@@ -13,10 +13,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "saa7164.h"
@@ -82,7 +78,7 @@ static struct s5h1411_config hauppauge_s5h1411_config = {
 	.vsb_if        = S5H1411_IF_3250,
 	.inversion     = S5H1411_INVERSION_ON,
 	.status_mode   = S5H1411_DEMODLOCKING,
-	.mpeg_timing   = S5H1411_MPEGTIMING_CONTINOUS_NONINVERTING_CLOCK,
+	.mpeg_timing   = S5H1411_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK,
 };
 
 static struct lgdt3306a_config hauppauge_hvr2255a_config = {

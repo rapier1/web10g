@@ -21,6 +21,7 @@
 
 #include <linux/types.h>
 #include <linux/kvm_types.h>
+#include <asm/cputype.h>
 #include <asm/kvm.h>
 #include <asm/kvm_asm.h>
 #include <asm/kvm_mmio.h>
@@ -30,8 +31,6 @@
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
 #define KVM_USER_MEM_SLOTS 32
-#define KVM_PRIVATE_MEM_SLOTS 4
-#define KVM_COALESCED_MMIO_PAGE_OFFSET 1
 #define KVM_HAVE_ONE_REG
 #define KVM_HALT_POLL_NS_DEFAULT 500000
 
@@ -46,7 +45,11 @@
 #define KVM_MAX_VCPUS VGIC_V2_MAX_CPUS
 #endif
 
-#define KVM_REQ_VCPU_EXIT	8
+#define KVM_REQ_SLEEP \
+	KVM_ARCH_REQ_FLAGS(0, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
+#define KVM_REQ_IRQ_PENDING	KVM_ARCH_REQ(1)
+
+DECLARE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
 
 u32 *kvm_vcpu_reg(struct kvm_vcpu *vcpu, u8 reg_num, u32 mode);
 int __attribute_const__ kvm_target_cpu(void);
@@ -59,9 +62,6 @@ struct kvm_arch {
 
 	/* The last vcpu id that ran on each physical CPU */
 	int __percpu *last_vcpu_ran;
-
-	/* Timer */
-	struct arch_timer_kvm	timer;
 
 	/*
 	 * Anything that is not used directly from assembly code goes
@@ -78,6 +78,9 @@ struct kvm_arch {
 	/* Interrupt controller */
 	struct vgic_dist	vgic;
 	int max_vcpus;
+
+	/* Mandated version of PSCI */
+	u32 psci_version;
 };
 
 #define KVM_NR_MEM_OBJS     40
@@ -156,9 +159,6 @@ struct kvm_vcpu_arch {
 	/* HYP trapping configuration */
 	u32 hcr;
 
-	/* Interrupt related fields */
-	u32 irq_lines;		/* IRQ and FIQ levels */
-
 	/* Exception Information */
 	struct kvm_vcpu_fault_info fault;
 
@@ -228,18 +228,10 @@ int kvm_arm_copy_reg_indices(struct kvm_vcpu *vcpu, u64 __user *indices);
 int kvm_age_hva(struct kvm *kvm, unsigned long start, unsigned long end);
 int kvm_test_age_hva(struct kvm *kvm, unsigned long hva);
 
-/* We do not have shadow page tables, hence the empty hooks */
-static inline void kvm_arch_mmu_notifier_invalidate_page(struct kvm *kvm,
-							 unsigned long address)
-{
-}
-
 struct kvm_vcpu *kvm_arm_get_running_vcpu(void);
 struct kvm_vcpu __percpu **kvm_get_running_vcpus(void);
 void kvm_arm_halt_guest(struct kvm *kvm);
 void kvm_arm_resume_guest(struct kvm *kvm);
-void kvm_arm_halt_vcpu(struct kvm_vcpu *vcpu);
-void kvm_arm_resume_vcpu(struct kvm_vcpu *vcpu);
 
 int kvm_arm_copy_coproc_indices(struct kvm_vcpu *vcpu, u64 __user *uindices);
 unsigned long kvm_arm_num_coproc_regs(struct kvm_vcpu *vcpu);
@@ -248,6 +240,9 @@ int kvm_arm_coproc_set_reg(struct kvm_vcpu *vcpu, const struct kvm_one_reg *);
 
 int handle_exit(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		int exception_index);
+
+static inline void handle_exit_early(struct kvm_vcpu *vcpu, struct kvm_run *run,
+				     int exception_index) {}
 
 static inline void __cpu_init_hyp_mode(phys_addr_t pgd_ptr,
 				       unsigned long hyp_stack_ptr,
@@ -274,12 +269,6 @@ static inline void __cpu_init_stage2(void)
 	kvm_call_hyp(__init_stage2_translation);
 }
 
-static inline void __cpu_reset_hyp_mode(unsigned long vector_ptr,
-					phys_addr_t phys_idmap_start)
-{
-	kvm_call_hyp((void *)virt_to_idmap(__kvm_hyp_reset), vector_ptr);
-}
-
 static inline int kvm_arch_dev_ioctl_check_extension(struct kvm *kvm, long ext)
 {
 	return 0;
@@ -292,6 +281,7 @@ void kvm_mmu_wp_memory_region(struct kvm *kvm, int slot);
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
+static inline bool kvm_arch_check_sve_has_vhe(void) { return true; }
 static inline void kvm_arch_hardware_unsetup(void) {}
 static inline void kvm_arch_sync_events(struct kvm *kvm) {}
 static inline void kvm_arch_vcpu_uninit(struct kvm_vcpu *vcpu) {}
@@ -302,20 +292,62 @@ static inline void kvm_arm_init_debug(void) {}
 static inline void kvm_arm_setup_debug(struct kvm_vcpu *vcpu) {}
 static inline void kvm_arm_clear_debug(struct kvm_vcpu *vcpu) {}
 static inline void kvm_arm_reset_debug_ptr(struct kvm_vcpu *vcpu) {}
-static inline int kvm_arm_vcpu_arch_set_attr(struct kvm_vcpu *vcpu,
-					     struct kvm_device_attr *attr)
+static inline bool kvm_arm_handle_step_debug(struct kvm_vcpu *vcpu,
+					     struct kvm_run *run)
 {
-	return -ENXIO;
+	return false;
 }
-static inline int kvm_arm_vcpu_arch_get_attr(struct kvm_vcpu *vcpu,
-					     struct kvm_device_attr *attr)
+
+int kvm_arm_vcpu_arch_set_attr(struct kvm_vcpu *vcpu,
+			       struct kvm_device_attr *attr);
+int kvm_arm_vcpu_arch_get_attr(struct kvm_vcpu *vcpu,
+			       struct kvm_device_attr *attr);
+int kvm_arm_vcpu_arch_has_attr(struct kvm_vcpu *vcpu,
+			       struct kvm_device_attr *attr);
+
+/*
+ * VFP/NEON switching is all done by the hyp switch code, so no need to
+ * coordinate with host context handling for this state:
+ */
+static inline void kvm_arch_vcpu_load_fp(struct kvm_vcpu *vcpu) {}
+static inline void kvm_arch_vcpu_ctxsync_fp(struct kvm_vcpu *vcpu) {}
+static inline void kvm_arch_vcpu_put_fp(struct kvm_vcpu *vcpu) {}
+
+static inline void kvm_arm_vhe_guest_enter(void) {}
+static inline void kvm_arm_vhe_guest_exit(void) {}
+
+static inline bool kvm_arm_harden_branch_predictor(void)
 {
-	return -ENXIO;
+	switch(read_cpuid_part()) {
+#ifdef CONFIG_HARDEN_BRANCH_PREDICTOR
+	case ARM_CPU_PART_BRAHMA_B15:
+	case ARM_CPU_PART_CORTEX_A12:
+	case ARM_CPU_PART_CORTEX_A15:
+	case ARM_CPU_PART_CORTEX_A17:
+		return true;
+#endif
+	default:
+		return false;
+	}
 }
-static inline int kvm_arm_vcpu_arch_has_attr(struct kvm_vcpu *vcpu,
-					     struct kvm_device_attr *attr)
+
+#define KVM_SSBD_UNKNOWN		-1
+#define KVM_SSBD_FORCE_DISABLE		0
+#define KVM_SSBD_KERNEL		1
+#define KVM_SSBD_FORCE_ENABLE		2
+#define KVM_SSBD_MITIGATED		3
+
+static inline int kvm_arm_have_ssbd(void)
 {
-	return -ENXIO;
+	/* No way to detect it yet, pretend it is not there. */
+	return KVM_SSBD_UNKNOWN;
 }
+
+static inline void kvm_vcpu_load_sysregs(struct kvm_vcpu *vcpu) {}
+static inline void kvm_vcpu_put_sysregs(struct kvm_vcpu *vcpu) {}
+
+#define __KVM_HAVE_ARCH_VM_ALLOC
+struct kvm *kvm_arch_alloc_vm(void);
+void kvm_arch_free_vm(struct kvm *kvm);
 
 #endif /* __ARM_KVM_HOST_H__ */

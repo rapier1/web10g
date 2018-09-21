@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * TI 3410/5052 USB Serial Driver
  *
@@ -6,11 +7,6 @@
  * This driver is based on the Linux io_ti driver, which is
  *   Copyright (C) 2000-2002 Inside Out Networks
  *   Copyright (C) 2001-2002 Greg Kroah-Hartman
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  *
  * For questions or problems with this driver, contact Texas Instruments
  * technical support, or Al Borchers <alborchers@steinerpoint.com>, or
@@ -427,6 +423,7 @@ static struct usb_serial_driver ti_1port_device = {
 	.description		= "TI USB 3410 1 port adapter",
 	.id_table		= ti_id_table_3410,
 	.num_ports		= 1,
+	.num_bulk_out		= 1,
 	.attach			= ti_startup,
 	.release		= ti_release,
 	.port_probe		= ti_port_probe,
@@ -459,6 +456,7 @@ static struct usb_serial_driver ti_2port_device = {
 	.description		= "TI USB 5052 2 port adapter",
 	.id_table		= ti_id_table_5052,
 	.num_ports		= 2,
+	.num_bulk_out		= 1,
 	.attach			= ti_startup,
 	.release		= ti_release,
 	.port_probe		= ti_port_probe,
@@ -927,20 +925,12 @@ static void ti_set_termios(struct tty_struct *tty,
 {
 	struct ti_port *tport = usb_get_serial_port_data(port);
 	struct ti_uart_config *config;
-	tcflag_t cflag, iflag;
 	int baud;
 	int status;
 	int port_number = port->port_number;
 	unsigned int mcr;
 	u16 wbaudrate;
 	u16 wflags = 0;
-
-	cflag = tty->termios.c_cflag;
-	iflag = tty->termios.c_iflag;
-
-	dev_dbg(&port->dev, "%s - cflag %08x, iflag %08x\n", __func__, cflag, iflag);
-	dev_dbg(&port->dev, "%s - old clfag %08x, old iflag %08x\n", __func__,
-		old_termios->c_cflag, old_termios->c_iflag);
 
 	config = kmalloc(sizeof(*config), GFP_KERNEL);
 	if (!config)
@@ -1553,13 +1543,10 @@ static int ti_command_out_sync(struct ti_device *tdev, __u8 command,
 		(USB_TYPE_VENDOR | USB_RECIP_DEVICE | USB_DIR_OUT),
 		value, moduleid, data, size, 1000);
 
-	if (status == size)
-		status = 0;
+	if (status < 0)
+		return status;
 
-	if (status > 0)
-		status = -ECOMM;
-
-	return status;
+	return 0;
 }
 
 
@@ -1575,8 +1562,7 @@ static int ti_command_in_sync(struct ti_device *tdev, __u8 command,
 
 	if (status == size)
 		status = 0;
-
-	if (status > 0)
+	else if (status >= 0)
 		status = -ECOMM;
 
 	return status;

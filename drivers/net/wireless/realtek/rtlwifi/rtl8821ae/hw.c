@@ -57,6 +57,7 @@ static void _rtl8821ae_return_beacon_queue_skb(struct ieee80211_hw *hw)
 
 		pci_unmap_single(rtlpci->pdev,
 				 rtlpriv->cfg->ops->get_desc(
+				 hw,
 				 (u8 *)entry, true, HW_DESC_TXBUFF_ADDR),
 				 skb->len, PCI_DMA_TODEVICE);
 		kfree_skb(skb);
@@ -779,7 +780,7 @@ void rtl8821ae_set_hw_reg(struct ieee80211_hw *hw, u8 variable, u8 *val)
 			_rtl8821ae_resume_tx_beacon(hw);
 		break; }
 	case HW_VAR_NAV_UPPER: {
-		u32	us_nav_upper = ((u32)*val);
+		u32	us_nav_upper = *(u32 *)val;
 
 		if (us_nav_upper > HAL_92C_NAV_UPPER_UNIT * 0xFF) {
 			RT_TRACE(rtlpriv, COMP_INIT , DBG_WARNING,
@@ -822,9 +823,8 @@ static bool _rtl8821ae_llt_write(struct ieee80211_hw *hw, u32 address, u32 data)
 			break;
 
 		if (count > POLLING_LLT_THRESHOLD) {
-			RT_TRACE(rtlpriv, COMP_ERR, DBG_EMERG,
-				 "Failed to polling write LLT done at address %d!\n",
-				 address);
+			pr_err("Failed to polling write LLT done at address %d!\n",
+			       address);
 			status = false;
 			break;
 		}
@@ -843,12 +843,8 @@ static bool _rtl8821ae_llt_table_init(struct ieee80211_hw *hw)
 	bool status;
 
 	maxpage = 255;
-	txpktbuf_bndy = 0xF8;
-	rqpn = 0x80e70808;
-	if (rtlpriv->rtlhal.hw_type == HARDWARE_TYPE_RTL8812AE) {
-		txpktbuf_bndy = 0xFA;
-		rqpn = 0x80e90808;
-	}
+	txpktbuf_bndy = 0xF7;
+	rqpn = 0x80e60808;
 
 	rtl_write_byte(rtlpriv, REG_TRXFF_BNDY, txpktbuf_bndy);
 	rtl_write_word(rtlpriv, REG_TRXFF_BNDY + 2, MAX_RX_DMA_BUFFER_SIZE - 1);
@@ -891,9 +887,8 @@ static bool _rtl8821ae_llt_table_init(struct ieee80211_hw *hw)
 static void _rtl8821ae_gen_refresh_led_state(struct ieee80211_hw *hw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
-	struct rtl_pci_priv *pcipriv = rtl_pcipriv(hw);
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
-	struct rtl_led *pled0 = &pcipriv->ledctl.sw_led0;
+	struct rtl_led *pled0 = &rtlpriv->ledctl.sw_led0;
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
 
 	if (rtlpriv->rtlhal.up_first_time)
@@ -1128,7 +1123,7 @@ static u8 _rtl8821ae_dbi_read(struct rtl_priv *rtlpriv, u16 addr)
 	}
 	if (0 == tmp) {
 		read_addr = REG_DBI_RDATA + addr % 4;
-		ret = rtl_read_word(rtlpriv, read_addr);
+		ret = rtl_read_byte(rtlpriv, read_addr);
 	}
 	return ret;
 }
@@ -1136,13 +1131,13 @@ static u8 _rtl8821ae_dbi_read(struct rtl_priv *rtlpriv, u16 addr)
 static void _rtl8821ae_dbi_write(struct rtl_priv *rtlpriv, u16 addr, u8 data)
 {
 	u8 tmp = 0, count = 0;
-	u16 wrtie_addr, remainder = addr % 4;
+	u16 write_addr, remainder = addr % 4;
 
-	wrtie_addr = REG_DBI_WDATA + remainder;
-	rtl_write_byte(rtlpriv, wrtie_addr, data);
+	write_addr = REG_DBI_WDATA + remainder;
+	rtl_write_byte(rtlpriv, write_addr, data);
 
-	wrtie_addr = (addr & 0xfffc) | (BIT(0) << (remainder + 12));
-	rtl_write_word(rtlpriv, REG_DBI_ADDR, wrtie_addr);
+	write_addr = (addr & 0xfffc) | (BIT(0) << (remainder + 12));
+	rtl_write_word(rtlpriv, REG_DBI_ADDR, write_addr);
 
 	rtl_write_byte(rtlpriv, REG_DBI_FLAG, 0x1);
 
@@ -1170,7 +1165,8 @@ static void _rtl8821ae_enable_aspm_back_door(struct ieee80211_hw *hw)
 	}
 
 	tmp = _rtl8821ae_dbi_read(rtlpriv, 0x70f);
-	_rtl8821ae_dbi_write(rtlpriv, 0x70f, tmp | BIT(7));
+	_rtl8821ae_dbi_write(rtlpriv, 0x70f, tmp | BIT(7) |
+			     ASPM_L1_LATENCY << 3);
 
 	tmp = _rtl8821ae_dbi_read(rtlpriv, 0x719);
 	_rtl8821ae_dbi_write(rtlpriv, 0x719, tmp | BIT(3) | BIT(4));
@@ -1369,7 +1365,6 @@ static void _rtl8821ae_get_wakeup_reason(struct ieee80211_hw *hw)
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtlpriv);
 	u8 fw_reason = 0;
-	struct timeval ts;
 
 	fw_reason = rtl_read_byte(rtlpriv, REG_MCUTST_WOWLAN);
 
@@ -1378,20 +1373,16 @@ static void _rtl8821ae_get_wakeup_reason(struct ieee80211_hw *hw)
 
 	ppsc->wakeup_reason = 0;
 
-	rtlhal->last_suspend_sec = ts.tv_sec;
+	rtlhal->last_suspend_sec = ktime_get_real_seconds();
 
 	switch (fw_reason) {
 	case FW_WOW_V2_PTK_UPDATE_EVENT:
 		ppsc->wakeup_reason = WOL_REASON_PTK_UPDATE;
-		do_gettimeofday(&ts);
-		ppsc->last_wakeup_time = ts.tv_sec*1000 + ts.tv_usec/1000;
 		RT_TRACE(rtlpriv, COMP_POWER, DBG_DMESG,
 			 "It's a WOL PTK Key update event!\n");
 		break;
 	case FW_WOW_V2_GTK_UPDATE_EVENT:
 		ppsc->wakeup_reason = WOL_REASON_GTK_UPDATE;
-		do_gettimeofday(&ts);
-		ppsc->last_wakeup_time = ts.tv_sec*1000 + ts.tv_usec/1000;
 		RT_TRACE(rtlpriv, COMP_POWER, DBG_DMESG,
 			 "It's a WOL GTK Key update event!\n");
 		break;
@@ -1927,7 +1918,7 @@ int rtl8821ae_hw_init(struct ieee80211_hw *hw)
 
 	rtstatus = _rtl8821ae_init_mac(hw);
 	if (rtstatus != true) {
-		RT_TRACE(rtlpriv, COMP_ERR, DBG_EMERG, "Init MAC failed\n");
+		pr_err("Init MAC failed\n");
 		err = 1;
 		return err;
 	}
@@ -2117,7 +2108,7 @@ static enum version_8821ae _rtl8821ae_read_chip_version(struct ieee80211_hw *hw)
 		break;
 	default:
 		RT_TRACE(rtlpriv, COMP_INIT, DBG_LOUD,
-			 "Chip Version ID: Unknow (0x%X)\n", version);
+			 "Chip Version ID: Unknown (0x%X)\n", version);
 		break;
 	}
 
@@ -2174,8 +2165,7 @@ static int _rtl8821ae_set_media_status(struct ieee80211_hw *hw,
 			 "Set Network type to AP!\n");
 		break;
 	default:
-		RT_TRACE(rtlpriv, COMP_ERR, DBG_EMERG,
-			 "Network type %d not support!\n", type);
+		pr_err("Network type %d not support!\n", type);
 		return 1;
 	}
 
@@ -2249,7 +2239,7 @@ void rtl8821ae_set_qos(struct ieee80211_hw *hw, int aci)
 		rtl_write_dword(rtlpriv, REG_EDCA_VO_PARAM, 0x2f3222);
 		break;
 	default:
-		RT_ASSERT(false, "invalid aci: %d !\n", aci);
+		WARN_ONCE(true, "rtl8821ae: invalid aci: %d !\n", aci);
 		break;
 	}
 }
@@ -2494,16 +2484,16 @@ void rtl8821ae_card_disable(struct ieee80211_hw *hw)
 }
 
 void rtl8821ae_interrupt_recognized(struct ieee80211_hw *hw,
-				  u32 *p_inta, u32 *p_intb)
+				    struct rtl_int *intvec)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
 
-	*p_inta = rtl_read_dword(rtlpriv, ISR) & rtlpci->irq_mask[0];
-	rtl_write_dword(rtlpriv, ISR, *p_inta);
+	intvec->inta = rtl_read_dword(rtlpriv, ISR) & rtlpci->irq_mask[0];
+	rtl_write_dword(rtlpriv, ISR, intvec->inta);
 
-	*p_intb = rtl_read_dword(rtlpriv, REG_HISRE) & rtlpci->irq_mask[1];
-	rtl_write_dword(rtlpriv, REG_HISRE, *p_intb);
+	intvec->intb = rtl_read_dword(rtlpriv, REG_HISRE) & rtlpci->irq_mask[1];
+	rtl_write_dword(rtlpriv, REG_HISRE, intvec->intb);
 }
 
 void rtl8821ae_set_beacon_related_registers(struct ieee80211_hw *hw)
@@ -2601,11 +2591,10 @@ static u8 _rtl8821ae_get_chnl_group(u8 chnl)
 			group = 12;
 	else if (173 <= chnl && chnl <= 177)
 			group = 13;
-		else
-			/*RT_TRACE(rtlpriv, COMP_EFUSE,DBG_LOUD,
-				"5G, Channel %d in Group not found\n",chnl);*/
-			RT_ASSERT(!COMP_EFUSE,
-				"5G, Channel %d in Group not found\n", chnl);
+	else
+		WARN_ONCE(true,
+			  "rtl8821ae: 5G, Channel %d in Group not found\n",
+			  chnl);
 	}
 	return group;
 }
@@ -2974,6 +2963,44 @@ static void _rtl8812ae_read_pa_type(struct ieee80211_hw *hw, u8 *hwinfo,
 	}
 }
 
+static void _rtl8812ae_read_amplifier_type(struct ieee80211_hw *hw, u8 *hwinfo,
+					   bool autoload_fail)
+{
+	struct rtl_priv *rtlpriv = rtl_priv(hw);
+	struct rtl_hal *rtlhal = rtl_hal(rtlpriv);
+
+	u8 ext_type_pa_2g_a  = (hwinfo[0xBD] & BIT(2))      >> 2; /* 0xBD[2] */
+	u8 ext_type_pa_2g_b  = (hwinfo[0xBD] & BIT(6))      >> 6; /* 0xBD[6] */
+	u8 ext_type_pa_5g_a  = (hwinfo[0xBF] & BIT(2))      >> 2; /* 0xBF[2] */
+	u8 ext_type_pa_5g_b  = (hwinfo[0xBF] & BIT(6))      >> 6; /* 0xBF[6] */
+	/* 0xBD[1:0] */
+	u8 ext_type_lna_2g_a = (hwinfo[0xBD] & (BIT(1) | BIT(0))) >> 0;
+	/* 0xBD[5:4] */
+	u8 ext_type_lna_2g_b = (hwinfo[0xBD] & (BIT(5) | BIT(4))) >> 4;
+	/* 0xBF[1:0] */
+	u8 ext_type_lna_5g_a = (hwinfo[0xBF] & (BIT(1) | BIT(0))) >> 0;
+	/* 0xBF[5:4] */
+	u8 ext_type_lna_5g_b = (hwinfo[0xBF] & (BIT(5) | BIT(4))) >> 4;
+
+	_rtl8812ae_read_pa_type(hw, hwinfo, autoload_fail);
+
+	/* [2.4G] Path A and B are both extPA */
+	if ((rtlhal->pa_type_2g & (BIT(5) | BIT(4))) == (BIT(5) | BIT(4)))
+		rtlhal->type_gpa  = ext_type_pa_2g_b  << 2 | ext_type_pa_2g_a;
+
+	/* [5G] Path A and B are both extPA */
+	if ((rtlhal->pa_type_5g & (BIT(1) | BIT(0))) == (BIT(1) | BIT(0)))
+		rtlhal->type_apa  = ext_type_pa_5g_b  << 2 | ext_type_pa_5g_a;
+
+	/* [2.4G] Path A and B are both extLNA */
+	if ((rtlhal->lna_type_2g & (BIT(7) | BIT(3))) == (BIT(7) | BIT(3)))
+		rtlhal->type_glna = ext_type_lna_2g_b << 2 | ext_type_lna_2g_a;
+
+	/* [5G] Path A and B are both extLNA */
+	if ((rtlhal->lna_type_5g & (BIT(7) | BIT(3))) == (BIT(7) | BIT(3)))
+		rtlhal->type_alna = ext_type_lna_5g_b << 2 | ext_type_lna_5g_a;
+}
+
 static void _rtl8821ae_read_pa_type(struct ieee80211_hw *hw, u8 *hwinfo,
 				    bool autoload_fail)
 {
@@ -3101,7 +3128,6 @@ static void _rtl8821ae_read_adapter_info(struct ieee80211_hw *hw, bool b_pseudo_
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_efuse *rtlefuse = rtl_efuse(rtl_priv(hw));
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
-	struct rtl_pci_priv *pcipriv = rtl_pcipriv(hw);
 	int params[] = {RTL_EEPROM_ID, EEPROM_VID, EEPROM_DID,
 			EEPROM_SVID, EEPROM_SMID, EEPROM_MAC_ADDR,
 			EEPROM_CHANNELPLAN, EEPROM_VERSION, EEPROM_CUSTOMER_ID,
@@ -3123,7 +3149,8 @@ static void _rtl8821ae_read_adapter_info(struct ieee80211_hw *hw, bool b_pseudo_
 					       hwinfo);
 
 	if (rtlhal->hw_type == HARDWARE_TYPE_RTL8812AE) {
-		_rtl8812ae_read_pa_type(hw, hwinfo, rtlefuse->autoload_failflag);
+		_rtl8812ae_read_amplifier_type(hw, hwinfo,
+					       rtlefuse->autoload_failflag);
 		_rtl8812ae_read_bt_coexist_info_from_hwpg(hw,
 				rtlefuse->autoload_failflag, hwinfo);
 	} else {
@@ -3196,7 +3223,7 @@ static void _rtl8821ae_read_adapter_info(struct ieee80211_hw *hw, bool b_pseudo_
 		"SWAS: bHwAntDiv = %x, TRxAntDivType = %x\n",
 		rtlefuse->antenna_div_cfg, rtlefuse->antenna_div_type);
 
-	pcipriv->ledctl.led_opendrain = true;
+	rtlpriv->ledctl.led_opendrain = true;
 
 	if (rtlhal->oem_id == RT_CID_DEFAULT) {
 		switch (rtlefuse->eeprom_oemid) {
@@ -3227,10 +3254,10 @@ exit:
 	struct rtl_pci_priv *pcipriv = rtl_pcipriv(hw);
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
 
-	pcipriv->ledctl.led_opendrain = true;
+	rtlpriv->ledctl.led_opendrain = true;
 	switch (rtlhal->oem_id) {
 	case RT_CID_819X_HP:
-		pcipriv->ledctl.led_opendrain = true;
+		rtlpriv->ledctl.led_opendrain = true;
 		break;
 	case RT_CID_819X_LENOVO:
 	case RT_CID_DEFAULT:
@@ -3276,7 +3303,7 @@ void rtl8821ae_read_eeprom_info(struct ieee80211_hw *hw)
 		rtlefuse->autoload_failflag = false;
 		_rtl8821ae_read_adapter_info(hw, false);
 	} else {
-		RT_TRACE(rtlpriv, COMP_ERR, DBG_EMERG, "Autoload ERR!!\n");
+		pr_err("Autoload ERR!!\n");
 	}
 	/*hal_ReadRFType_8812A()*/
 	/* _rtl8821ae_hal_customized_behavior(hw); */
@@ -3568,7 +3595,7 @@ static bool _rtl8821ae_get_ra_shortgi(struct ieee80211_hw *hw, struct ieee80211_
 }
 
 static void rtl8821ae_update_hal_rate_mask(struct ieee80211_hw *hw,
-		struct ieee80211_sta *sta, u8 rssi_level)
+		struct ieee80211_sta *sta, u8 rssi_level, bool update_bw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_phy *rtlphy = &rtlpriv->phy;
@@ -3747,7 +3774,7 @@ static void rtl8821ae_update_hal_rate_mask(struct ieee80211_hw *hw,
 
 	rate_mask[0] = macid;
 	rate_mask[1] = ratr_index | (b_shortgi ? 0x80 : 0x00);
-	rate_mask[2] = rtlphy->current_chan_bw
+	rate_mask[2] = rtlphy->current_chan_bw | ((!update_bw) << 3)
 			   | _rtl8821ae_get_vht_eni(wirelessmode, ratr_bitmap)
 			   | _rtl8821ae_get_ra_ldpc(hw, macid, sta_entry, wirelessmode);
 
@@ -3768,11 +3795,11 @@ static void rtl8821ae_update_hal_rate_mask(struct ieee80211_hw *hw,
 }
 
 void rtl8821ae_update_hal_rate_tbl(struct ieee80211_hw *hw,
-		struct ieee80211_sta *sta, u8 rssi_level)
+		struct ieee80211_sta *sta, u8 rssi_level, bool update_bw)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	if (rtlpriv->dm.useramask)
-		rtl8821ae_update_hal_rate_mask(hw, sta, rssi_level);
+		rtl8821ae_update_hal_rate_mask(hw, sta, rssi_level, update_bw);
 	else
 		/*RT_TRACE(rtlpriv, COMP_RATR,DBG_LOUD,
 			   "rtl8821ae_update_hal_rate_tbl() Error! 8821ae FW RA Only\n");*/
@@ -3815,7 +3842,7 @@ bool rtl8821ae_gpio_radio_on_off_checking(struct ieee80211_hw *hw, u8 *valid)
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_ps_ctl *ppsc = rtl_psc(rtl_priv(hw));
 	struct rtl_phy *rtlphy = &rtlpriv->phy;
-	enum rf_pwrstate e_rfpowerstate_toset, cur_rfstate;
+	enum rf_pwrstate e_rfpowerstate_toset;
 	u8 u1tmp = 0;
 	bool b_actuallyset = false;
 
@@ -3833,8 +3860,6 @@ bool rtl8821ae_gpio_radio_on_off_checking(struct ieee80211_hw *hw, u8 *valid)
 		ppsc->rfchange_inprogress = true;
 		spin_unlock(&rtlpriv->locks.rf_ps_lock);
 	}
-
-	cur_rfstate = ppsc->rfpwr_state;
 
 	rtl_write_byte(rtlpriv, REG_GPIO_IO_SEL_2,
 			rtl_read_byte(rtlpriv,
@@ -3951,8 +3976,7 @@ void rtl8821ae_set_key(struct ieee80211_hw *hw, u32 key_index,
 				if (mac->opmode == NL80211_IFTYPE_AP) {
 					entry_id = rtl_cam_get_free_entry(hw, p_macaddr);
 					if (entry_id >=  TOTAL_CAM_ENTRY) {
-						RT_TRACE(rtlpriv, COMP_SEC, DBG_EMERG,
-							 "Can not find free hwsecurity cam entry\n");
+						pr_err("an not find free hwsecurity cam entry\n");
 						return;
 					}
 				} else {
@@ -4135,8 +4159,9 @@ void rtl8821ae_add_wowlan_pattern(struct ieee80211_hw *hw,
 			count++;
 		} while (tmp && count < 100);
 
-		RT_ASSERT((count < 100),
-			  "Write wake up frame mask FAIL %d value!\n", tmp);
+		WARN_ONCE((count >= 100),
+			  "rtl8821ae: Write wake up frame mask FAIL %d value!\n",
+			  tmp);
 	}
 	/* Disable Rx packet buffer access. */
 	rtl_write_byte(rtlpriv, REG_PKT_BUFF_ACCESS_CTRL,

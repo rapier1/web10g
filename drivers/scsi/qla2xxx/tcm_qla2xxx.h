@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <target/target_core_base.h>
 #include <linux/btree.h>
 
@@ -20,8 +21,8 @@ struct tcm_qla2xxx_nacl {
 	u64 nport_wwnn;
 	/* ASCII formatted WWPN for FC Initiator Nport */
 	char nport_name[TCM_QLA2XXX_NAMELEN];
-	/* Pointer to qla_tgt_sess */
-	struct qla_tgt_sess *qla_tgt_sess;
+	/* Pointer to fc_port */
+	struct fc_port *fc_port;
 	/* Pointer to TCM FC nexus */
 	struct se_session *nport_nexus;
 };

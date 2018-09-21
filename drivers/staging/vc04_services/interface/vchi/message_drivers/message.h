@@ -41,7 +41,6 @@
 #include "interface/vchi/vchi_cfg_internal.h"
 #include "interface/vchi/vchi_common.h"
 
-
 typedef enum message_event_type {
    MESSAGE_EVENT_NONE,
    MESSAGE_EVENT_NOP,
@@ -53,14 +52,12 @@ typedef enum message_event_type {
    MESSAGE_EVENT_MSG_DISCARDED
 } MESSAGE_EVENT_TYPE_T;
 
-typedef enum vchi_msg_flags
-{
+typedef enum vchi_msg_flags {
    VCHI_MSG_FLAGS_NONE                  = 0x0,
    VCHI_MSG_FLAGS_TERMINATE_DMA         = 0x1
 } VCHI_MSG_FLAGS_T;
 
-typedef enum message_tx_channel
-{
+typedef enum message_tx_channel {
    MESSAGE_TX_CHANNEL_MESSAGE           = 0,
    MESSAGE_TX_CHANNEL_BULK              = 1 // drivers may provide multiple bulk channels, from 1 upwards
 } MESSAGE_TX_CHANNEL_T;
@@ -69,8 +66,7 @@ typedef enum message_tx_channel
 #define MESSAGE_TX_CHANNEL_BULK_PREV(c) (MESSAGE_TX_CHANNEL_BULK+((c)-MESSAGE_TX_CHANNEL_BULK+VCHI_MAX_BULK_TX_CHANNELS_PER_CONNECTION-1)%VCHI_MAX_BULK_TX_CHANNELS_PER_CONNECTION)
 #define MESSAGE_TX_CHANNEL_BULK_NEXT(c) (MESSAGE_TX_CHANNEL_BULK+((c)-MESSAGE_TX_CHANNEL_BULK+1)%VCHI_MAX_BULK_TX_CHANNELS_PER_CONNECTION)
 
-typedef enum message_rx_channel
-{
+typedef enum message_rx_channel {
    MESSAGE_RX_CHANNEL_MESSAGE           = 0,
    MESSAGE_RX_CHANNEL_BULK              = 1 // drivers may provide multiple bulk channels, from 1 upwards
 } MESSAGE_RX_CHANNEL_T;
@@ -113,7 +109,6 @@ typedef struct rx_bulk_slotinfo_t {
    void        *handle;
    VCHI_FLAGS_T flags;
 } RX_BULK_SLOTINFO_T;
-
 
 /* ----------------------------------------------------------------------
  * each connection driver will have a pool of the following struct.
@@ -158,14 +153,12 @@ typedef struct {
 
 } MESSAGE_EVENT_T;
 
-
 // callbacks
 typedef void VCHI_MESSAGE_DRIVER_EVENT_CALLBACK_T( void *state );
 
 typedef struct {
    VCHI_MESSAGE_DRIVER_EVENT_CALLBACK_T *event_callback;
 } VCHI_MESSAGE_DRIVER_OPEN_T;
-
 
 // handle to this instance of message driver (as returned by ->open)
 typedef struct opaque_mhandle_t *VCHI_MDRIVER_HANDLE_T;
@@ -197,7 +190,6 @@ struct opaque_vchi_message_driver_t {
    void    (*form_bulk_aux)( VCHI_MDRIVER_HANDLE_T *handle, MESSAGE_TX_CHANNEL_T channel, const void *data, uint32_t len, uint32_t chunk_size, const void **aux_data, int32_t *aux_len );
    void    (*debug)( VCHI_MDRIVER_HANDLE_T *handle );
 };
-
 
 #endif // _VCHI_MESSAGE_H_
 

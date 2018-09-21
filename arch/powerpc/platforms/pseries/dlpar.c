@@ -75,24 +75,17 @@ static struct property *dlpar_parse_cc_property(struct cc_workarea *ccwa)
 	return prop;
 }
 
-static struct device_node *dlpar_parse_cc_node(struct cc_workarea *ccwa,
-					       const char *path)
+static struct device_node *dlpar_parse_cc_node(struct cc_workarea *ccwa)
 {
 	struct device_node *dn;
-	char *name;
-
-	/* If parent node path is "/" advance path to NULL terminator to
-	 * prevent double leading slashs in full_name.
-	 */
-	if (!path[1])
-		path++;
+	const char *name;
 
 	dn = kzalloc(sizeof(*dn), GFP_KERNEL);
 	if (!dn)
 		return NULL;
 
-	name = (char *)ccwa + be32_to_cpu(ccwa->name_offset);
-	dn->full_name = kasprintf(GFP_KERNEL, "%s/%s", path, name);
+	name = (const char *)ccwa + be32_to_cpu(ccwa->name_offset);
+	dn->full_name = kstrdup(name, GFP_KERNEL);
 	if (!dn->full_name) {
 		kfree(dn);
 		return NULL;
@@ -148,7 +141,6 @@ struct device_node *dlpar_configure_connector(__be32 drc_index,
 	struct property *last_property = NULL;
 	struct cc_workarea *ccwa;
 	char *data_buf;
-	const char *parent_path = parent->full_name;
 	int cc_token;
 	int rc = -1;
 
@@ -182,7 +174,7 @@ struct device_node *dlpar_configure_connector(__be32 drc_index,
 			break;
 
 		case NEXT_SIBLING:
-			dn = dlpar_parse_cc_node(ccwa, parent_path);
+			dn = dlpar_parse_cc_node(ccwa);
 			if (!dn)
 				goto cc_error;
 
@@ -192,10 +184,7 @@ struct device_node *dlpar_configure_connector(__be32 drc_index,
 			break;
 
 		case NEXT_CHILD:
-			if (first_dn)
-				parent_path = last_dn->full_name;
-
-			dn = dlpar_parse_cc_node(ccwa, parent_path);
+			dn = dlpar_parse_cc_node(ccwa);
 			if (!dn)
 				goto cc_error;
 
@@ -226,7 +215,6 @@ struct device_node *dlpar_configure_connector(__be32 drc_index,
 
 		case PREV_PARENT:
 			last_dn = last_dn->parent;
-			parent_path = last_dn->parent->full_name;
 			break;
 
 		case CALL_AGAIN:
@@ -254,22 +242,18 @@ cc_error:
 	return first_dn;
 }
 
-int dlpar_attach_node(struct device_node *dn)
+int dlpar_attach_node(struct device_node *dn, struct device_node *parent)
 {
 	int rc;
 
-	dn->parent = pseries_of_derive_parent(dn->full_name);
-	if (IS_ERR(dn->parent))
-		return PTR_ERR(dn->parent);
+	dn->parent = parent;
 
 	rc = of_attach_node(dn);
 	if (rc) {
-		printk(KERN_ERR "Failed to add device node %s\n",
-		       dn->full_name);
+		printk(KERN_ERR "Failed to add device node %pOF\n", dn);
 		return rc;
 	}
 
-	of_node_put(dn->parent);
 	return 0;
 }
 
@@ -288,7 +272,6 @@ int dlpar_detach_node(struct device_node *dn)
 	if (rc)
 		return rc;
 
-	of_node_put(dn); /* Must decrement the refcount */
 	return 0;
 }
 
@@ -354,11 +337,17 @@ static int handle_dlpar_errorlog(struct pseries_hp_errorlog *hp_elog)
 	switch (hp_elog->id_type) {
 	case PSERIES_HP_ELOG_ID_DRC_COUNT:
 		hp_elog->_drc_u.drc_count =
-					be32_to_cpu(hp_elog->_drc_u.drc_count);
+				be32_to_cpu(hp_elog->_drc_u.drc_count);
 		break;
 	case PSERIES_HP_ELOG_ID_DRC_INDEX:
 		hp_elog->_drc_u.drc_index =
-					be32_to_cpu(hp_elog->_drc_u.drc_index);
+				be32_to_cpu(hp_elog->_drc_u.drc_index);
+		break;
+	case PSERIES_HP_ELOG_ID_DRC_IC:
+		hp_elog->_drc_u.ic.count =
+				be32_to_cpu(hp_elog->_drc_u.ic.count);
+		hp_elog->_drc_u.ic.index =
+				be32_to_cpu(hp_elog->_drc_u.ic.index);
 	}
 
 	switch (hp_elog->resource) {
@@ -467,7 +456,33 @@ static int dlpar_parse_id_type(char **cmd, struct pseries_hp_errorlog *hp_elog)
 	if (!arg)
 		return -EINVAL;
 
-	if (sysfs_streq(arg, "index")) {
+	if (sysfs_streq(arg, "indexed-count")) {
+		hp_elog->id_type = PSERIES_HP_ELOG_ID_DRC_IC;
+		arg = strsep(cmd, " ");
+		if (!arg) {
+			pr_err("No DRC count specified.\n");
+			return -EINVAL;
+		}
+
+		if (kstrtou32(arg, 0, &count)) {
+			pr_err("Invalid DRC count specified.\n");
+			return -EINVAL;
+		}
+
+		arg = strsep(cmd, " ");
+		if (!arg) {
+			pr_err("No DRC Index specified.\n");
+			return -EINVAL;
+		}
+
+		if (kstrtou32(arg, 0, &index)) {
+			pr_err("Invalid DRC Index specified.\n");
+			return -EINVAL;
+		}
+
+		hp_elog->_drc_u.ic.count = cpu_to_be32(count);
+		hp_elog->_drc_u.ic.index = cpu_to_be32(index);
+	} else if (sysfs_streq(arg, "index")) {
 		hp_elog->id_type = PSERIES_HP_ELOG_ID_DRC_INDEX;
 		arg = strsep(cmd, " ");
 		if (!arg) {
@@ -551,13 +566,34 @@ dlpar_store_out:
 	return rc ? rc : count;
 }
 
-static CLASS_ATTR(dlpar, S_IWUSR, NULL, dlpar_store);
-
-static int __init pseries_dlpar_init(void)
+static ssize_t dlpar_show(struct class *class, struct class_attribute *attr,
+			  char *buf)
 {
+	return sprintf(buf, "%s\n", "memory,cpu");
+}
+
+static CLASS_ATTR_RW(dlpar);
+
+int __init dlpar_workqueue_init(void)
+{
+	if (pseries_hp_wq)
+		return 0;
+
 	pseries_hp_wq = alloc_workqueue("pseries hotplug workqueue",
-					WQ_UNBOUND, 1);
+			WQ_UNBOUND, 1);
+
+	return pseries_hp_wq ? 0 : -ENOMEM;
+}
+
+static int __init dlpar_sysfs_init(void)
+{
+	int rc;
+
+	rc = dlpar_workqueue_init();
+	if (rc)
+		return rc;
+
 	return sysfs_create_file(kernel_kobj, &class_attr_dlpar.attr);
 }
-machine_device_initcall(pseries, pseries_dlpar_init);
+machine_device_initcall(pseries, dlpar_sysfs_init);
 

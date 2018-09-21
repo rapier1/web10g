@@ -21,6 +21,7 @@
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
 #include <linux/slab.h>
+#include <linux/topology.h>
 
 #include <linux/uaccess.h>
 #include <asm/io.h>
@@ -282,6 +283,7 @@ static void prrn_work_fn(struct work_struct *work)
 	 * the RTAS event.
 	 */
 	pseries_devicetree_update(-prrn_update_scope);
+	numa_update_cpu_topology(false);
 }
 
 static DECLARE_WORK(prrn_work, prrn_work_fn);
@@ -386,11 +388,11 @@ out:
 	return error;
 }
 
-static unsigned int rtas_log_poll(struct file *file, poll_table * wait)
+static __poll_t rtas_log_poll(struct file *file, poll_table * wait)
 {
 	poll_wait(file, &rtas_log_wait, wait);
 	if (rtas_log_size)
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 	return 0;
 }
 
@@ -434,7 +436,10 @@ static void do_event_scan(void)
 		}
 
 		if (error == 0) {
-			pSeries_log_error(logdata, ERR_TYPE_RTAS_LOG, 0);
+			if (rtas_error_type((struct rtas_error_log *)logdata) !=
+			    RTAS_TYPE_PRRN)
+				pSeries_log_error(logdata, ERR_TYPE_RTAS_LOG,
+						  0);
 			handle_rtas_event((struct rtas_error_log *)logdata);
 		}
 
@@ -554,7 +559,8 @@ static int __init rtas_event_scan_init(void)
 	rtas_error_log_max = rtas_get_error_log_max();
 	rtas_error_log_buffer_max = rtas_error_log_max + sizeof(int);
 
-	rtas_log_buf = vmalloc(rtas_error_log_buffer_max*LOG_NUMBER);
+	rtas_log_buf = vmalloc(array_size(LOG_NUMBER,
+					  rtas_error_log_buffer_max));
 	if (!rtas_log_buf) {
 		printk(KERN_ERR "rtasd: no memory\n");
 		return -ENOMEM;
@@ -576,7 +582,7 @@ static int __init rtas_init(void)
 	if (!rtas_log_buf)
 		return -ENODEV;
 
-	entry = proc_create("powerpc/rtas/error_log", S_IRUSR, NULL,
+	entry = proc_create("powerpc/rtas/error_log", 0400, NULL,
 			    &proc_rtas_log_operations);
 	if (!entry)
 		printk(KERN_ERR "Failed to create error_log proc entry\n");

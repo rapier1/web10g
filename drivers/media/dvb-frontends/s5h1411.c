@@ -25,7 +25,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "s5h1411.h"
 
 struct s5h1411_state {
@@ -51,7 +51,7 @@ static int debug;
 #define dprintk(arg...) do {	\
 	if (debug)		\
 		printk(arg);	\
-	} while (0)
+} while (0)
 
 /* Register values to initialise the demod, defaults to VSB */
 static struct init_tab {
@@ -410,7 +410,7 @@ static int s5h1411_set_if_freq(struct dvb_frontend *fe, int KHz)
 	default:
 		dprintk("%s(%d KHz) Invalid, defaulting to 5380\n",
 			__func__, KHz);
-		/* no break, need to continue */
+		/* fall through */
 	case 5380:
 	case 44000:
 		s5h1411_writereg(state, S5H1411_I2C_TOP_ADDR, 0x38, 0x1be4);
@@ -433,17 +433,17 @@ static int s5h1411_set_mpeg_timing(struct dvb_frontend *fe, int mode)
 
 	val = s5h1411_readreg(state, S5H1411_I2C_TOP_ADDR, 0xbe) & 0xcfff;
 	switch (mode) {
-	case S5H1411_MPEGTIMING_CONTINOUS_INVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_CONTINUOUS_INVERTING_CLOCK:
 		val |= 0x0000;
 		break;
-	case S5H1411_MPEGTIMING_CONTINOUS_NONINVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK:
 		dprintk("%s(%d) Mode1 or Defaulting\n", __func__, mode);
 		val |= 0x1000;
 		break;
-	case S5H1411_MPEGTIMING_NONCONTINOUS_INVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_NONCONTINUOUS_INVERTING_CLOCK:
 		val |= 0x2000;
 		break;
-	case S5H1411_MPEGTIMING_NONCONTINOUS_NONINVERTING_CLOCK:
+	case S5H1411_MPEGTIMING_NONCONTINUOUS_NONINVERTING_CLOCK:
 		val |= 0x3000;
 		break;
 	default:

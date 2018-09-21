@@ -13,10 +13,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/slab.h>
@@ -102,11 +98,9 @@ struct saa7164_buffer *saa7164_buffer_alloc(struct saa7164_port *port,
 		goto ret;
 	}
 
-	buf = kzalloc(sizeof(struct saa7164_buffer), GFP_KERNEL);
-	if (!buf) {
-		log_warn("%s() SAA_ERR_NO_RESOURCES\n", __func__);
+	buf = kzalloc(sizeof(*buf), GFP_KERNEL);
+	if (!buf)
 		goto ret;
-	}
 
 	buf->idx = -1;
 	buf->port = port;
@@ -287,7 +281,7 @@ struct saa7164_user_buffer *saa7164_buffer_alloc_user(struct saa7164_dev *dev,
 {
 	struct saa7164_user_buffer *buf;
 
-	buf = kzalloc(sizeof(struct saa7164_user_buffer), GFP_KERNEL);
+	buf = kzalloc(sizeof(*buf), GFP_KERNEL);
 	if (!buf)
 		return NULL;
 

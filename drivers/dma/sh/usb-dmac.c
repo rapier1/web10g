@@ -117,7 +117,7 @@ struct usb_dmac {
 #define USB_DMASWR			0x0008
 #define USB_DMASWR_SWR			(1 << 0)
 #define USB_DMAOR			0x0060
-#define USB_DMAOR_AE			(1 << 2)
+#define USB_DMAOR_AE			(1 << 1)
 #define USB_DMAOR_DME			(1 << 0)
 
 #define USB_DMASAR			0x0000
@@ -269,7 +269,7 @@ static int usb_dmac_desc_alloc(struct usb_dmac_chan *chan, unsigned int sg_len,
 	struct usb_dmac_desc *desc;
 	unsigned long flags;
 
-	desc = kzalloc(sizeof(*desc) + sg_len * sizeof(desc->sg[0]), gfp);
+	desc = kzalloc(struct_size(desc, sg, sg_len), gfp);
 	if (!desc)
 		return -ENOMEM;
 

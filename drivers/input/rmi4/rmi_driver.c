@@ -21,6 +21,7 @@
 #include <linux/pm.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/irqdomain.h>
 #include <uapi/linux/input.h>
 #include <linux/rmi.h>
 #include "rmi_bus.h"
@@ -41,6 +42,13 @@ void rmi_free_function_list(struct rmi_device *rmi_dev)
 
 	rmi_dbg(RMI_DEBUG_CORE, &rmi_dev->dev, "Freeing function list\n");
 
+	/* Doing it in the reverse order so F01 will be removed last */
+	list_for_each_entry_safe_reverse(fn, tmp,
+					 &data->function_list, node) {
+		list_del(&fn->node);
+		rmi_unregister_function(fn);
+	}
+
 	devm_kfree(&rmi_dev->dev, data->irq_memory);
 	data->irq_memory = NULL;
 	data->irq_status = NULL;
@@ -50,13 +58,6 @@ void rmi_free_function_list(struct rmi_device *rmi_dev)
 
 	data->f01_container = NULL;
 	data->f34_container = NULL;
-
-	/* Doing it in the reverse order so F01 will be removed last */
-	list_for_each_entry_safe_reverse(fn, tmp,
-					 &data->function_list, node) {
-		list_del(&fn->node);
-		rmi_unregister_function(fn);
-	}
 }
 
 static int reset_one_function(struct rmi_function *fn)
@@ -127,28 +128,11 @@ static int rmi_driver_process_config_requests(struct rmi_device *rmi_dev)
 	return 0;
 }
 
-static void process_one_interrupt(struct rmi_driver_data *data,
-				  struct rmi_function *fn)
-{
-	struct rmi_function_handler *fh;
-
-	if (!fn || !fn->dev.driver)
-		return;
-
-	fh = to_rmi_function_handler(fn->dev.driver);
-	if (fh->attention) {
-		bitmap_and(data->fn_irq_bits, data->irq_status, fn->irq_mask,
-				data->irq_count);
-		if (!bitmap_empty(data->fn_irq_bits, data->irq_count))
-			fh->attention(fn, data->fn_irq_bits);
-	}
-}
-
 static int rmi_process_interrupt_requests(struct rmi_device *rmi_dev)
 {
 	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
 	struct device *dev = &rmi_dev->dev;
-	struct rmi_function *entry;
+	int i;
 	int error;
 
 	if (!data)
@@ -173,16 +157,8 @@ static int rmi_process_interrupt_requests(struct rmi_device *rmi_dev)
 	 */
 	mutex_unlock(&data->irq_mutex);
 
-	/*
-	 * It would be nice to be able to use irq_chip to handle these
-	 * nested IRQs.  Unfortunately, most of the current customers for
-	 * this driver are using older kernels (3.0.x) that don't support
-	 * the features required for that.  Once they've shifted to more
-	 * recent kernels (say, 3.3 and higher), this should be switched to
-	 * use irq_chip.
-	 */
-	list_for_each_entry(entry, &data->function_list, node)
-		process_one_interrupt(data, entry);
+	for_each_set_bit(i, data->irq_status, data->irq_count)
+		handle_nested_irq(irq_find_mapping(data->irqdomain, i));
 
 	if (data->input)
 		input_sync(data->input);
@@ -230,8 +206,10 @@ static irqreturn_t rmi_irq_fn(int irq, void *dev_id)
 		rmi_dbg(RMI_DEBUG_CORE, &rmi_dev->dev,
 			"Failed to process interrupt request: %d\n", ret);
 
-	if (count)
+	if (count) {
 		kfree(attn_data.data);
+		attn_data.data = NULL;
+	}
 
 	if (!kfifo_is_empty(&drvdata->attn_fifo))
 		return rmi_irq_fn(irq, dev_id);
@@ -251,7 +229,7 @@ static int rmi_irq_init(struct rmi_device *rmi_dev)
 
 	ret = devm_request_threaded_irq(&rmi_dev->dev, pdata->irq, NULL,
 					rmi_irq_fn, irq_flags | IRQF_ONESHOT,
-					dev_name(rmi_dev->xport->dev),
+					dev_driver_string(rmi_dev->xport->dev),
 					rmi_dev);
 	if (ret < 0) {
 		dev_err(&rmi_dev->dev, "Failed to register interrupt %d\n",
@@ -263,6 +241,19 @@ static int rmi_irq_init(struct rmi_device *rmi_dev)
 	data->enabled = true;
 
 	return 0;
+}
+
+struct rmi_function *rmi_find_function(struct rmi_device *rmi_dev, u8 number)
+{
+	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
+	struct rmi_function *entry;
+
+	list_for_each_entry(entry, &data->function_list, node) {
+		if (entry->fd.function_number == number)
+			return entry;
+	}
+
+	return NULL;
 }
 
 static int suspend_one_function(struct rmi_function *fn)
@@ -364,7 +355,7 @@ static void rmi_driver_set_input_name(struct rmi_device *rmi_dev,
 				struct input_dev *input)
 {
 	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
-	char *device_name = rmi_f01_get_product_ID(data->f01_container);
+	const char *device_name = rmi_f01_get_product_ID(data->f01_container);
 	char *name;
 
 	name = devm_kasprintf(&rmi_dev->dev, GFP_KERNEL,
@@ -621,9 +612,10 @@ int rmi_read_register_desc(struct rmi_device *d, u16 addr,
 	rdesc->num_registers = bitmap_weight(rdesc->presense_map,
 						RMI_REG_DESC_PRESENSE_BITS);
 
-	rdesc->registers = devm_kzalloc(&d->dev, rdesc->num_registers *
-				sizeof(struct rmi_register_desc_item),
-				GFP_KERNEL);
+	rdesc->registers = devm_kcalloc(&d->dev,
+					rdesc->num_registers,
+					sizeof(struct rmi_register_desc_item),
+					GFP_KERNEL);
 	if (!rdesc->registers)
 		return -ENOMEM;
 
@@ -836,7 +828,7 @@ static int rmi_create_function(struct rmi_device *rmi_dev,
 			       void *ctx, const struct pdt_entry *pdt)
 {
 	struct device *dev = &rmi_dev->dev;
-	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
+	struct rmi_driver_data *data = dev_get_drvdata(dev);
 	int *current_irq_count = ctx;
 	struct rmi_function *fn;
 	int i;
@@ -985,8 +977,12 @@ EXPORT_SYMBOL_GPL(rmi_driver_resume);
 static int rmi_driver_remove(struct device *dev)
 {
 	struct rmi_device *rmi_dev = to_rmi_device(dev);
+	struct rmi_driver_data *data = dev_get_drvdata(&rmi_dev->dev);
 
 	rmi_disable_irq(rmi_dev, false);
+
+	irq_domain_remove(data->irqdomain);
+	data->irqdomain = NULL;
 
 	rmi_f34_remove_sysfs(rmi_dev);
 	rmi_free_function_list(rmi_dev);
@@ -1019,7 +1015,8 @@ int rmi_probe_interrupts(struct rmi_driver_data *data)
 {
 	struct rmi_device *rmi_dev = data->rmi_dev;
 	struct device *dev = &rmi_dev->dev;
-	int irq_count;
+	struct fwnode_handle *fwnode = rmi_dev->xport->dev->fwnode;
+	int irq_count = 0;
 	size_t size;
 	int retval;
 
@@ -1030,7 +1027,6 @@ int rmi_probe_interrupts(struct rmi_driver_data *data)
 	 * being accessed.
 	 */
 	rmi_dbg(RMI_DEBUG_CORE, dev, "%s: Counting IRQs.\n", __func__);
-	irq_count = 0;
 	data->bootloader_mode = false;
 
 	retval = rmi_scan_pdt(rmi_dev, &irq_count, rmi_count_irqs);
@@ -1040,16 +1036,25 @@ int rmi_probe_interrupts(struct rmi_driver_data *data)
 	}
 
 	if (data->bootloader_mode)
-		dev_warn(&rmi_dev->dev, "Device in bootloader mode.\n");
+		dev_warn(dev, "Device in bootloader mode.\n");
+
+	/* Allocate and register a linear revmap irq_domain */
+	data->irqdomain = irq_domain_create_linear(fwnode, irq_count,
+						   &irq_domain_simple_ops,
+						   data);
+	if (!data->irqdomain) {
+		dev_err(&rmi_dev->dev, "Failed to create IRQ domain\n");
+		return -ENOMEM;
+	}
 
 	data->irq_count = irq_count;
 	data->num_of_irq_regs = (data->irq_count + 7) / 8;
 
 	size = BITS_TO_LONGS(data->irq_count) * sizeof(unsigned long);
-	data->irq_memory = devm_kzalloc(dev, size * 4, GFP_KERNEL);
+	data->irq_memory = devm_kcalloc(dev, size, 4, GFP_KERNEL);
 	if (!data->irq_memory) {
 		dev_err(dev, "Failed to allocate memory for irq masks.\n");
-		return retval;
+		return -ENOMEM;
 	}
 
 	data->irq_status	= data->irq_memory + size * 0;
@@ -1064,10 +1069,9 @@ int rmi_init_functions(struct rmi_driver_data *data)
 {
 	struct rmi_device *rmi_dev = data->rmi_dev;
 	struct device *dev = &rmi_dev->dev;
-	int irq_count;
+	int irq_count = 0;
 	int retval;
 
-	irq_count = 0;
 	rmi_dbg(RMI_DEBUG_CORE, dev, "%s: Creating functions.\n", __func__);
 	retval = rmi_scan_pdt(rmi_dev, &irq_count, rmi_create_function);
 	if (retval < 0) {
@@ -1221,16 +1225,21 @@ static int rmi_driver_probe(struct device *dev)
 	if (retval < 0)
 		goto err_destroy_functions;
 
-	if (data->f01_container->dev.driver)
+	if (data->f01_container->dev.driver) {
 		/* Driver already bound, so enable ATTN now. */
-		return rmi_enable_sensor(rmi_dev);
+		retval = rmi_enable_sensor(rmi_dev);
+		if (retval)
+			goto err_disable_irq;
+	}
 
 	return 0;
 
+err_disable_irq:
+	rmi_disable_irq(rmi_dev, false);
 err_destroy_functions:
 	rmi_free_function_list(rmi_dev);
 err:
-	return retval < 0 ? retval : 0;
+	return retval;
 }
 
 static struct rmi_driver rmi_physical_driver = {

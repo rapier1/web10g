@@ -119,18 +119,12 @@ static void __init sh_of_mem_reserve(void)
 static void __init sh_of_time_init(void)
 {
 	pr_info("SH generic board support: scanning for clocksource devices\n");
-	clocksource_probe();
+	timer_probe();
 }
 
 static void __init sh_of_setup(char **cmdline_p)
 {
 	struct device_node *root;
-
-#ifdef CONFIG_USE_BUILTIN_DTB
-	unflatten_and_copy_device_tree();
-#else
-	unflatten_device_tree();
-#endif
 
 	board_time_init = sh_of_time_init;
 

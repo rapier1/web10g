@@ -274,8 +274,6 @@ enum hash_table_entry {
 	HASH_ENTRY_RECEIVE_DISCARD_BIT = 2
 };
 
-static int pxa168_get_link_ksettings(struct net_device *dev,
-				     struct ethtool_link_ksettings *cmd);
 static int pxa168_init_hw(struct pxa168_eth_private *pep);
 static int pxa168_init_phy(struct net_device *dev);
 static void eth_port_reset(struct net_device *dev);
@@ -364,9 +362,9 @@ static void rxq_refill(struct net_device *dev)
 	}
 }
 
-static inline void rxq_refill_timer_wrapper(unsigned long data)
+static inline void rxq_refill_timer_wrapper(struct timer_list *t)
 {
-	struct pxa168_eth_private *pep = (void *)data;
+	struct pxa168_eth_private *pep = from_timer(pep, t, timeout);
 	napi_schedule(&pep->napi);
 }
 
@@ -558,11 +556,11 @@ static int init_hash_table(struct pxa168_eth_private *pep)
 	 * function.Driver can dynamically switch to them if the 1/2kB hash
 	 * table is full.
 	 */
-	if (pep->htpr == NULL) {
+	if (!pep->htpr) {
 		pep->htpr = dma_zalloc_coherent(pep->dev->dev.parent,
 						HASH_ADDR_TABLE_SIZE,
 						&pep->htpr_dma, GFP_KERNEL);
-		if (pep->htpr == NULL)
+		if (!pep->htpr)
 			return -ENOMEM;
 	} else {
 		memset(pep->htpr, 0, HASH_ADDR_TABLE_SIZE);
@@ -987,10 +985,6 @@ static int pxa168_init_phy(struct net_device *dev)
 	if (err)
 		return err;
 
-	err = pxa168_get_link_ksettings(dev, &cmd);
-	if (err)
-		return err;
-
 	cmd.base.phy_address = pep->phy_addr;
 	cmd.base.speed = pep->phy_speed;
 	cmd.base.duplex = pep->phy_duplex;
@@ -1042,8 +1036,7 @@ static int rxq_init(struct net_device *dev)
 	int rx_desc_num = pep->rx_ring_size;
 
 	/* Allocate RX skb rings */
-	pep->rx_skb = kzalloc(sizeof(*pep->rx_skb) * pep->rx_ring_size,
-			     GFP_KERNEL);
+	pep->rx_skb = kcalloc(rx_desc_num, sizeof(*pep->rx_skb), GFP_KERNEL);
 	if (!pep->rx_skb)
 		return -ENOMEM;
 
@@ -1102,8 +1095,7 @@ static int txq_init(struct net_device *dev)
 	int size = 0, i = 0;
 	int tx_desc_num = pep->tx_ring_size;
 
-	pep->tx_skb = kzalloc(sizeof(*pep->tx_skb) * pep->tx_ring_size,
-			     GFP_KERNEL);
+	pep->tx_skb = kcalloc(tx_desc_num, sizeof(*pep->tx_skb), GFP_KERNEL);
 	if (!pep->tx_skb)
 		return -ENOMEM;
 
@@ -1261,7 +1253,7 @@ static int pxa168_rx_poll(struct napi_struct *napi, int budget)
 	}
 	work_done = rxq_process(dev, budget);
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		wrl(pep, INT_MASK, ALL_INTS);
 	}
 
@@ -1364,23 +1356,20 @@ static int pxa168_smi_write(struct mii_bus *bus, int phy_addr, int regnum,
 static int pxa168_eth_do_ioctl(struct net_device *dev, struct ifreq *ifr,
 			       int cmd)
 {
-	if (dev->phydev != NULL)
+	if (dev->phydev)
 		return phy_mii_ioctl(dev->phydev, ifr, cmd);
 
 	return -EOPNOTSUPP;
 }
 
-static int pxa168_get_link_ksettings(struct net_device *dev,
-				     struct ethtool_link_ksettings *cmd)
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void pxa168_eth_netpoll(struct net_device *dev)
 {
-	int err;
-
-	err = phy_read_status(dev->phydev);
-	if (err == 0)
-		err = phy_ethtool_ksettings_get(dev->phydev, cmd);
-
-	return err;
+	disable_irq(dev->irq);
+	pxa168_eth_int_handler(dev->irq, dev);
+	enable_irq(dev->irq);
 }
+#endif
 
 static void pxa168_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
@@ -1396,7 +1385,7 @@ static const struct ethtool_ops pxa168_ethtool_ops = {
 	.nway_reset	= phy_ethtool_nway_reset,
 	.get_link	= ethtool_op_get_link,
 	.get_ts_info	= ethtool_op_get_ts_info,
-	.get_link_ksettings = pxa168_get_link_ksettings,
+	.get_link_ksettings = phy_ethtool_get_link_ksettings,
 	.set_link_ksettings = phy_ethtool_set_link_ksettings,
 };
 
@@ -1410,6 +1399,9 @@ static const struct net_device_ops pxa168_eth_netdev_ops = {
 	.ndo_do_ioctl		= pxa168_eth_do_ioctl,
 	.ndo_change_mtu		= pxa168_eth_change_mtu,
 	.ndo_tx_timeout		= pxa168_eth_tx_timeout,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller    = pxa168_eth_netpoll,
+#endif
 };
 
 static int pxa168_eth_probe(struct platform_device *pdev)
@@ -1516,12 +1508,10 @@ static int pxa168_eth_probe(struct platform_device *pdev)
 	netif_napi_add(dev, &pep->napi, pxa168_rx_poll, pep->rx_ring_size);
 
 	memset(&pep->timeout, 0, sizeof(struct timer_list));
-	init_timer(&pep->timeout);
-	pep->timeout.function = rxq_refill_timer_wrapper;
-	pep->timeout.data = (unsigned long)pep;
+	timer_setup(&pep->timeout, rxq_refill_timer_wrapper, 0);
 
 	pep->smi_bus = mdiobus_alloc();
-	if (pep->smi_bus == NULL) {
+	if (!pep->smi_bus) {
 		err = -ENOMEM;
 		goto err_netdev;
 	}

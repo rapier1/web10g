@@ -62,42 +62,6 @@ int ocrdma_query_pkey(struct ib_device *ibdev, u8 port, u16 index, u16 *pkey)
 	return 0;
 }
 
-int ocrdma_query_gid(struct ib_device *ibdev, u8 port,
-		     int index, union ib_gid *sgid)
-{
-	int ret;
-	struct ocrdma_dev *dev;
-
-	dev = get_ocrdma_dev(ibdev);
-	memset(sgid, 0, sizeof(*sgid));
-	if (index >= OCRDMA_MAX_SGID)
-		return -EINVAL;
-
-	ret = ib_get_cached_gid(ibdev, port, index, sgid, NULL);
-	if (ret == -EAGAIN) {
-		memcpy(sgid, &zgid, sizeof(*sgid));
-		return 0;
-	}
-
-	return ret;
-}
-
-int ocrdma_add_gid(struct ib_device *device,
-		   u8 port_num,
-		   unsigned int index,
-		   const union ib_gid *gid,
-		   const struct ib_gid_attr *attr,
-		   void **context) {
-	return  0;
-}
-
-int  ocrdma_del_gid(struct ib_device *device,
-		    u8 port_num,
-		    unsigned int index,
-		    void **context) {
-	return 0;
-}
-
 int ocrdma_query_device(struct ib_device *ibdev, struct ib_device_attr *attr,
 			struct ib_udata *uhw)
 {
@@ -210,6 +174,7 @@ int ocrdma_query_port(struct ib_device *ibdev,
 	struct ocrdma_dev *dev;
 	struct net_device *netdev;
 
+	/* props being zeroed by the caller, avoid zeroing it here */
 	dev = get_ocrdma_dev(ibdev);
 	if (port > 1) {
 		pr_err("%s(%d) invalid_port=0x%x\n", __func__,
@@ -371,7 +336,7 @@ static int _ocrdma_pd_mgr_put_bitmap(struct ocrdma_dev *dev, u16 pd_id,
 	return 0;
 }
 
-static u8 ocrdma_put_pd_num(struct ocrdma_dev *dev, u16 pd_id,
+static int ocrdma_put_pd_num(struct ocrdma_dev *dev, u16 pd_id,
 				   bool dpp_pool)
 {
 	int status;
@@ -462,7 +427,7 @@ retry:
 static inline int is_ucontext_pd(struct ocrdma_ucontext *uctx,
 				 struct ocrdma_pd *pd)
 {
-	return (uctx->cntxt_pd == pd ? true : false);
+	return (uctx->cntxt_pd == pd);
 }
 
 static int _ocrdma_dealloc_pd(struct ocrdma_dev *dev,
@@ -551,13 +516,12 @@ struct ib_ucontext *ocrdma_alloc_ucontext(struct ib_device *ibdev,
 	INIT_LIST_HEAD(&ctx->mm_head);
 	mutex_init(&ctx->mm_list_lock);
 
-	ctx->ah_tbl.va = dma_alloc_coherent(&pdev->dev, map_len,
-					    &ctx->ah_tbl.pa, GFP_KERNEL);
+	ctx->ah_tbl.va = dma_zalloc_coherent(&pdev->dev, map_len,
+					     &ctx->ah_tbl.pa, GFP_KERNEL);
 	if (!ctx->ah_tbl.va) {
 		kfree(ctx);
 		return ERR_PTR(-ENOMEM);
 	}
-	memset(ctx->ah_tbl.va, 0, map_len);
 	ctx->ah_tbl.len = map_len;
 
 	memset(&resp, 0, sizeof(resp));
@@ -743,7 +707,8 @@ err:
 	if (is_uctx_pd) {
 		ocrdma_release_ucontext_pd(uctx);
 	} else {
-		status = _ocrdma_dealloc_pd(dev, pd);
+		if (_ocrdma_dealloc_pd(dev, pd))
+			pr_err("%s: _ocrdma_dealloc_pd() failed\n", __func__);
 	}
 exit:
 	return ERR_PTR(status);
@@ -878,20 +843,19 @@ static int ocrdma_build_pbl_tbl(struct ocrdma_dev *dev, struct ocrdma_hw_mr *mr)
 	void *va;
 	dma_addr_t pa;
 
-	mr->pbl_table = kzalloc(sizeof(struct ocrdma_pbl) *
-				mr->num_pbls, GFP_KERNEL);
+	mr->pbl_table = kcalloc(mr->num_pbls, sizeof(struct ocrdma_pbl),
+				GFP_KERNEL);
 
 	if (!mr->pbl_table)
 		return -ENOMEM;
 
 	for (i = 0; i < mr->num_pbls; i++) {
-		va = dma_alloc_coherent(&pdev->dev, dma_len, &pa, GFP_KERNEL);
+		va = dma_zalloc_coherent(&pdev->dev, dma_len, &pa, GFP_KERNEL);
 		if (!va) {
 			ocrdma_free_mr_pbl_tbl(dev, mr);
 			status = -ENOMEM;
 			break;
 		}
-		memset(va, 0, dma_len);
 		mr->pbl_table[i].va = va;
 		mr->pbl_table[i].pa = pa;
 	}
@@ -913,21 +877,18 @@ static void build_user_pbes(struct ocrdma_dev *dev, struct ocrdma_mr *mr,
 	pbe = (struct ocrdma_pbe *)pbl_tbl->va;
 	pbe_cnt = 0;
 
-	shift = ilog2(umem->page_size);
+	shift = umem->page_shift;
 
 	for_each_sg(umem->sg_head.sgl, sg, umem->nmap, entry) {
 		pages = sg_dma_len(sg) >> shift;
 		for (pg_cnt = 0; pg_cnt < pages; pg_cnt++) {
 			/* store the page address in pbe */
 			pbe->pa_lo =
-			    cpu_to_le32(sg_dma_address
-					(sg) +
-					(umem->page_size * pg_cnt));
+			    cpu_to_le32(sg_dma_address(sg) +
+					(pg_cnt << shift));
 			pbe->pa_hi =
-			    cpu_to_le32(upper_32_bits
-					((sg_dma_address
-					  (sg) +
-					  umem->page_size * pg_cnt)));
+			    cpu_to_le32(upper_32_bits(sg_dma_address(sg) +
+					 (pg_cnt << shift)));
 			pbe_cnt += 1;
 			total_num_pbes += 1;
 			pbe++;
@@ -977,7 +938,7 @@ struct ib_mr *ocrdma_reg_user_mr(struct ib_pd *ibpd, u64 start, u64 len,
 	if (status)
 		goto umem_err;
 
-	mr->hwmr.pbe_size = mr->umem->page_size;
+	mr->hwmr.pbe_size = BIT(mr->umem->page_shift);
 	mr->hwmr.fbo = ib_umem_offset(mr->umem);
 	mr->hwmr.va = usr_addr;
 	mr->hwmr.len = len;
@@ -1170,8 +1131,7 @@ int ocrdma_destroy_cq(struct ib_cq *ibcq)
 
 	dev->cq_tbl[cq->id] = NULL;
 	indx = ocrdma_get_eq_table_index(dev, cq->eqn);
-	if (indx == -EINVAL)
-		BUG();
+	BUG_ON(indx == -EINVAL);
 
 	eq = &dev->eq_tbl[indx];
 	irq = ocrdma_get_irq(dev, eq);
@@ -1363,12 +1323,12 @@ static void ocrdma_set_qp_db(struct ocrdma_dev *dev, struct ocrdma_qp *qp,
 static int ocrdma_alloc_wr_id_tbl(struct ocrdma_qp *qp)
 {
 	qp->wqe_wr_id_tbl =
-	    kzalloc(sizeof(*(qp->wqe_wr_id_tbl)) * qp->sq.max_cnt,
+	    kcalloc(qp->sq.max_cnt, sizeof(*(qp->wqe_wr_id_tbl)),
 		    GFP_KERNEL);
 	if (qp->wqe_wr_id_tbl == NULL)
 		return -ENOMEM;
 	qp->rqe_wr_id_tbl =
-	    kzalloc(sizeof(u64) * qp->rq.max_cnt, GFP_KERNEL);
+	    kcalloc(qp->rq.max_cnt, sizeof(u64), GFP_KERNEL);
 	if (qp->rqe_wr_id_tbl == NULL)
 		return -ENOMEM;
 
@@ -1601,23 +1561,24 @@ int ocrdma_query_qp(struct ib_qp *ibqp,
 	qp_attr->cap.max_recv_sge = qp->rq.max_sges;
 	qp_attr->cap.max_inline_data = qp->max_inline_data;
 	qp_init_attr->cap = qp_attr->cap;
-	memcpy(&qp_attr->ah_attr.grh.dgid, &params.dgid[0],
-	       sizeof(params.dgid));
-	qp_attr->ah_attr.grh.flow_label = params.rnt_rc_sl_fl &
-	    OCRDMA_QP_PARAMS_FLOW_LABEL_MASK;
-	qp_attr->ah_attr.grh.sgid_index = qp->sgid_idx;
-	qp_attr->ah_attr.grh.hop_limit = (params.hop_lmt_rq_psn &
-					  OCRDMA_QP_PARAMS_HOP_LMT_MASK) >>
-						OCRDMA_QP_PARAMS_HOP_LMT_SHIFT;
-	qp_attr->ah_attr.grh.traffic_class = (params.tclass_sq_psn &
-					      OCRDMA_QP_PARAMS_TCLASS_MASK) >>
-						OCRDMA_QP_PARAMS_TCLASS_SHIFT;
+	qp_attr->ah_attr.type = RDMA_AH_ATTR_TYPE_ROCE;
 
-	qp_attr->ah_attr.ah_flags = IB_AH_GRH;
-	qp_attr->ah_attr.port_num = 1;
-	qp_attr->ah_attr.sl = (params.rnt_rc_sl_fl &
-			       OCRDMA_QP_PARAMS_SL_MASK) >>
-				OCRDMA_QP_PARAMS_SL_SHIFT;
+	rdma_ah_set_grh(&qp_attr->ah_attr, NULL,
+			params.rnt_rc_sl_fl &
+			  OCRDMA_QP_PARAMS_FLOW_LABEL_MASK,
+			qp->sgid_idx,
+			(params.hop_lmt_rq_psn &
+			 OCRDMA_QP_PARAMS_HOP_LMT_MASK) >>
+			 OCRDMA_QP_PARAMS_HOP_LMT_SHIFT,
+			(params.tclass_sq_psn &
+			 OCRDMA_QP_PARAMS_TCLASS_MASK) >>
+			 OCRDMA_QP_PARAMS_TCLASS_SHIFT);
+	rdma_ah_set_dgid_raw(&qp_attr->ah_attr, &params.dgid[0]);
+
+	rdma_ah_set_port_num(&qp_attr->ah_attr, 1);
+	rdma_ah_set_sl(&qp_attr->ah_attr, (params.rnt_rc_sl_fl &
+					   OCRDMA_QP_PARAMS_SL_MASK) >>
+					   OCRDMA_QP_PARAMS_SL_SHIFT);
 	qp_attr->timeout = (params.ack_to_rnr_rtc_dest_qpn &
 			    OCRDMA_QP_PARAMS_ACK_TIMEOUT_MASK) >>
 				OCRDMA_QP_PARAMS_ACK_TIMEOUT_SHIFT;
@@ -1630,8 +1591,8 @@ int ocrdma_query_qp(struct ib_qp *ibqp,
 	qp_attr->min_rnr_timer = 0;
 	qp_attr->pkey_index = 0;
 	qp_attr->port_num = 1;
-	qp_attr->ah_attr.src_path_bits = 0;
-	qp_attr->ah_attr.static_rate = 0;
+	rdma_ah_set_path_bits(&qp_attr->ah_attr, 0);
+	rdma_ah_set_static_rate(&qp_attr->ah_attr, 0);
 	qp_attr->alt_pkey_index = 0;
 	qp_attr->alt_port_num = 0;
 	qp_attr->alt_timeout = 0;
@@ -1741,8 +1702,7 @@ static void ocrdma_discard_cqes(struct ocrdma_qp *qp, struct ocrdma_cq *cq)
 				wqe_idx = (le32_to_cpu(cqe->rq.buftag_qpn) >>
 					OCRDMA_CQE_BUFTAG_SHIFT) &
 					qp->srq->rq.max_wqe_idx;
-				if (wqe_idx < 1)
-					BUG();
+				BUG_ON(wqe_idx < 1);
 				spin_lock_irqsave(&qp->srq->q_lock, flags);
 				ocrdma_hwq_inc_tail(&qp->srq->rq);
 				ocrdma_srq_toggle_bit(qp->srq, wqe_idx - 1);
@@ -1904,15 +1864,17 @@ struct ib_srq *ocrdma_create_srq(struct ib_pd *ibpd,
 		goto err;
 
 	if (udata == NULL) {
-		srq->rqe_wr_id_tbl = kzalloc(sizeof(u64) * srq->rq.max_cnt,
-			    GFP_KERNEL);
+		status = -ENOMEM;
+		srq->rqe_wr_id_tbl = kcalloc(srq->rq.max_cnt, sizeof(u64),
+					     GFP_KERNEL);
 		if (srq->rqe_wr_id_tbl == NULL)
 			goto arm_err;
 
 		srq->bit_fields_len = (srq->rq.max_cnt / 32) +
 		    (srq->rq.max_cnt % 32 ? 1 : 0);
 		srq->idx_bit_fields =
-		    kmalloc(srq->bit_fields_len * sizeof(u32), GFP_KERNEL);
+		    kmalloc_array(srq->bit_fields_len, sizeof(u32),
+				  GFP_KERNEL);
 		if (srq->idx_bit_fields == NULL)
 			goto arm_err;
 		memset(srq->idx_bit_fields, 0xff,
@@ -2248,6 +2210,7 @@ int ocrdma_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 		case IB_WR_SEND_WITH_IMM:
 			hdr->cw |= (OCRDMA_FLAG_IMM << OCRDMA_WQE_FLAGS_SHIFT);
 			hdr->immdt = ntohl(wr->ex.imm_data);
+			/* fall through */
 		case IB_WR_SEND:
 			hdr->cw |= (OCRDMA_SEND << OCRDMA_WQE_OPCODE_SHIFT);
 			ocrdma_build_send(qp, hdr, wr);
@@ -2261,6 +2224,7 @@ int ocrdma_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
 		case IB_WR_RDMA_WRITE_WITH_IMM:
 			hdr->cw |= (OCRDMA_FLAG_IMM << OCRDMA_WQE_FLAGS_SHIFT);
 			hdr->immdt = ntohl(wr->ex.imm_data);
+			/* fall through */
 		case IB_WR_RDMA_WRITE:
 			hdr->cw |= (OCRDMA_WRITE << OCRDMA_WQE_OPCODE_SHIFT);
 			status = ocrdma_build_write(qp, hdr, wr);
@@ -2388,15 +2352,13 @@ static int ocrdma_srq_get_idx(struct ocrdma_srq *srq)
 		if (srq->idx_bit_fields[row]) {
 			indx = ffs(srq->idx_bit_fields[row]);
 			indx = (row * 32) + (indx - 1);
-			if (indx >= srq->rq.max_cnt)
-				BUG();
+			BUG_ON(indx >= srq->rq.max_cnt);
 			ocrdma_srq_toggle_bit(srq, indx);
 			break;
 		}
 	}
 
-	if (row == srq->bit_fields_len)
-		BUG();
+	BUG_ON(row == srq->bit_fields_len);
 	return indx + 1; /* Use from index 1 */
 }
 
@@ -2754,8 +2716,7 @@ static void ocrdma_update_free_srq_cqe(struct ib_wc *ibwc,
 	srq = get_ocrdma_srq(qp->ibqp.srq);
 	wqe_idx = (le32_to_cpu(cqe->rq.buftag_qpn) >>
 		OCRDMA_CQE_BUFTAG_SHIFT) & srq->rq.max_wqe_idx;
-	if (wqe_idx < 1)
-		BUG();
+	BUG_ON(wqe_idx < 1);
 
 	ibwc->wr_id = srq->rqe_wr_id_tbl[wqe_idx];
 	spin_lock_irqsave(&srq->q_lock, flags);

@@ -401,6 +401,11 @@ static struct clk usb20_clk = {
 	.gpsc		= 1,
 };
 
+static struct clk cppi41_clk = {
+	.name		= "cppi41",
+	.parent		= &usb20_clk,
+};
+
 static struct clk spi0_clk = {
 	.name		= "spi0",
 	.parent		= &pll0_sysclk2,
@@ -557,21 +562,14 @@ static struct clk_lookup da850_clks[] = {
 	CLK("da830-mmc.0",	NULL,		&mmcsd0_clk),
 	CLK("da830-mmc.1",	NULL,		&mmcsd1_clk),
 	CLK("ti-aemif",		NULL,		&aemif_clk),
-	/*
-	 * The only user of this clock is davinci_nand and it get's it through
-	 * con_id. The nand node itself is created from within the aemif
-	 * driver to guarantee that it's probed after the aemif timing
-	 * parameters are configured. of_dev_auxdata is not accessible from
-	 * the aemif driver and can't be passed to of_platform_populate(). For
-	 * that reason we're leaving the dev_id here as NULL.
-	 */
-	CLK(NULL,		"aemif",	&aemif_nand_clk),
-	CLK("ohci-da8xx",	"usb11",	&usb11_clk),
-	CLK("musb-da8xx",	"usb20",	&usb20_clk),
+	CLK("davinci-nand.0",	"aemif",	&aemif_nand_clk),
+	CLK("ohci-da8xx",	NULL,		&usb11_clk),
+	CLK("musb-da8xx",	NULL,		&usb20_clk),
+	CLK("cppi41-dmaengine",	NULL,		&cppi41_clk),
 	CLK("spi_davinci.0",	NULL,		&spi0_clk),
 	CLK("spi_davinci.1",	NULL,		&spi1_clk),
 	CLK("vpif",		NULL,		&vpif_clk),
-	CLK("ahci_da850",		NULL,		&sata_clk),
+	CLK("ahci_da850",	"fck",		&sata_clk),
 	CLK("davinci-rproc.0",	NULL,		&dsp_clk),
 	CLK(NULL,		NULL,		&ehrpwm_clk),
 	CLK("ehrpwm.0",		"fck",		&ehrpwm0_clk),
@@ -1202,14 +1200,28 @@ static int da850_set_armrate(struct clk *clk, unsigned long index)
 	return clk_set_rate(pllclk, index);
 }
 
-static int da850_set_pll0rate(struct clk *clk, unsigned long index)
+static int da850_set_pll0rate(struct clk *clk, unsigned long rate)
 {
-	unsigned int prediv, mult, postdiv;
-	struct da850_opp *opp;
 	struct pll_data *pll = clk->pll_data;
+	struct cpufreq_frequency_table *freq;
+	unsigned int prediv, mult, postdiv;
+	struct da850_opp *opp = NULL;
 	int ret;
 
-	opp = (struct da850_opp *) cpufreq_info.freq_table[index].driver_data;
+	rate /= 1000;
+
+	for (freq = da850_freq_table;
+	     freq->frequency != CPUFREQ_TABLE_END; freq++) {
+		/* rate is in Hz, freq->frequency is in KHz */
+		if (freq->frequency == rate) {
+			opp = (struct da850_opp *)freq->driver_data;
+			break;
+		}
+	}
+
+	if (!opp)
+		return -EINVAL;
+
 	prediv = opp->prediv;
 	mult = opp->mult;
 	postdiv = opp->postdiv;
@@ -1335,13 +1347,12 @@ int __init da850_register_gpio(void)
 	return da8xx_register_gpio(&da850_gpio_platform_data);
 }
 
-static struct davinci_soc_info davinci_soc_info_da850 = {
+static const struct davinci_soc_info davinci_soc_info_da850 = {
 	.io_desc		= da850_io_desc,
 	.io_desc_num		= ARRAY_SIZE(da850_io_desc),
 	.jtag_id_reg		= DA8XX_SYSCFG0_BASE + DA8XX_JTAG_ID_REG,
 	.ids			= da850_ids,
 	.ids_num		= ARRAY_SIZE(da850_ids),
-	.cpu_clks		= da850_clks,
 	.psc_bases		= da850_psc_bases,
 	.psc_bases_num		= ARRAY_SIZE(da850_psc_bases),
 	.pinmux_base		= DA8XX_SYSCFG0_BASE + 0x120,
@@ -1380,6 +1391,10 @@ void __init da850_init(void)
 	v = __raw_readl(DA8XX_SYSCFG0_VIRT(DA8XX_CFGCHIP3_REG));
 	v &= ~CFGCHIP3_PLL1_MASTER_LOCK;
 	__raw_writel(v, DA8XX_SYSCFG0_VIRT(DA8XX_CFGCHIP3_REG));
+}
 
-	davinci_clk_init(davinci_soc_info_da850.cpu_clks);
+void __init da850_init_time(void)
+{
+	davinci_clk_init(da850_clks);
+	davinci_timer_init();
 }

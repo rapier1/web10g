@@ -45,7 +45,6 @@
 
 struct rds_ib_fmr {
 	struct ib_fmr		*fmr;
-	u64			*dma;
 };
 
 enum rds_ib_fr_state {
@@ -108,8 +107,6 @@ struct rds_ib_mr_pool {
 };
 
 extern struct workqueue_struct *rds_ib_mr_wq;
-extern unsigned int rds_ib_mr_1m_pool_size;
-extern unsigned int rds_ib_mr_8k_pool_size;
 extern bool prefer_frmr;
 
 struct rds_ib_mr_pool *rds_ib_create_mr_pool(struct rds_ib_device *rds_dev,
@@ -118,7 +115,8 @@ void rds_ib_get_mr_info(struct rds_ib_device *rds_ibdev,
 			struct rds_info_rdma_connection *iinfo);
 void rds_ib_destroy_mr_pool(struct rds_ib_mr_pool *);
 void *rds_ib_get_mr(struct scatterlist *sg, unsigned long nents,
-		    struct rds_sock *rs, u32 *key_ret);
+		    struct rds_sock *rs, u32 *key_ret,
+		    struct rds_connection *conn);
 void rds_ib_sync_mr(void *trans_private, int dir);
 void rds_ib_free_mr(void *trans_private, int invalidate);
 void rds_ib_flush_mrs(void);
@@ -128,8 +126,6 @@ void rds_ib_mr_exit(void);
 void __rds_ib_teardown_mr(struct rds_ib_mr *);
 void rds_ib_teardown_mr(struct rds_ib_mr *);
 struct rds_ib_mr *rds_ib_alloc_fmr(struct rds_ib_device *, int);
-int rds_ib_map_fmr(struct rds_ib_device *, struct rds_ib_mr *,
-		   struct scatterlist *, unsigned int);
 struct rds_ib_mr *rds_ib_reuse_mr(struct rds_ib_mr_pool *);
 int rds_ib_flush_mr_pool(struct rds_ib_mr_pool *, int, struct rds_ib_mr **);
 struct rds_ib_mr *rds_ib_reg_fmr(struct rds_ib_device *, struct scatterlist *,

@@ -38,6 +38,8 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/moduleparam.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/mm.h>
 
 #include "ipoib.h"
 
@@ -91,7 +93,7 @@ static void ipoib_cm_dma_unmap_rx(struct ipoib_dev_priv *priv, int frags,
 
 static int ipoib_cm_post_receive_srq(struct net_device *dev, int id)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_recv_wr *bad_wr;
 	int i, ret;
 
@@ -117,7 +119,7 @@ static int ipoib_cm_post_receive_nonsrq(struct net_device *dev,
 					struct ib_recv_wr *wr,
 					struct ib_sge *sge, int id)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_recv_wr *bad_wr;
 	int i, ret;
 
@@ -144,7 +146,7 @@ static struct sk_buff *ipoib_cm_alloc_rx_skb(struct net_device *dev,
 					     u64 mapping[IPOIB_CM_RX_SG],
 					     gfp_t gfp)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct sk_buff *skb;
 	int i;
 
@@ -195,7 +197,7 @@ partial_error:
 static void ipoib_cm_free_rx_ring(struct net_device *dev,
 				  struct ipoib_cm_rx_buf *rx_ring)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int i;
 
 	for (i = 0; i < ipoib_recvq_size; ++i)
@@ -234,7 +236,7 @@ static void ipoib_cm_start_rx_drain(struct ipoib_dev_priv *priv)
 static void ipoib_cm_rx_event_handler(struct ib_event *event, void *ctx)
 {
 	struct ipoib_cm_rx *p = ctx;
-	struct ipoib_dev_priv *priv = netdev_priv(p->dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(p->dev);
 	unsigned long flags;
 
 	if (event->event != IB_EVENT_QP_LAST_WQE_REACHED)
@@ -250,7 +252,7 @@ static void ipoib_cm_rx_event_handler(struct ib_event *event, void *ctx)
 static struct ib_qp *ipoib_cm_create_rx_qp(struct net_device *dev,
 					   struct ipoib_cm_rx *p)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_qp_init_attr attr = {
 		.event_handler = ipoib_cm_rx_event_handler,
 		.send_cq = priv->recv_cq, /* For drain WR */
@@ -275,7 +277,7 @@ static int ipoib_cm_modify_rx_qp(struct net_device *dev,
 				 struct ib_cm_id *cm_id, struct ib_qp *qp,
 				 unsigned psn)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_qp_attr qp_attr;
 	int qp_attr_mask, ret;
 
@@ -330,7 +332,7 @@ static void ipoib_cm_init_rx_wr(struct net_device *dev,
 				struct ib_recv_wr *wr,
 				struct ib_sge *sge)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int i;
 
 	for (i = 0; i < priv->cm.num_frags; ++i)
@@ -348,7 +350,7 @@ static void ipoib_cm_init_rx_wr(struct net_device *dev,
 static int ipoib_cm_nonsrq_init_rx(struct net_device *dev, struct ib_cm_id *cm_id,
 				   struct ipoib_cm_rx *rx)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct {
 		struct ib_recv_wr wr;
 		struct ib_sge sge[IPOIB_CM_RX_SG];
@@ -356,14 +358,15 @@ static int ipoib_cm_nonsrq_init_rx(struct net_device *dev, struct ib_cm_id *cm_i
 	int ret;
 	int i;
 
-	rx->rx_ring = vzalloc(ipoib_recvq_size * sizeof *rx->rx_ring);
+	rx->rx_ring = vzalloc(array_size(ipoib_recvq_size,
+					 sizeof(*rx->rx_ring)));
 	if (!rx->rx_ring)
 		return -ENOMEM;
 
 	t = kmalloc(sizeof *t, GFP_KERNEL);
 	if (!t) {
 		ret = -ENOMEM;
-		goto err_free;
+		goto err_free_1;
 	}
 
 	ipoib_cm_init_rx_wr(dev, &t->wr, t->sge);
@@ -410,6 +413,8 @@ err_count:
 
 err_free:
 	kfree(t);
+
+err_free_1:
 	ipoib_cm_free_rx_ring(dev, rx->rx_ring);
 
 	return ret;
@@ -419,7 +424,7 @@ static int ipoib_cm_send_rep(struct net_device *dev, struct ib_cm_id *cm_id,
 			     struct ib_qp *qp, struct ib_cm_req_event_param *req,
 			     unsigned psn)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_data data = {};
 	struct ib_cm_rep_param rep = {};
 
@@ -439,7 +444,7 @@ static int ipoib_cm_send_rep(struct net_device *dev, struct ib_cm_id *cm_id,
 static int ipoib_cm_req_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event)
 {
 	struct net_device *dev = cm_id->context;
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_rx *p;
 	unsigned psn;
 	int ret;
@@ -507,12 +512,11 @@ static int ipoib_cm_rx_handler(struct ib_cm_id *cm_id,
 	case IB_CM_REQ_RECEIVED:
 		return ipoib_cm_req_handler(cm_id, event);
 	case IB_CM_DREQ_RECEIVED:
-		p = cm_id->context;
 		ib_send_cm_drep(cm_id, NULL, 0);
 		/* Fall through */
 	case IB_CM_REJ_RECEIVED:
 		p = cm_id->context;
-		priv = netdev_priv(p->dev);
+		priv = ipoib_priv(p->dev);
 		if (ib_modify_qp(p->qp, &ipoib_cm_err_attr, IB_QP_STATE))
 			ipoib_warn(priv, "unable to move qp to error state\n");
 		/* Fall through */
@@ -556,7 +560,7 @@ static void skb_put_frags(struct sk_buff *skb, unsigned int hdr_space,
 
 void ipoib_cm_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_rx_buf *rx_ring;
 	unsigned int wr_id = wc->wr_id & ~(IPOIB_OP_CM | IPOIB_OP_RECV);
 	struct sk_buff *skb, *newskb;
@@ -591,9 +595,9 @@ void ipoib_cm_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 	skb = rx_ring[wr_id].skb;
 
 	if (unlikely(wc->status != IB_WC_SUCCESS)) {
-		ipoib_dbg(priv, "cm recv error "
-			   "(status=%d, wrid=%d vend_err %x)\n",
-			   wc->status, wr_id, wc->vendor_err);
+		ipoib_dbg(priv,
+			  "cm recv error (status=%d, wrid=%d vend_err %#x)\n",
+			  wc->status, wr_id, wc->vendor_err);
 		++dev->stats.rx_dropped;
 		if (has_srq)
 			goto repost;
@@ -705,7 +709,7 @@ static inline int post_send(struct ipoib_dev_priv *priv,
 
 void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_tx *tx)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_tx_buf *tx_req;
 	int rc;
 	unsigned usable_sge = tx->max_send_sge - !!skb_headlen(skb);
@@ -754,36 +758,43 @@ void ipoib_cm_send(struct net_device *dev, struct sk_buff *skb, struct ipoib_cm_
 		return;
 	}
 
+	if ((priv->tx_head - priv->tx_tail) == ipoib_sendq_size - 1) {
+		ipoib_dbg(priv, "TX ring 0x%x full, stopping kernel net queue\n",
+			  tx->qp->qp_num);
+		netif_stop_queue(dev);
+	}
+
 	skb_orphan(skb);
 	skb_dst_drop(skb);
 
+	if (netif_queue_stopped(dev)) {
+		rc = ib_req_notify_cq(priv->send_cq, IB_CQ_NEXT_COMP |
+				      IB_CQ_REPORT_MISSED_EVENTS);
+		if (unlikely(rc < 0))
+			ipoib_warn(priv, "IPoIB/CM:request notify on send CQ failed\n");
+		else if (rc)
+			napi_schedule(&priv->send_napi);
+	}
+
 	rc = post_send(priv, tx, tx->tx_head & (ipoib_sendq_size - 1), tx_req);
 	if (unlikely(rc)) {
-		ipoib_warn(priv, "post_send failed, error %d\n", rc);
+		ipoib_warn(priv, "IPoIB/CM:post_send failed, error %d\n", rc);
 		++dev->stats.tx_errors;
 		ipoib_dma_unmap_tx(priv, tx_req);
 		dev_kfree_skb_any(skb);
+
+		if (netif_queue_stopped(dev))
+			netif_wake_queue(dev);
 	} else {
 		netif_trans_update(dev);
 		++tx->tx_head;
-
-		if (++priv->tx_outstanding == ipoib_sendq_size) {
-			ipoib_dbg(priv, "TX ring 0x%x full, stopping kernel net queue\n",
-				  tx->qp->qp_num);
-			netif_stop_queue(dev);
-			rc = ib_req_notify_cq(priv->send_cq,
-				IB_CQ_NEXT_COMP | IB_CQ_REPORT_MISSED_EVENTS);
-			if (rc < 0)
-				ipoib_warn(priv, "request notify on send CQ failed\n");
-			else if (rc)
-				ipoib_send_comp_handler(priv->send_cq, dev);
-		}
+		++priv->tx_head;
 	}
 }
 
 void ipoib_cm_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_tx *tx = wc->qp->qp_context;
 	unsigned int wr_id = wc->wr_id & ~IPOIB_OP_CM;
 	struct ipoib_tx_buf *tx_req;
@@ -811,18 +822,29 @@ void ipoib_cm_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 	netif_tx_lock(dev);
 
 	++tx->tx_tail;
-	if (unlikely(--priv->tx_outstanding == ipoib_sendq_size >> 1) &&
-	    netif_queue_stopped(dev) &&
-	    test_bit(IPOIB_FLAG_ADMIN_UP, &priv->flags))
+	++priv->tx_tail;
+
+	if (unlikely(netif_queue_stopped(dev) &&
+		     (priv->tx_head - priv->tx_tail) <= ipoib_sendq_size >> 1 &&
+		     test_bit(IPOIB_FLAG_ADMIN_UP, &priv->flags)))
 		netif_wake_queue(dev);
 
 	if (wc->status != IB_WC_SUCCESS &&
 	    wc->status != IB_WC_WR_FLUSH_ERR) {
 		struct ipoib_neigh *neigh;
 
-		ipoib_dbg(priv, "failed cm send event "
-			   "(status=%d, wrid=%d vend_err %x)\n",
-			   wc->status, wr_id, wc->vendor_err);
+		/* IB_WC[_RNR]_RETRY_EXC_ERR error is part of the life cycle,
+		 * so don't make waves.
+		 */
+		if (wc->status == IB_WC_RNR_RETRY_EXC_ERR ||
+		    wc->status == IB_WC_RETRY_EXC_ERR)
+			ipoib_dbg(priv,
+				  "%s: failed cm send event (status=%d, wrid=%d vend_err %#x)\n",
+				   __func__, wc->status, wr_id, wc->vendor_err);
+		else
+			ipoib_warn(priv,
+				    "%s: failed cm send event (status=%d, wrid=%d vend_err %#x)\n",
+				   __func__, wc->status, wr_id, wc->vendor_err);
 
 		spin_lock_irqsave(&priv->lock, flags);
 		neigh = tx->neigh;
@@ -849,7 +871,7 @@ void ipoib_cm_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 
 int ipoib_cm_dev_open(struct net_device *dev)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int ret;
 
 	if (!IPOIB_CM_SUPPORTED(dev->dev_addr))
@@ -857,7 +879,7 @@ int ipoib_cm_dev_open(struct net_device *dev)
 
 	priv->cm.id = ib_create_cm_id(priv->ca, ipoib_cm_rx_handler, dev);
 	if (IS_ERR(priv->cm.id)) {
-		printk(KERN_WARNING "%s: failed to create CM ID\n", priv->ca->name);
+		pr_warn("%s: failed to create CM ID\n", priv->ca->name);
 		ret = PTR_ERR(priv->cm.id);
 		goto err_cm;
 	}
@@ -865,8 +887,8 @@ int ipoib_cm_dev_open(struct net_device *dev)
 	ret = ib_cm_listen(priv->cm.id, cpu_to_be64(IPOIB_CM_IETF_ID | priv->qp->qp_num),
 			   0);
 	if (ret) {
-		printk(KERN_WARNING "%s: failed to listen on ID 0x%llx\n", priv->ca->name,
-		       IPOIB_CM_IETF_ID | priv->qp->qp_num);
+		pr_warn("%s: failed to listen on ID 0x%llx\n", priv->ca->name,
+			IPOIB_CM_IETF_ID | priv->qp->qp_num);
 		goto err_listen;
 	}
 
@@ -881,7 +903,7 @@ err_cm:
 
 static void ipoib_cm_free_rx_reap_list(struct net_device *dev)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_rx *rx, *n;
 	LIST_HEAD(list);
 
@@ -904,7 +926,7 @@ static void ipoib_cm_free_rx_reap_list(struct net_device *dev)
 
 void ipoib_cm_dev_stop(struct net_device *dev)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_rx *p;
 	unsigned long begin;
 	int ret;
@@ -948,7 +970,7 @@ void ipoib_cm_dev_stop(struct net_device *dev)
 			break;
 		}
 		spin_unlock_irq(&priv->lock);
-		msleep(1);
+		usleep_range(1000, 2000);
 		ipoib_drain_cq(dev);
 		spin_lock_irq(&priv->lock);
 	}
@@ -963,7 +985,7 @@ void ipoib_cm_dev_stop(struct net_device *dev)
 static int ipoib_cm_rep_handler(struct ib_cm_id *cm_id, struct ib_cm_event *event)
 {
 	struct ipoib_cm_tx *p = cm_id->context;
-	struct ipoib_dev_priv *priv = netdev_priv(p->dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(p->dev);
 	struct ipoib_cm_data *data = event->private_data;
 	struct sk_buff_head skqueue;
 	struct ib_qp_attr qp_attr;
@@ -1015,9 +1037,10 @@ static int ipoib_cm_rep_handler(struct ib_cm_id *cm_id, struct ib_cm_event *even
 
 	while ((skb = __skb_dequeue(&skqueue))) {
 		skb->dev = p->dev;
-		if (dev_queue_xmit(skb))
-			ipoib_warn(priv, "dev_queue_xmit failed "
-				   "to requeue packet\n");
+		ret = dev_queue_xmit(skb);
+		if (ret)
+			ipoib_warn(priv, "%s:dev_queue_xmit failed to re-queue packet, ret:%d\n",
+				   __func__, ret);
 	}
 
 	ret = ib_send_cm_rtu(cm_id, NULL, 0);
@@ -1030,9 +1053,9 @@ static int ipoib_cm_rep_handler(struct ib_cm_id *cm_id, struct ib_cm_event *even
 
 static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_cm_tx *tx)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_qp_init_attr attr = {
-		.send_cq		= priv->recv_cq,
+		.send_cq		= priv->send_cq,
 		.recv_cq		= priv->recv_cq,
 		.srq			= priv->cm.srq,
 		.cap.max_send_wr	= ipoib_sendq_size,
@@ -1040,9 +1063,8 @@ static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_
 		.sq_sig_type		= IB_SIGNAL_ALL_WR,
 		.qp_type		= IB_QPT_RC,
 		.qp_context		= tx,
-		.create_flags		= IB_QP_CREATE_USE_GFP_NOIO
+		.create_flags		= 0
 	};
-
 	struct ib_qp *tx_qp;
 
 	if (dev->features & NETIF_F_SG)
@@ -1050,10 +1072,6 @@ static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_
 			min_t(u32, priv->ca->attrs.max_sge, MAX_SKB_FRAGS + 1);
 
 	tx_qp = ib_create_qp(priv->pd, &attr);
-	if (PTR_ERR(tx_qp) == -EINVAL) {
-		attr.create_flags &= ~IB_QP_CREATE_USE_GFP_NOIO;
-		tx_qp = ib_create_qp(priv->pd, &attr);
-	}
 	tx->max_send_sge = attr.cap.max_send_sge;
 	return tx_qp;
 }
@@ -1061,9 +1079,9 @@ static struct ib_qp *ipoib_cm_create_tx_qp(struct net_device *dev, struct ipoib_
 static int ipoib_cm_send_req(struct net_device *dev,
 			     struct ib_cm_id *id, struct ib_qp *qp,
 			     u32 qpn,
-			     struct ib_sa_path_rec *pathrec)
+			     struct sa_path_rec *pathrec)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_data data = {};
 	struct ib_cm_req_param req = {};
 
@@ -1098,7 +1116,7 @@ static int ipoib_cm_send_req(struct net_device *dev,
 static int ipoib_cm_modify_tx_init(struct net_device *dev,
 				  struct ib_cm_id *cm_id, struct ib_qp *qp)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_qp_attr qp_attr;
 	int qp_attr_mask, ret;
 	ret = ib_find_pkey(priv->ca, priv->port, priv->pkey, &qp_attr.pkey_index);
@@ -1121,23 +1139,26 @@ static int ipoib_cm_modify_tx_init(struct net_device *dev,
 }
 
 static int ipoib_cm_tx_init(struct ipoib_cm_tx *p, u32 qpn,
-			    struct ib_sa_path_rec *pathrec)
+			    struct sa_path_rec *pathrec)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(p->dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(p->dev);
+	unsigned int noio_flag;
 	int ret;
 
-	p->tx_ring = __vmalloc(ipoib_sendq_size * sizeof *p->tx_ring,
-			       GFP_NOIO, PAGE_KERNEL);
+	noio_flag = memalloc_noio_save();
+	p->tx_ring = vzalloc(array_size(ipoib_sendq_size, sizeof(*p->tx_ring)));
 	if (!p->tx_ring) {
+		memalloc_noio_restore(noio_flag);
 		ret = -ENOMEM;
 		goto err_tx;
 	}
 	memset(p->tx_ring, 0, ipoib_sendq_size * sizeof *p->tx_ring);
 
 	p->qp = ipoib_cm_create_tx_qp(p->dev, p);
+	memalloc_noio_restore(noio_flag);
 	if (IS_ERR(p->qp)) {
 		ret = PTR_ERR(p->qp);
-		ipoib_warn(priv, "failed to allocate tx qp: %d\n", ret);
+		ipoib_warn(priv, "failed to create tx qp: %d\n", ret);
 		goto err_qp;
 	}
 
@@ -1151,13 +1172,13 @@ static int ipoib_cm_tx_init(struct ipoib_cm_tx *p, u32 qpn,
 	ret = ipoib_cm_modify_tx_init(p->dev, p->id,  p->qp);
 	if (ret) {
 		ipoib_warn(priv, "failed to modify tx qp to rtr: %d\n", ret);
-		goto err_modify;
+		goto err_modify_send;
 	}
 
 	ret = ipoib_cm_send_req(p->dev, p->id, p->qp, qpn, pathrec);
 	if (ret) {
 		ipoib_warn(priv, "failed to send cm req: %d\n", ret);
-		goto err_send_cm;
+		goto err_modify_send;
 	}
 
 	ipoib_dbg(priv, "Request connection 0x%x for gid %pI6 qpn 0x%x\n",
@@ -1165,8 +1186,7 @@ static int ipoib_cm_tx_init(struct ipoib_cm_tx *p, u32 qpn,
 
 	return 0;
 
-err_send_cm:
-err_modify:
+err_modify_send:
 	ib_destroy_cm_id(p->id);
 err_id:
 	p->id = NULL;
@@ -1180,7 +1200,7 @@ err_tx:
 
 static void ipoib_cm_tx_destroy(struct ipoib_cm_tx *p)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(p->dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(p->dev);
 	struct ipoib_tx_buf *tx_req;
 	unsigned long begin;
 
@@ -1200,7 +1220,7 @@ static void ipoib_cm_tx_destroy(struct ipoib_cm_tx *p)
 				goto timeout;
 			}
 
-			msleep(1);
+			usleep_range(1000, 2000);
 		}
 	}
 
@@ -1210,9 +1230,10 @@ timeout:
 		tx_req = &p->tx_ring[p->tx_tail & (ipoib_sendq_size - 1)];
 		ipoib_dma_unmap_tx(priv, tx_req);
 		dev_kfree_skb_any(tx_req->skb);
-		++p->tx_tail;
 		netif_tx_lock_bh(p->dev);
-		if (unlikely(--priv->tx_outstanding == ipoib_sendq_size >> 1) &&
+		++p->tx_tail;
+		++priv->tx_tail;
+		if (unlikely(priv->tx_head - priv->tx_tail == ipoib_sendq_size >> 1) &&
 		    netif_queue_stopped(p->dev) &&
 		    test_bit(IPOIB_FLAG_ADMIN_UP, &priv->flags))
 			netif_wake_queue(p->dev);
@@ -1230,7 +1251,7 @@ static int ipoib_cm_tx_handler(struct ib_cm_id *cm_id,
 			       struct ib_cm_event *event)
 {
 	struct ipoib_cm_tx *tx = cm_id->context;
-	struct ipoib_dev_priv *priv = netdev_priv(tx->dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(tx->dev);
 	struct net_device *dev = priv->dev;
 	struct ipoib_neigh *neigh;
 	unsigned long flags;
@@ -1281,7 +1302,7 @@ static int ipoib_cm_tx_handler(struct ib_cm_id *cm_id,
 struct ipoib_cm_tx *ipoib_cm_create_tx(struct net_device *dev, struct ipoib_path *path,
 				       struct ipoib_neigh *neigh)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ipoib_cm_tx *tx;
 
 	tx = kzalloc(sizeof *tx, GFP_ATOMIC);
@@ -1300,7 +1321,7 @@ struct ipoib_cm_tx *ipoib_cm_create_tx(struct net_device *dev, struct ipoib_path
 
 void ipoib_cm_destroy_tx(struct ipoib_cm_tx *tx)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(tx->dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(tx->dev);
 	unsigned long flags;
 	if (test_and_clear_bit(IPOIB_FLAG_INITIALIZED, &tx->flags)) {
 		spin_lock_irqsave(&priv->lock, flags);
@@ -1326,7 +1347,7 @@ static void ipoib_cm_tx_start(struct work_struct *work)
 	struct ipoib_path *path;
 	int ret;
 
-	struct ib_sa_path_rec pathrec;
+	struct sa_path_rec pathrec;
 	u32 qpn;
 
 	netif_tx_lock_bh(dev);
@@ -1388,7 +1409,7 @@ static void ipoib_cm_tx_reap(struct work_struct *work)
 
 	while (!list_empty(&priv->cm.reap_list)) {
 		p = list_entry(priv->cm.reap_list.next, typeof(*p), list);
-		list_del(&p->list);
+		list_del_init(&p->list);
 		spin_unlock_irqrestore(&priv->lock, flags);
 		netif_tx_unlock_bh(dev);
 		ipoib_cm_tx_destroy(p);
@@ -1435,11 +1456,10 @@ static void ipoib_cm_skb_reap(struct work_struct *work)
 void ipoib_cm_skb_too_long(struct net_device *dev, struct sk_buff *skb,
 			   unsigned int mtu)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int e = skb_queue_empty(&priv->cm.skb_queue);
 
-	if (skb_dst(skb))
-		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
+	skb_dst_update_pmtu(skb, mtu);
 
 	skb_queue_tail(&priv->cm.skb_queue, skb);
 	if (e)
@@ -1484,7 +1504,8 @@ static void ipoib_cm_stale_task(struct work_struct *work)
 static ssize_t show_mode(struct device *d, struct device_attribute *attr,
 			 char *buf)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(to_net_dev(d));
+	struct net_device *dev = to_net_dev(d);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	if (test_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags))
 		return sprintf(buf, "connected\n");
@@ -1497,22 +1518,30 @@ static ssize_t set_mode(struct device *d, struct device_attribute *attr,
 {
 	struct net_device *dev = to_net_dev(d);
 	int ret;
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 
 	if (test_bit(IPOIB_FLAG_GOING_DOWN, &priv->flags))
 		return -EPERM;
 
-	if (!rtnl_trylock())
+	if (!mutex_trylock(&priv->sysfs_mutex))
 		return restart_syscall();
+
+	if (!rtnl_trylock()) {
+		mutex_unlock(&priv->sysfs_mutex);
+		return restart_syscall();
+	}
 
 	ret = ipoib_set_mode(dev, buf);
 
-	rtnl_unlock();
+	/* The assumption is that the function ipoib_set_mode returned
+	 * with the rtnl held by it, if not the value -EBUSY returned,
+	 * then no need to rtnl_unlock
+	 */
+	if (ret != -EBUSY)
+		rtnl_unlock();
+	mutex_unlock(&priv->sysfs_mutex);
 
-	if (!ret)
-		return count;
-
-	return ret;
+	return (!ret || ret == -EBUSY) ? count : ret;
 }
 
 static DEVICE_ATTR(mode, S_IWUSR | S_IRUGO, show_mode, set_mode);
@@ -1524,7 +1553,7 @@ int ipoib_cm_add_mode_attr(struct net_device *dev)
 
 static void ipoib_cm_create_srq(struct net_device *dev, int max_sge)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	struct ib_srq_init_attr srq_init_attr = {
 		.srq_type = IB_SRQT_BASIC,
 		.attr = {
@@ -1536,13 +1565,14 @@ static void ipoib_cm_create_srq(struct net_device *dev, int max_sge)
 	priv->cm.srq = ib_create_srq(priv->pd, &srq_init_attr);
 	if (IS_ERR(priv->cm.srq)) {
 		if (PTR_ERR(priv->cm.srq) != -ENOSYS)
-			printk(KERN_WARNING "%s: failed to allocate SRQ, error %ld\n",
+			pr_warn("%s: failed to allocate SRQ, error %ld\n",
 			       priv->ca->name, PTR_ERR(priv->cm.srq));
 		priv->cm.srq = NULL;
 		return;
 	}
 
-	priv->cm.srq_ring = vzalloc(ipoib_recvq_size * sizeof *priv->cm.srq_ring);
+	priv->cm.srq_ring = vzalloc(array_size(ipoib_recvq_size,
+					       sizeof(*priv->cm.srq_ring)));
 	if (!priv->cm.srq_ring) {
 		ib_destroy_srq(priv->cm.srq);
 		priv->cm.srq = NULL;
@@ -1553,7 +1583,7 @@ static void ipoib_cm_create_srq(struct net_device *dev, int max_sge)
 
 int ipoib_cm_dev_init(struct net_device *dev)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int max_srq_sge, i;
 
 	INIT_LIST_HEAD(&priv->cm.passive_ids);
@@ -1614,7 +1644,7 @@ int ipoib_cm_dev_init(struct net_device *dev)
 
 void ipoib_cm_dev_cleanup(struct net_device *dev)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	struct ipoib_dev_priv *priv = ipoib_priv(dev);
 	int ret;
 
 	if (!priv->cm.srq)

@@ -675,7 +675,6 @@ err_out:
 }
 
 static const struct iio_trigger_ops xadc_trigger_ops = {
-	.owner = THIS_MODULE,
 	.set_trigger_state = &xadc_trigger_set_state,
 };
 
@@ -1028,7 +1027,6 @@ static const struct iio_info xadc_info = {
 	.read_event_value = &xadc_read_event_value,
 	.write_event_value = &xadc_write_event_value,
 	.update_scan_mode = &xadc_update_scan_mode,
-	.driver_module = THIS_MODULE,
 };
 
 static const struct of_device_id xadc_of_match_table[] = {
@@ -1204,11 +1202,14 @@ static int xadc_probe(struct platform_device *pdev)
 		ret = PTR_ERR(xadc->clk);
 		goto err_free_samplerate_trigger;
 	}
-	clk_prepare_enable(xadc->clk);
+
+	ret = clk_prepare_enable(xadc->clk);
+	if (ret)
+		goto err_free_samplerate_trigger;
 
 	ret = xadc->ops->setup(pdev, indio_dev, irq);
 	if (ret)
-		goto err_free_samplerate_trigger;
+		goto err_clk_disable_unprepare;
 
 	ret = request_irq(irq, xadc->ops->interrupt_handler, 0,
 			dev_name(&pdev->dev), indio_dev);
@@ -1268,6 +1269,8 @@ static int xadc_probe(struct platform_device *pdev)
 
 err_free_irq:
 	free_irq(irq, indio_dev);
+err_clk_disable_unprepare:
+	clk_disable_unprepare(xadc->clk);
 err_free_samplerate_trigger:
 	if (xadc->ops->flags & XADC_FLAGS_BUFFERED)
 		iio_trigger_free(xadc->samplerate_trigger);
@@ -1277,8 +1280,6 @@ err_free_convst_trigger:
 err_triggered_buffer_cleanup:
 	if (xadc->ops->flags & XADC_FLAGS_BUFFERED)
 		iio_triggered_buffer_cleanup(indio_dev);
-err_clk_disable_unprepare:
-	clk_disable_unprepare(xadc->clk);
 err_device_free:
 	kfree(indio_dev->channels);
 

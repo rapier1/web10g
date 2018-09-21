@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *   S/390 common I/O routines -- channel subsystem call
  *
@@ -451,6 +452,7 @@ static void chsc_process_sei_link_incident(struct chsc_sei_nt0_area *sei_area)
 
 static void chsc_process_sei_res_acc(struct chsc_sei_nt0_area *sei_area)
 {
+	struct channel_path *chp;
 	struct chp_link link;
 	struct chp_id chpid;
 	int status;
@@ -463,10 +465,17 @@ static void chsc_process_sei_res_acc(struct chsc_sei_nt0_area *sei_area)
 	chpid.id = sei_area->rsid;
 	/* allocate a new channel path structure, if needed */
 	status = chp_get_status(chpid);
-	if (status < 0)
-		chp_new(chpid);
-	else if (!status)
+	if (!status)
 		return;
+
+	if (status < 0) {
+		chp_new(chpid);
+	} else {
+		chp = chpid_to_chp(chpid);
+		mutex_lock(&chp->lock);
+		chp_update_desc(chp);
+		mutex_unlock(&chp->lock);
+	}
 	memset(&link, 0, sizeof(struct chp_link));
 	link.chpid = chpid;
 	if ((sei_area->vf & 0xc0) != 0) {
@@ -914,6 +923,8 @@ int chsc_determine_channel_path_desc(struct chp_id chpid, int fmt, int rfmt,
 		return -EINVAL;
 	if ((rfmt == 2) && !css_general_characteristics.cib)
 		return -EINVAL;
+	if ((rfmt == 3) && !css_general_characteristics.util_str)
+		return -EINVAL;
 
 	memset(page, 0, PAGE_SIZE);
 	scpd_area = page;
@@ -939,43 +950,30 @@ int chsc_determine_channel_path_desc(struct chp_id chpid, int fmt, int rfmt,
 }
 EXPORT_SYMBOL_GPL(chsc_determine_channel_path_desc);
 
-int chsc_determine_base_channel_path_desc(struct chp_id chpid,
-					  struct channel_path_desc *desc)
-{
-	struct chsc_scpd *scpd_area;
-	unsigned long flags;
-	int ret;
-
-	spin_lock_irqsave(&chsc_page_lock, flags);
-	scpd_area = chsc_page;
-	ret = chsc_determine_channel_path_desc(chpid, 0, 0, 0, 0, scpd_area);
-	if (ret)
-		goto out;
-
-	memcpy(desc, scpd_area->data, sizeof(*desc));
-out:
-	spin_unlock_irqrestore(&chsc_page_lock, flags);
-	return ret;
+#define chsc_det_chp_desc(FMT, c)					\
+int chsc_determine_fmt##FMT##_channel_path_desc(			\
+	struct chp_id chpid, struct channel_path_desc_fmt##FMT *desc)	\
+{									\
+	struct chsc_scpd *scpd_area;					\
+	unsigned long flags;						\
+	int ret;							\
+									\
+	spin_lock_irqsave(&chsc_page_lock, flags);			\
+	scpd_area = chsc_page;						\
+	ret = chsc_determine_channel_path_desc(chpid, 0, FMT, c, 0,	\
+					       scpd_area);		\
+	if (ret)							\
+		goto out;						\
+									\
+	memcpy(desc, scpd_area->data, sizeof(*desc));			\
+out:									\
+	spin_unlock_irqrestore(&chsc_page_lock, flags);			\
+	return ret;							\
 }
 
-int chsc_determine_fmt1_channel_path_desc(struct chp_id chpid,
-					  struct channel_path_desc_fmt1 *desc)
-{
-	struct chsc_scpd *scpd_area;
-	unsigned long flags;
-	int ret;
-
-	spin_lock_irqsave(&chsc_page_lock, flags);
-	scpd_area = chsc_page;
-	ret = chsc_determine_channel_path_desc(chpid, 0, 1, 1, 0, scpd_area);
-	if (ret)
-		goto out;
-
-	memcpy(desc, scpd_area->data, sizeof(*desc));
-out:
-	spin_unlock_irqrestore(&chsc_page_lock, flags);
-	return ret;
-}
+chsc_det_chp_desc(0, 0)
+chsc_det_chp_desc(1, 1)
+chsc_det_chp_desc(3, 0)
 
 static void
 chsc_initialize_cmg_chars(struct channel_path *chp, u8 cmcv,
@@ -1131,6 +1129,52 @@ int chsc_enable_facility(int operation_code)
 	return ret;
 }
 
+int __init chsc_get_cssid(int idx)
+{
+	struct {
+		struct chsc_header request;
+		u8 atype;
+		u32 : 24;
+		u32 reserved1[6];
+		struct chsc_header response;
+		u32 reserved2[3];
+		struct {
+			u8 cssid;
+			u32 : 24;
+		} list[0];
+	} __packed *sdcal_area;
+	int ret;
+
+	spin_lock_irq(&chsc_page_lock);
+	memset(chsc_page, 0, PAGE_SIZE);
+	sdcal_area = chsc_page;
+	sdcal_area->request.length = 0x0020;
+	sdcal_area->request.code = 0x0034;
+	sdcal_area->atype = 4;
+
+	ret = chsc(sdcal_area);
+	if (ret) {
+		ret = (ret == 3) ? -ENODEV : -EBUSY;
+		goto exit;
+	}
+
+	ret = chsc_error_from_response(sdcal_area->response.code);
+	if (ret) {
+		CIO_CRW_EVENT(2, "chsc: sdcal failed (rc=%04x)\n",
+			      sdcal_area->response.code);
+		goto exit;
+	}
+
+	if ((addr_t) &sdcal_area->list[idx] <
+	    (addr_t) &sdcal_area->response + sdcal_area->response.length)
+		ret = sdcal_area->list[idx].cssid;
+	else
+		ret = -ENODEV;
+exit:
+	spin_unlock_irq(&chsc_page_lock);
+	return ret;
+}
+
 struct css_general_char css_general_characteristics;
 struct css_chsc_char css_chsc_characteristics;
 
@@ -1216,7 +1260,7 @@ int chsc_sstpi(void *page, void *result, size_t size)
 		struct chsc_header request;
 		unsigned int rsvd0[3];
 		struct chsc_header response;
-		char data[size];
+		char data[];
 	} __attribute__ ((packed)) *rr;
 	int rc;
 

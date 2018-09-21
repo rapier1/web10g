@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/slab.h>
 #include <linux/file.h>
 #include <linux/fdtable.h>
@@ -16,6 +17,9 @@
 #include <linux/personality.h>
 #include <linux/binfmts.h>
 #include <linux/coredump.h>
+#include <linux/sched/coredump.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task_stack.h>
 #include <linux/utsname.h>
 #include <linux/pid_namespace.h>
 #include <linux/module.h>
@@ -33,7 +37,6 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/oom.h>
 #include <linux/compat.h>
-#include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/path.h>
 #include <linux/timekeeping.h>
@@ -159,7 +162,7 @@ static int cn_print_exe_file(struct core_name *cn)
 	if (!exe_file)
 		return cn_esc_printf(cn, "%s (path unknown)", current->comm);
 
-	pathbuf = kmalloc(PATH_MAX, GFP_TEMPORARY);
+	pathbuf = kmalloc(PATH_MAX, GFP_KERNEL);
 	if (!pathbuf) {
 		ret = -ENOMEM;
 		goto put_exe_file;
@@ -677,16 +680,11 @@ void do_coredump(const siginfo_t *siginfo)
 		 * privs and don't want to unlink another user's coredump.
 		 */
 		if (!need_suid_safe) {
-			mm_segment_t old_fs;
-
-			old_fs = get_fs();
-			set_fs(KERNEL_DS);
 			/*
 			 * If it doesn't exist, that's fine. If there's some
 			 * other problem, we'll catch it at the filp_open().
 			 */
-			(void) sys_unlink((const char __user *)cn.corename);
-			set_fs(old_fs);
+			do_unlinkat(AT_FDCWD, getname_kernel(cn.corename));
 		}
 
 		/*

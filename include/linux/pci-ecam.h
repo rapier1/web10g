@@ -1,21 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright 2016 Broadcom
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, version 2, as
- * published by the Free Software Foundation (the "GPL").
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 (GPLv2) for more details.
- *
- * You should have received a copy of the GNU General Public License
- * version 2 (GPLv2) along with this source code.
  */
 #ifndef DRIVERS_PCI_ECAM_H
 #define DRIVERS_PCI_ECAM_H
 
+#include <linux/pci.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 
@@ -68,9 +58,10 @@ extern struct pci_ecam_ops xgene_v1_pcie_ecam_ops; /* APM X-Gene PCIe v1 */
 extern struct pci_ecam_ops xgene_v2_pcie_ecam_ops; /* APM X-Gene PCIe v2.x */
 #endif
 
-#ifdef CONFIG_PCI_HOST_GENERIC
+#ifdef CONFIG_PCI_HOST_COMMON
 /* for DT-based PCI controllers that support ECAM */
 int pci_host_common_probe(struct platform_device *pdev,
 			  struct pci_ecam_ops *ops);
+int pci_host_common_remove(struct platform_device *pdev);
 #endif
 #endif

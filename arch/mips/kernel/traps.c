@@ -23,7 +23,8 @@
 #include <linux/module.h>
 #include <linux/extable.h>
 #include <linux/mm.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/debug.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
 #include <linux/kallsyms.h>
@@ -49,7 +50,7 @@
 #include <asm/fpu.h>
 #include <asm/fpu_emulator.h>
 #include <asm/idle.h>
-#include <asm/mips-cm.h>
+#include <asm/mips-cps.h>
 #include <asm/mips-r2-to-r6-emul.h>
 #include <asm/mipsregs.h>
 #include <asm/mipsmtregs.h>
@@ -81,7 +82,7 @@ extern asmlinkage void handle_dbe(void);
 extern asmlinkage void handle_sys(void);
 extern asmlinkage void handle_bp(void);
 extern asmlinkage void handle_ri(void);
-extern asmlinkage void handle_ri_rdhwr_vivt(void);
+extern asmlinkage void handle_ri_rdhwr_tlbp(void);
 extern asmlinkage void handle_ri_rdhwr(void);
 extern asmlinkage void handle_cpu(void);
 extern asmlinkage void handle_ov(void);
@@ -199,6 +200,8 @@ void show_stack(struct task_struct *task, unsigned long *sp)
 {
 	struct pt_regs regs;
 	mm_segment_t old_fs = get_fs();
+
+	regs.cp0_status = KSU_KERNEL;
 	if (sp) {
 		regs.regs[29] = (unsigned long)sp;
 		regs.regs[31] = 0;
@@ -348,6 +351,7 @@ static void __show_regs(const struct pt_regs *regs)
 void show_regs(struct pt_regs *regs)
 {
 	__show_regs((struct pt_regs *)regs);
+	dump_stack();
 }
 
 void show_registers(struct pt_regs *regs)
@@ -425,7 +429,8 @@ static const struct exception_table_entry *search_dbe_tables(unsigned long addr)
 {
 	const struct exception_table_entry *e;
 
-	e = search_extable(__start___dbe_table, __stop___dbe_table - 1, addr);
+	e = search_extable(__start___dbe_table,
+			   __stop___dbe_table - __start___dbe_table, addr);
 	if (!e)
 		e = search_module_dbetables(addr);
 	return e;
@@ -695,16 +700,11 @@ static int simulate_sync(struct pt_regs *regs, unsigned int opcode)
 asmlinkage void do_ov(struct pt_regs *regs)
 {
 	enum ctx_state prev_state;
-	siginfo_t info = {
-		.si_signo = SIGFPE,
-		.si_code = FPE_INTOVF,
-		.si_addr = (void __user *)regs->cp0_epc,
-	};
 
 	prev_state = exception_enter();
 	die_if_kernel("Integer overflow", regs);
 
-	force_sig_info(SIGFPE, &info, current);
+	force_sig_fault(SIGFPE, FPE_INTOVF, (void __user *)regs->cp0_epc, current);
 	exception_exit(prev_state);
 }
 
@@ -717,26 +717,25 @@ asmlinkage void do_ov(struct pt_regs *regs)
 void force_fcr31_sig(unsigned long fcr31, void __user *fault_addr,
 		     struct task_struct *tsk)
 {
-	struct siginfo si = { .si_addr = fault_addr, .si_signo = SIGFPE };
+	int si_code = FPE_FLTUNK;
 
 	if (fcr31 & FPU_CSR_INV_X)
-		si.si_code = FPE_FLTINV;
+		si_code = FPE_FLTINV;
 	else if (fcr31 & FPU_CSR_DIV_X)
-		si.si_code = FPE_FLTDIV;
+		si_code = FPE_FLTDIV;
 	else if (fcr31 & FPU_CSR_OVF_X)
-		si.si_code = FPE_FLTOVF;
+		si_code = FPE_FLTOVF;
 	else if (fcr31 & FPU_CSR_UDF_X)
-		si.si_code = FPE_FLTUND;
+		si_code = FPE_FLTUND;
 	else if (fcr31 & FPU_CSR_INE_X)
-		si.si_code = FPE_FLTRES;
-	else
-		si.si_code = __SI_FAULT;
-	force_sig_info(SIGFPE, &si, tsk);
+		si_code = FPE_FLTRES;
+
+	force_sig_fault(SIGFPE, si_code, fault_addr, tsk);
 }
 
 int process_fpemu_return(int sig, void __user *fault_addr, unsigned long fcr31)
 {
-	struct siginfo si = { 0 };
+	int si_code;
 	struct vm_area_struct *vma;
 
 	switch (sig) {
@@ -748,23 +747,18 @@ int process_fpemu_return(int sig, void __user *fault_addr, unsigned long fcr31)
 		return 1;
 
 	case SIGBUS:
-		si.si_addr = fault_addr;
-		si.si_signo = sig;
-		si.si_code = BUS_ADRERR;
-		force_sig_info(sig, &si, current);
+		force_sig_fault(SIGBUS, BUS_ADRERR, fault_addr, current);
 		return 1;
 
 	case SIGSEGV:
-		si.si_addr = fault_addr;
-		si.si_signo = sig;
 		down_read(&current->mm->mmap_sem);
 		vma = find_vma(current->mm, (unsigned long)fault_addr);
 		if (vma && (vma->vm_start <= (unsigned long)fault_addr))
-			si.si_code = SEGV_ACCERR;
+			si_code = SEGV_ACCERR;
 		else
-			si.si_code = SEGV_MAPERR;
+			si_code = SEGV_MAPERR;
 		up_read(&current->mm->mmap_sem);
-		force_sig_info(sig, &si, current);
+		force_sig_fault(SIGSEGV, si_code, fault_addr, current);
 		return 1;
 
 	default:
@@ -887,7 +881,6 @@ out:
 void do_trap_or_bp(struct pt_regs *regs, unsigned int code, int si_code,
 	const char *str)
 {
-	siginfo_t info = { 0 };
 	char b[40];
 
 #ifdef CONFIG_KGDB_LOW_LEVEL_TRAP
@@ -911,13 +904,9 @@ void do_trap_or_bp(struct pt_regs *regs, unsigned int code, int si_code,
 	case BRK_DIVZERO:
 		scnprintf(b, sizeof(b), "%s instruction in kernel code", str);
 		die_if_kernel(b, regs);
-		if (code == BRK_DIVZERO)
-			info.si_code = FPE_INTDIV;
-		else
-			info.si_code = FPE_INTOVF;
-		info.si_signo = SIGFPE;
-		info.si_addr = (void __user *) regs->cp0_epc;
-		force_sig_info(SIGFPE, &info, current);
+		force_sig_fault(SIGFPE,
+				code == BRK_DIVZERO ? FPE_INTDIV : FPE_INTOVF,
+				(void __user *) regs->cp0_epc, current);
 		break;
 	case BRK_BUG:
 		die_if_kernel("Kernel bug detected", regs);
@@ -942,9 +931,7 @@ void do_trap_or_bp(struct pt_regs *regs, unsigned int code, int si_code,
 		scnprintf(b, sizeof(b), "%s instruction in kernel code", str);
 		die_if_kernel(b, regs);
 		if (si_code) {
-			info.si_signo = SIGTRAP;
-			info.si_code = si_code;
-			force_sig_info(SIGTRAP, &info, current);
+			force_sig_fault(SIGTRAP, si_code, NULL,	current);
 		} else {
 			force_sig(SIGTRAP, current);
 		}
@@ -1107,7 +1094,6 @@ asmlinkage void do_ri(struct pt_regs *regs)
 		switch (status) {
 		case 0:
 		case SIGEMT:
-			task_thread_info(current)->r2_emul_return = 1;
 			return;
 		case SIGILL:
 			goto no_r2_instr;
@@ -1115,7 +1101,6 @@ asmlinkage void do_ri(struct pt_regs *regs)
 			process_fpemu_return(status,
 					     &current->thread.cp0_baduaddr,
 					     fcr31);
-			task_thread_info(current)->r2_emul_return = 1;
 			return;
 		}
 	}
@@ -1232,18 +1217,6 @@ static int default_cu2_call(struct notifier_block *nfb, unsigned long action,
 	return NOTIFY_OK;
 }
 
-static int wait_on_fp_mode_switch(atomic_t *p)
-{
-	/*
-	 * The FP mode for this task is currently being switched. That may
-	 * involve modifications to the format of this tasks FP context which
-	 * make it unsafe to proceed with execution for the moment. Instead,
-	 * schedule some other task.
-	 */
-	schedule();
-	return 0;
-}
-
 static int enable_restore_fp_context(int msa)
 {
 	int err, was_fpu_owner, prior_msa;
@@ -1252,8 +1225,8 @@ static int enable_restore_fp_context(int msa)
 	 * If an FP mode switch is currently underway, wait for it to
 	 * complete before proceeding.
 	 */
-	wait_on_atomic_t(&current->mm->context.fp_mode_switching,
-			 wait_on_fp_mode_switch, TASK_KILLABLE);
+	wait_var_event(&current->mm->context.fp_mode_switching,
+		       !atomic_read(&current->mm->context.fp_mode_switching));
 
 	if (!used_math()) {
 		/* First time FP context user. */
@@ -1510,7 +1483,6 @@ asmlinkage void do_mdmx(struct pt_regs *regs)
  */
 asmlinkage void do_watch(struct pt_regs *regs)
 {
-	siginfo_t info = { .si_signo = SIGTRAP, .si_code = TRAP_HWBKPT };
 	enum ctx_state prev_state;
 
 	prev_state = exception_enter();
@@ -1528,7 +1500,7 @@ asmlinkage void do_watch(struct pt_regs *regs)
 	if (test_tsk_thread_flag(current, TIF_LOAD_WATCH)) {
 		mips_read_watch_registers();
 		local_irq_enable();
-		force_sig_info(SIGTRAP, &info, current);
+		force_sig_fault(SIGTRAP, TRAP_HWBKPT, NULL, current);
 	} else {
 		mips_clear_watch_registers();
 		local_irq_enable();
@@ -1644,6 +1616,65 @@ __setup("nol2par", nol2parity);
  */
 static inline void parity_protection_init(void)
 {
+#define ERRCTL_PE	0x80000000
+#define ERRCTL_L2P	0x00800000
+
+	if (mips_cm_revision() >= CM_REV_CM3) {
+		ulong gcr_ectl, cp0_ectl;
+
+		/*
+		 * With CM3 systems we need to ensure that the L1 & L2
+		 * parity enables are set to the same value, since this
+		 * is presumed by the hardware engineers.
+		 *
+		 * If the user disabled either of L1 or L2 ECC checking,
+		 * disable both.
+		 */
+		l1parity &= l2parity;
+		l2parity &= l1parity;
+
+		/* Probe L1 ECC support */
+		cp0_ectl = read_c0_ecc();
+		write_c0_ecc(cp0_ectl | ERRCTL_PE);
+		back_to_back_c0_hazard();
+		cp0_ectl = read_c0_ecc();
+
+		/* Probe L2 ECC support */
+		gcr_ectl = read_gcr_err_control();
+
+		if (!(gcr_ectl & CM_GCR_ERR_CONTROL_L2_ECC_SUPPORT) ||
+		    !(cp0_ectl & ERRCTL_PE)) {
+			/*
+			 * One of L1 or L2 ECC checking isn't supported,
+			 * so we cannot enable either.
+			 */
+			l1parity = l2parity = 0;
+		}
+
+		/* Configure L1 ECC checking */
+		if (l1parity)
+			cp0_ectl |= ERRCTL_PE;
+		else
+			cp0_ectl &= ~ERRCTL_PE;
+		write_c0_ecc(cp0_ectl);
+		back_to_back_c0_hazard();
+		WARN_ON(!!(read_c0_ecc() & ERRCTL_PE) != l1parity);
+
+		/* Configure L2 ECC checking */
+		if (l2parity)
+			gcr_ectl |= CM_GCR_ERR_CONTROL_L2_ECC_EN;
+		else
+			gcr_ectl &= ~CM_GCR_ERR_CONTROL_L2_ECC_EN;
+		write_gcr_err_control(gcr_ectl);
+		gcr_ectl = read_gcr_err_control();
+		gcr_ectl &= CM_GCR_ERR_CONTROL_L2_ECC_EN;
+		WARN_ON(!!gcr_ectl != l2parity);
+
+		pr_info("Cache parity protection %sabled\n",
+			l1parity ? "en" : "dis");
+		return;
+	}
+
 	switch (current_cpu_type()) {
 	case CPU_24K:
 	case CPU_34K:
@@ -1654,11 +1685,8 @@ static inline void parity_protection_init(void)
 	case CPU_PROAPTIV:
 	case CPU_P5600:
 	case CPU_QEMU_GENERIC:
-	case CPU_I6400:
 	case CPU_P6600:
 		{
-#define ERRCTL_PE	0x80000000
-#define ERRCTL_L2P	0x00800000
 			unsigned long errctl;
 			unsigned int l1parity_present, l2parity_present;
 
@@ -2177,7 +2205,7 @@ void per_cpu_trap_init(bool is_boot_cpu)
 	if (!cpu_data[cpu].asid_cache)
 		cpu_data[cpu].asid_cache = asid_first_version(cpu);
 
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 	BUG_ON(current->mm);
 	enter_lazy_tlb(&init_mm, current);
@@ -2200,8 +2228,8 @@ void set_handler(unsigned long offset, void *addr, unsigned long size)
 	local_flush_icache_range(ebase + offset, ebase + offset + size);
 }
 
-static char panic_null_cerr[] =
-	"Trying to set NULL cache error exception handler";
+static const char panic_null_cerr[] =
+	"Trying to set NULL cache error exception handler\n";
 
 /*
  * Install uncached CPU exception handler.
@@ -2352,28 +2380,22 @@ void __init trap_init(void)
 
 	set_except_vector(EXCCODE_SYS, handle_sys);
 	set_except_vector(EXCCODE_BP, handle_bp);
-	set_except_vector(EXCCODE_RI, rdhwr_noopt ? handle_ri :
-			  (cpu_has_vtag_icache ?
-			   handle_ri_rdhwr_vivt : handle_ri_rdhwr));
+
+	if (rdhwr_noopt)
+		set_except_vector(EXCCODE_RI, handle_ri);
+	else {
+		if (cpu_has_vtag_icache)
+			set_except_vector(EXCCODE_RI, handle_ri_rdhwr_tlbp);
+		else if (current_cpu_type() == CPU_LOONGSON3)
+			set_except_vector(EXCCODE_RI, handle_ri_rdhwr_tlbp);
+		else
+			set_except_vector(EXCCODE_RI, handle_ri_rdhwr);
+	}
+
 	set_except_vector(EXCCODE_CPU, handle_cpu);
 	set_except_vector(EXCCODE_OV, handle_ov);
 	set_except_vector(EXCCODE_TR, handle_tr);
 	set_except_vector(EXCCODE_MSAFPE, handle_msa_fpe);
-
-	if (current_cpu_type() == CPU_R6000 ||
-	    current_cpu_type() == CPU_R6000A) {
-		/*
-		 * The R6000 is the only R-series CPU that features a machine
-		 * check exception (similar to the R4000 cache error) and
-		 * unaligned ldc1/sdc1 exception.  The handlers have not been
-		 * written yet.	 Well, anyway there is no R6000 machine on the
-		 * current list of targets for Linux/MIPS.
-		 * (Duh, crap, there is someone with a triple R6k machine)
-		 */
-		//set_except_vector(14, handle_mc);
-		//set_except_vector(15, handle_ndc);
-	}
-
 
 	if (board_nmi_handler_setup)
 		board_nmi_handler_setup();

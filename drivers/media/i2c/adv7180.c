@@ -12,10 +12,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -1332,7 +1328,7 @@ static int adv7180_probe(struct i2c_client *client,
 	state->input = 0;
 	sd = &state->sd;
 	v4l2_i2c_subdev_init(sd, client, &adv7180_ops);
-	sd->flags = V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
+	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE | V4L2_SUBDEV_FL_HAS_EVENTS;
 
 	ret = adv7180_init_controls(state);
 	if (ret)
@@ -1370,11 +1366,9 @@ err_media_entity_cleanup:
 err_free_ctrl:
 	adv7180_exit_controls(state);
 err_unregister_vpp_client:
-	if (state->chip_info->flags & ADV7180_FLAG_I2P)
-		i2c_unregister_device(state->vpp_client);
+	i2c_unregister_device(state->vpp_client);
 err_unregister_csi_client:
-	if (state->chip_info->flags & ADV7180_FLAG_MIPI_CSI2)
-		i2c_unregister_device(state->csi_client);
+	i2c_unregister_device(state->csi_client);
 	mutex_destroy(&state->mutex);
 	return ret;
 }
@@ -1392,10 +1386,8 @@ static int adv7180_remove(struct i2c_client *client)
 	media_entity_cleanup(&sd->entity);
 	adv7180_exit_controls(state);
 
-	if (state->chip_info->flags & ADV7180_FLAG_I2P)
-		i2c_unregister_device(state->vpp_client);
-	if (state->chip_info->flags & ADV7180_FLAG_MIPI_CSI2)
-		i2c_unregister_device(state->csi_client);
+	i2c_unregister_device(state->vpp_client);
+	i2c_unregister_device(state->csi_client);
 
 	adv7180_set_power_pin(state, false);
 
@@ -1406,6 +1398,8 @@ static int adv7180_remove(struct i2c_client *client)
 
 static const struct i2c_device_id adv7180_id[] = {
 	{ "adv7180", (kernel_ulong_t)&adv7180_info },
+	{ "adv7180cp", (kernel_ulong_t)&adv7180_info },
+	{ "adv7180st", (kernel_ulong_t)&adv7180_info },
 	{ "adv7182", (kernel_ulong_t)&adv7182_info },
 	{ "adv7280", (kernel_ulong_t)&adv7280_info },
 	{ "adv7280-m", (kernel_ulong_t)&adv7280_m_info },
@@ -1456,6 +1450,8 @@ static SIMPLE_DEV_PM_OPS(adv7180_pm_ops, adv7180_suspend, adv7180_resume);
 #ifdef CONFIG_OF
 static const struct of_device_id adv7180_of_id[] = {
 	{ .compatible = "adi,adv7180", },
+	{ .compatible = "adi,adv7180cp", },
+	{ .compatible = "adi,adv7180st", },
 	{ .compatible = "adi,adv7182", },
 	{ .compatible = "adi,adv7280", },
 	{ .compatible = "adi,adv7280-m", },

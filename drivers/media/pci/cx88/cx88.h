@@ -24,6 +24,7 @@
 #include <linux/i2c-algo-bit.h>
 #include <linux/videodev2.h>
 #include <linux/kdev_t.h>
+#include <linux/refcount.h>
 
 #include <media/v4l2-device.h>
 #include <media/v4l2-fh.h>
@@ -339,7 +340,7 @@ struct cx8802_dev;
 
 struct cx88_core {
 	struct list_head           devlist;
-	atomic_t                   refcount;
+	refcount_t		   refcount;
 
 	/* board name */
 	int                        nr;
@@ -733,7 +734,7 @@ int cx8802_start_dma(struct cx8802_dev    *dev,
 int cx88_enum_input(struct cx88_core *core, struct v4l2_input *i);
 int cx88_set_freq(struct cx88_core  *core, const struct v4l2_frequency *f);
 int cx88_video_mux(struct cx88_core *core, unsigned int input);
-void cx88_querycap(struct file *file, struct cx88_core *core,
-		   struct v4l2_capability *cap);
+int cx88_querycap(struct file *file, struct cx88_core *core,
+		  struct v4l2_capability *cap);
 
 #endif

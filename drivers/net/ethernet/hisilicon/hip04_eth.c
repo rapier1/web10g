@@ -373,7 +373,7 @@ static int hip04_tx_reclaim(struct net_device *ndev, bool force)
 	unsigned int count;
 
 	smp_rmb();
-	count = tx_count(ACCESS_ONCE(priv->tx_head), tx_tail);
+	count = tx_count(READ_ONCE(priv->tx_head), tx_tail);
 	if (count == 0)
 		goto out;
 
@@ -431,7 +431,7 @@ static int hip04_mac_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	dma_addr_t phys;
 
 	smp_rmb();
-	count = tx_count(tx_head, ACCESS_ONCE(priv->tx_tail));
+	count = tx_count(tx_head, READ_ONCE(priv->tx_tail));
 	if (count == (TX_DESC_NUM - 1)) {
 		netif_stop_queue(ndev);
 		return NETDEV_TX_BUSY;
@@ -555,7 +555,7 @@ refill:
 		priv->reg_inten |= RCV_INT;
 		writel_relaxed(priv->reg_inten, priv->base + PPE_INTEN);
 	}
-	napi_complete(napi);
+	napi_complete_done(napi, rx);
 done:
 	/* clean up tx descriptors and start a new timer if necessary */
 	tx_remaining = hip04_tx_reclaim(ndev, false);
@@ -701,11 +701,6 @@ static void hip04_tx_timeout_task(struct work_struct *work)
 	hip04_mac_open(priv->ndev);
 }
 
-static struct net_device_stats *hip04_get_stats(struct net_device *ndev)
-{
-	return &ndev->stats;
-}
-
 static int hip04_get_coalesce(struct net_device *netdev,
 			      struct ethtool_coalesce *ec)
 {
@@ -764,7 +759,6 @@ static const struct ethtool_ops hip04_ethtool_ops = {
 static const struct net_device_ops hip04_netdev_ops = {
 	.ndo_open		= hip04_mac_open,
 	.ndo_stop		= hip04_mac_stop,
-	.ndo_get_stats		= hip04_get_stats,
 	.ndo_start_xmit		= hip04_mac_start_xmit,
 	.ndo_set_mac_address	= hip04_set_mac_address,
 	.ndo_tx_timeout         = hip04_timeout,

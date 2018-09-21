@@ -1,15 +1,5 @@
-/*
- * Copyright (c) 2012 GCT Semiconductor, Inc. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright (c) 2012 GCT Semiconductor, Inc. All rights reserved. */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -62,7 +52,7 @@ static int packet_type_to_index(u16 packetType)
 
 static struct mux_tx *alloc_mux_tx(int len)
 {
-	struct mux_tx *t = NULL;
+	struct mux_tx *t;
 
 	t = kzalloc(sizeof(*t), GFP_ATOMIC);
 	if (!t)
@@ -91,7 +81,7 @@ static void free_mux_tx(struct mux_tx *t)
 
 static struct mux_rx *alloc_mux_rx(void)
 {
-	struct mux_rx *r = NULL;
+	struct mux_rx *r;
 
 	r = kzalloc(sizeof(*r), GFP_KERNEL);
 	if (!r)
@@ -657,16 +647,19 @@ static struct usb_driver gdm_mux_driver = {
 
 static int __init gdm_usb_mux_init(void)
 {
-	register_lte_tty_driver();
+	int ret;
+
+	ret = register_lte_tty_driver();
+	if (ret)
+		return ret;
 
 	return usb_register(&gdm_mux_driver);
 }
 
 static void __exit gdm_usb_mux_exit(void)
 {
-	unregister_lte_tty_driver();
-
 	usb_deregister(&gdm_mux_driver);
+	unregister_lte_tty_driver();
 }
 
 module_init(gdm_usb_mux_init);

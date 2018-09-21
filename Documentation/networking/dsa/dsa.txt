@@ -295,7 +295,6 @@ DSA currently leverages the following subsystems:
 - MDIO/PHY library: drivers/net/phy/phy.c, mdio_bus.c
 - Switchdev: net/switchdev/*
 - Device Tree for various of_* functions
-- HWMON: drivers/hwmon/*
 
 MDIO/PHY library
 ----------------
@@ -349,12 +348,6 @@ Documentation/devicetree/bindings/net/dsa/dsa.txt. PHY/MDIO library helper
 functions such as of_get_phy_mode(), of_phy_connect() are also used to query
 per-port PHY specific details: interface connection, MDIO bus location etc..
 
-HWMON
------
-
-Some switch drivers feature internal temperature sensors which are exposed as
-regular HWMON devices in /sys/class/hwmon/.
-
 Driver development
 ==================
 
@@ -391,11 +384,6 @@ Switch configuration
   to issue a software reset of the switch during this setup function in order to
   avoid relying on what a previous software agent such as a bootloader/firmware
   may have previously configured.
-
-- set_addr: Some switches require the programming of the management interface's
-  Ethernet MAC address, switch drivers can also disable ageing of MAC addresses
-  on the management interface and "hardcode"/"force" this MAC address for the
-  CPU/management interface as an optimization
 
 PHY devices and link management
 -------------------------------
@@ -494,23 +482,6 @@ Power management
   fully disabling a given switch port. DSA takes care of marking the port with
   BR_STATE_DISABLED and propagating changes to the hardware if this port is
   disabled while being a bridge member
-
-Hardware monitoring
--------------------
-
-These callbacks are only available if CONFIG_NET_DSA_HWMON is enabled:
-
-- get_temp: this function queries the given switch for its temperature
-
-- get_temp_limit: this function returns the switch current maximum temperature
-  limit
-
-- set_temp_limit: this function configures the maximum temperature limit allowed
-
-- get_temp_alarm: this function returns the critical temperature threshold
-  returning an alarm notification
-
-See Documentation/hwmon/sysfs-interface for details.
 
 Bridge layer
 ------------

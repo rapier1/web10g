@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *  S390 version
  *
@@ -97,5 +98,17 @@
 #define SO_CNX_ADVICE		53
 
 #define SCM_TIMESTAMPING_OPT_STATS	54
+
+#define	SO_MEMINFO		55
+
+#define SO_INCOMING_NAPI_ID	56
+
+#define SO_COOKIE		57
+
+#define SCM_TIMESTAMPING_PKTINFO	58
+
+#define SO_PEERGROUPS		59
+
+#define SO_ZEROCOPY		60
 
 #endif /* _ASM_SOCKET_H */

@@ -27,8 +27,8 @@
 #include <linux/delay.h>
 #include <linux/math64.h>
 #include <asm/div64.h>
-#include "dvb_frontend.h"
-#include "dvb_math.h"
+#include <media/dvb_frontend.h>
+#include <media/dvb_math.h>
 #include "tda10048.h"
 
 #define TDA10048_DEFAULT_FIRMWARE "dvb-fe-tda10048-1.0.fw"
@@ -499,7 +499,7 @@ static int tda10048_firmware_upload(struct dvb_frontend *fe)
 			__func__);
 		return -EIO;
 	} else {
-		printk(KERN_INFO "%s: firmware read %Zu bytes.\n",
+		printk(KERN_INFO "%s: firmware read %zu bytes.\n",
 			__func__,
 			fw->size);
 		ret = 0;

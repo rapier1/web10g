@@ -168,7 +168,6 @@ struct iwch_qp {
 	atomic_t refcnt;
 	wait_queue_head_t wait;
 	enum IWCH_QP_FLAGS flags;
-	struct timer_list timer;
 };
 
 static inline int qp_quiesced(struct iwch_qp *qhp)
@@ -217,8 +216,9 @@ static inline struct iwch_mm_entry *remove_mmap(struct iwch_ucontext *ucontext,
 		if (mm->key == key && mm->len == len) {
 			list_del_init(&mm->entry);
 			spin_unlock(&ucontext->mmap_lock);
-			PDBG("%s key 0x%x addr 0x%llx len %d\n", __func__,
-			     key, (unsigned long long) mm->addr, mm->len);
+			pr_debug("%s key 0x%x addr 0x%llx len %d\n",
+				 __func__, key,
+				 (unsigned long long)mm->addr, mm->len);
 			return mm;
 		}
 	}
@@ -230,8 +230,8 @@ static inline void insert_mmap(struct iwch_ucontext *ucontext,
 			       struct iwch_mm_entry *mm)
 {
 	spin_lock(&ucontext->mmap_lock);
-	PDBG("%s key 0x%x addr 0x%llx len %d\n", __func__,
-	     mm->key, (unsigned long long) mm->addr, mm->len);
+	pr_debug("%s key 0x%x addr 0x%llx len %d\n",
+		 __func__, mm->key, (unsigned long long)mm->addr, mm->len);
 	list_add_tail(&mm->entry, &ucontext->mmaps);
 	spin_unlock(&ucontext->mmap_lock);
 }

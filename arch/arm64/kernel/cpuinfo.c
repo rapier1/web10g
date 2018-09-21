@@ -15,10 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <asm/arch_timer.h>
-#include <asm/cachetype.h>
+#include <asm/cache.h>
 #include <asm/cpu.h>
 #include <asm/cputype.h>
 #include <asm/cpufeature.h>
+#include <asm/fpsimd.h>
 
 #include <linux/bitops.h>
 #include <linux/bug.h>
@@ -43,10 +44,10 @@ DEFINE_PER_CPU(struct cpuinfo_arm64, cpu_data);
 static struct cpuinfo_arm64 boot_cpu_data;
 
 static char *icache_policy_str[] = {
-	[ICACHE_POLICY_RESERVED] = "RESERVED/UNKNOWN",
-	[ICACHE_POLICY_AIVIVT] = "AIVIVT",
-	[ICACHE_POLICY_VIPT] = "VIPT",
-	[ICACHE_POLICY_PIPT] = "PIPT",
+	[0 ... ICACHE_POLICY_PIPT]	= "RESERVED/UNKNOWN",
+	[ICACHE_POLICY_VIPT]		= "VIPT",
+	[ICACHE_POLICY_PIPT]		= "PIPT",
+	[ICACHE_POLICY_VPIPT]		= "VPIPT",
 };
 
 unsigned long __icache_flags;
@@ -63,6 +64,23 @@ static const char *const hwcap_str[] = {
 	"atomics",
 	"fphp",
 	"asimdhp",
+	"cpuid",
+	"asimdrdm",
+	"jscvt",
+	"fcma",
+	"lrcpc",
+	"dcpop",
+	"sha3",
+	"sm3",
+	"sm4",
+	"asimddp",
+	"sha512",
+	"sve",
+	"asimdfhm",
+	"dit",
+	"uscat",
+	"ilrcpc",
+	"flagm",
 	NULL
 };
 
@@ -222,7 +240,7 @@ static struct attribute *cpuregs_id_attrs[] = {
 	NULL
 };
 
-static struct attribute_group cpuregs_attr_group = {
+static const struct attribute_group cpuregs_attr_group = {
 	.attrs = cpuregs_id_attrs,
 	.name = "identification"
 };
@@ -287,20 +305,18 @@ static void cpuinfo_detect_icache_policy(struct cpuinfo_arm64 *info)
 	unsigned int cpu = smp_processor_id();
 	u32 l1ip = CTR_L1IP(info->reg_ctr);
 
-	if (l1ip != ICACHE_POLICY_PIPT) {
-		/*
-		 * VIPT caches are non-aliasing if the VA always equals the PA
-		 * in all bit positions that are covered by the index. This is
-		 * the case if the size of a way (# of sets * line size) does
-		 * not exceed PAGE_SIZE.
-		 */
-		u32 waysize = icache_get_numsets() * icache_get_linesize();
-
-		if (l1ip != ICACHE_POLICY_VIPT || waysize > PAGE_SIZE)
-			set_bit(ICACHEF_ALIASING, &__icache_flags);
+	switch (l1ip) {
+	case ICACHE_POLICY_PIPT:
+		break;
+	case ICACHE_POLICY_VPIPT:
+		set_bit(ICACHEF_VPIPT, &__icache_flags);
+		break;
+	default:
+		/* Fallthrough */
+	case ICACHE_POLICY_VIPT:
+		/* Assume aliasing */
+		set_bit(ICACHEF_ALIASING, &__icache_flags);
 	}
-	if (l1ip == ICACHE_POLICY_AIVIVT)
-		set_bit(ICACHEF_AIVIVT, &__icache_flags);
 
 	pr_info("Detected %s I-cache on CPU%d\n", icache_policy_str[l1ip], cpu);
 }
@@ -322,6 +338,7 @@ static void __cpuinfo_store_cpu(struct cpuinfo_arm64 *info)
 	info->reg_id_aa64mmfr2 = read_cpuid(ID_AA64MMFR2_EL1);
 	info->reg_id_aa64pfr0 = read_cpuid(ID_AA64PFR0_EL1);
 	info->reg_id_aa64pfr1 = read_cpuid(ID_AA64PFR1_EL1);
+	info->reg_id_aa64zfr0 = read_cpuid(ID_AA64ZFR0_EL1);
 
 	/* Update the 32bit ID registers only if AArch32 is implemented */
 	if (id_aa64pfr0_32bit_el0(info->reg_id_aa64pfr0)) {
@@ -343,6 +360,10 @@ static void __cpuinfo_store_cpu(struct cpuinfo_arm64 *info)
 		info->reg_mvfr1 = read_cpuid(MVFR1_EL1);
 		info->reg_mvfr2 = read_cpuid(MVFR2_EL1);
 	}
+
+	if (IS_ENABLED(CONFIG_ARM64_SVE) &&
+	    id_aa64pfr0_sve(info->reg_id_aa64pfr0))
+		info->reg_zcr = read_zcr_features();
 
 	cpuinfo_detect_icache_policy(info);
 }

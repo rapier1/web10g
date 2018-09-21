@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Generic FB driver for TFT LCD displays
  *
  * Copyright (C) 2013 Noralf Tronnes
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -27,47 +18,47 @@
 #define DRVNAME	    "flexfb"
 
 static char *chip;
-module_param(chip, charp, 0);
+module_param(chip, charp, 0000);
 MODULE_PARM_DESC(chip, "LCD controller");
 
 static unsigned int width;
-module_param(width, uint, 0);
+module_param(width, uint, 0000);
 MODULE_PARM_DESC(width, "Display width");
 
 static unsigned int height;
-module_param(height, uint, 0);
+module_param(height, uint, 0000);
 MODULE_PARM_DESC(height, "Display height");
 
 static s16 init[512];
 static int init_num;
-module_param_array(init, short, &init_num, 0);
+module_param_array(init, short, &init_num, 0000);
 MODULE_PARM_DESC(init, "Init sequence");
 
 static unsigned int setaddrwin;
-module_param(setaddrwin, uint, 0);
+module_param(setaddrwin, uint, 0000);
 MODULE_PARM_DESC(setaddrwin, "Which set_addr_win() implementation to use");
 
 static unsigned int buswidth = 8;
-module_param(buswidth, uint, 0);
+module_param(buswidth, uint, 0000);
 MODULE_PARM_DESC(buswidth, "Width of databus (default: 8)");
 
 static unsigned int regwidth = 8;
-module_param(regwidth, uint, 0);
+module_param(regwidth, uint, 0000);
 MODULE_PARM_DESC(regwidth, "Width of controller register (default: 8)");
 
 static bool nobacklight;
-module_param(nobacklight, bool, 0);
+module_param(nobacklight, bool, 0000);
 MODULE_PARM_DESC(nobacklight, "Turn off backlight functionality.");
 
 static bool latched;
-module_param(latched, bool, 0);
+module_param(latched, bool, 0000);
 MODULE_PARM_DESC(latched, "Use with latched 16-bit databus");
 
-static s16 *initp;
+static const s16 *initp;
 static int initp_num;
 
 /* default init sequences */
-static s16 st7735r_init[] = {
+static const s16 st7735r_init[] = {
 	-1, 0x01,
 	-2, 150,
 	-1, 0x11,
@@ -96,7 +87,7 @@ static s16 st7735r_init[] = {
 	-3
 };
 
-static s16 ssd1289_init[] = {
+static const s16 ssd1289_init[] = {
 	-1, 0x00, 0x0001,
 	-1, 0x03, 0xA8A4,
 	-1, 0x0C, 0x0000,
@@ -142,7 +133,7 @@ static s16 ssd1289_init[] = {
 	-3
 };
 
-static s16 hx8340bn_init[] = {
+static const s16 hx8340bn_init[] = {
 	-1, 0xC1, 0xFF, 0x83, 0x40,
 	-1, 0x11,
 	-2, 150,
@@ -162,7 +153,7 @@ static s16 hx8340bn_init[] = {
 	-3
 };
 
-static s16 ili9225_init[] = {
+static const s16 ili9225_init[] = {
 	-1, 0x0001, 0x011C,
 	-1, 0x0002, 0x0100,
 	-1, 0x0003, 0x1030,
@@ -204,7 +195,7 @@ static s16 ili9225_init[] = {
 	-3
 };
 
-static s16 ili9320_init[] = {
+static const s16 ili9320_init[] = {
 	-1, 0x00E5, 0x8000,
 	-1, 0x0000, 0x0001,
 	-1, 0x0001, 0x0100,
@@ -265,7 +256,7 @@ static s16 ili9320_init[] = {
 	-3
 };
 
-static s16 ili9325_init[] = {
+static const s16 ili9325_init[] = {
 	-1, 0x00E3, 0x3008,
 	-1, 0x00E7, 0x0012,
 	-1, 0x00EF, 0x1231,
@@ -324,7 +315,7 @@ static s16 ili9325_init[] = {
 	-3
 };
 
-static s16 ili9341_init[] = {
+static const s16 ili9341_init[] = {
 	-1, 0x28,
 	-2, 20,
 	-1, 0xCF, 0x00, 0x83, 0x30,
@@ -349,7 +340,7 @@ static s16 ili9341_init[] = {
 	-3
 };
 
-static s16 ssd1351_init[] = {
+static const s16 ssd1351_init[] = {
 	-1, 0xfd, 0x12,
 	-1, 0xfd, 0xb1,
 	-1, 0xae,
@@ -390,7 +381,7 @@ struct flexfb_lcd_controller {
 	unsigned int height;
 	unsigned int setaddrwin;
 	unsigned int regwidth;
-	s16 *init_seq;
+	const s16 *init_seq;
 	int init_seq_sz;
 };
 
@@ -408,22 +399,6 @@ static const struct flexfb_lcd_controller flexfb_chip_table[] = {
 		.height = 220,
 		.init_seq = hx8340bn_init,
 		.init_seq_sz = ARRAY_SIZE(hx8340bn_init),
-	},
-	{
-		.name = "ili9225",
-		.width = 176,
-		.height = 220,
-		.regwidth = 16,
-		.init_seq = ili9225_init,
-		.init_seq_sz = ARRAY_SIZE(ili9225_init),
-	},
-	{
-		.name = "ili9225",
-		.width = 176,
-		.height = 220,
-		.regwidth = 16,
-		.init_seq = ili9225_init,
-		.init_seq_sz = ARRAY_SIZE(ili9225_init),
 	},
 	{
 		.name = "ili9225",

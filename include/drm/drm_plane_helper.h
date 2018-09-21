@@ -38,17 +38,11 @@
  */
 #define DRM_PLANE_HELPER_NO_SCALING (1<<16)
 
-int drm_plane_helper_check_state(struct drm_plane_state *state,
-				 const struct drm_rect *clip,
-				 int min_scale, int max_scale,
-				 bool can_position,
-				 bool can_update_disabled);
 int drm_plane_helper_check_update(struct drm_plane *plane,
 				  struct drm_crtc *crtc,
 				  struct drm_framebuffer *fb,
 				  struct drm_rect *src,
 				  struct drm_rect *dest,
-				  const struct drm_rect *clip,
 				  unsigned int rotation,
 				  int min_scale,
 				  int max_scale,
@@ -61,8 +55,10 @@ int drm_primary_helper_update(struct drm_plane *plane,
 			      int crtc_x, int crtc_y,
 			      unsigned int crtc_w, unsigned int crtc_h,
 			      uint32_t src_x, uint32_t src_y,
-			      uint32_t src_w, uint32_t src_h);
-int drm_primary_helper_disable(struct drm_plane *plane);
+			      uint32_t src_w, uint32_t src_h,
+			      struct drm_modeset_acquire_ctx *ctx);
+int drm_primary_helper_disable(struct drm_plane *plane,
+			       struct drm_modeset_acquire_ctx *ctx);
 void drm_primary_helper_destroy(struct drm_plane *plane);
 extern const struct drm_plane_funcs drm_primary_helper_funcs;
 

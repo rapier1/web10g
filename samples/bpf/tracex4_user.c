@@ -12,7 +12,9 @@
 #include <string.h>
 #include <time.h>
 #include <linux/bpf.h>
-#include "libbpf.h"
+#include <sys/resource.h>
+
+#include <bpf/bpf.h>
 #include "bpf_load.h"
 
 struct pair {
@@ -50,10 +52,16 @@ static void print_old_objects(int fd)
 
 int main(int ac, char **argv)
 {
+	struct rlimit r = {RLIM_INFINITY, RLIM_INFINITY};
 	char filename[256];
 	int i;
 
 	snprintf(filename, sizeof(filename), "%s_kern.o", argv[0]);
+
+	if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+		perror("setrlimit(RLIMIT_MEMLOCK, RLIM_INFINITY)");
+		return 1;
+	}
 
 	if (load_bpf_file(filename)) {
 		printf("%s", bpf_log_buf);

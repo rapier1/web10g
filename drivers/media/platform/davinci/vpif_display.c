@@ -42,6 +42,7 @@ module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Debug level 0-1");
 
 #define VPIF_DRIVER_NAME	"vpif_display"
+MODULE_ALIAS("platform:" VPIF_DRIVER_NAME);
 
 /* Is set to 1 in case of SDTV formats, 2 in case of HDTV formats. */
 static int ycmux_mode;
@@ -101,7 +102,7 @@ static int vpif_buffer_prepare(struct vb2_buffer *vb)
  * @vq: vb2_queue ptr
  * @nbuffers: ptr to number of buffers requested by application
  * @nplanes:: contains number of distinct video planes needed to hold a frame
- * @sizes[]: contains the size (in bytes) of each plane.
+ * @sizes: contains the size (in bytes) of each plane.
  * @alloc_devs: ptr to allocation context
  *
  * This callback function is called when reqbuf() is called to adjust
@@ -157,7 +158,7 @@ static void vpif_buffer_queue(struct vb2_buffer *vb)
 
 /**
  * vpif_start_streaming : Starts the DMA engine for streaming
- * @vb: ptr to vb2_buffer
+ * @vq: ptr to vb2_buffer
  * @count: number of buffers
  */
 static int vpif_start_streaming(struct vb2_queue *vq, unsigned int count)
@@ -289,7 +290,7 @@ static void vpif_stop_streaming(struct vb2_queue *vq)
 	spin_unlock_irqrestore(&common->irqlock, flags);
 }
 
-static struct vb2_ops video_qops = {
+static const struct vb2_ops video_qops = {
 	.queue_setup		= vpif_buffer_queue_setup,
 	.wait_prepare		= vb2_ops_wait_prepare,
 	.wait_finish		= vb2_ops_wait_finish,
@@ -765,9 +766,9 @@ static int vpif_enum_output(struct file *file, void *fh,
 
 /**
  * vpif_output_to_subdev() - Maps output to sub device
- * @vpif_cfg - global config ptr
- * @chan_cfg - channel config ptr
- * @index - Given output index from application
+ * @vpif_cfg: global config ptr
+ * @chan_cfg: channel config ptr
+ * @index: Given output index from application
  *
  * lookup the sub device information for a given output index.
  * we report all the output to application. output table also
@@ -801,9 +802,9 @@ vpif_output_to_subdev(struct vpif_display_config *vpif_cfg,
 
 /**
  * vpif_set_output() - Select an output
- * @vpif_cfg - global config ptr
- * @ch - channel
- * @index - Given output index from application
+ * @vpif_cfg: global config ptr
+ * @ch: channel
+ * @index: Given output index from application
  *
  * Select the given output.
  */
@@ -1231,6 +1232,11 @@ static int vpif_async_complete(struct v4l2_async_notifier *notifier)
 	return vpif_probe_complete();
 }
 
+static const struct v4l2_async_notifier_operations vpif_async_ops = {
+	.bound = vpif_async_bound,
+	.complete = vpif_async_complete,
+};
+
 /*
  * vpif_probe: This function creates device entries by register itself to the
  * V4L2 driver and initializes fields of each channel objects
@@ -1243,6 +1249,16 @@ static __init int vpif_probe(struct platform_device *pdev)
 	int subdev_count;
 	int res_idx = 0;
 	int i, err;
+
+	if (!pdev->dev.platform_data) {
+		dev_warn(&pdev->dev, "Missing platform data.  Giving up.\n");
+		return -EINVAL;
+	}
+
+	if (!pdev->dev.platform_data) {
+		dev_warn(&pdev->dev, "Missing platform data.  Giving up.\n");
+		return -EINVAL;
+	}
 
 	vpif_dev = &pdev->dev;
 	err = initialize_vpif();
@@ -1281,7 +1297,7 @@ static __init int vpif_probe(struct platform_device *pdev)
 	}
 
 	if (!vpif_obj.config->asd_sizes) {
-		i2c_adap = i2c_get_adapter(1);
+		i2c_adap = i2c_get_adapter(vpif_obj.config->i2c_adapter_id);
 		for (i = 0; i < subdev_count; i++) {
 			vpif_obj.sd[i] =
 				v4l2_i2c_new_subdev_board(&vpif_obj.v4l2_dev,
@@ -1302,8 +1318,7 @@ static __init int vpif_probe(struct platform_device *pdev)
 	} else {
 		vpif_obj.notifier.subdevs = vpif_obj.config->asd;
 		vpif_obj.notifier.num_subdevs = vpif_obj.config->asd_sizes[0];
-		vpif_obj.notifier.bound = vpif_async_bound;
-		vpif_obj.notifier.complete = vpif_async_complete;
+		vpif_obj.notifier.ops = &vpif_async_ops;
 		err = v4l2_async_notifier_register(&vpif_obj.v4l2_dev,
 						   &vpif_obj.notifier);
 		if (err) {
@@ -1328,7 +1343,6 @@ vpif_unregister:
  */
 static int vpif_remove(struct platform_device *device)
 {
-	struct common_obj *common;
 	struct channel_obj *ch;
 	int i;
 
@@ -1339,7 +1353,6 @@ static int vpif_remove(struct platform_device *device)
 	for (i = 0; i < VPIF_DISPLAY_MAX_DEVICES; i++) {
 		/* Get the pointer to the channel object */
 		ch = vpif_obj.dev[i];
-		common = &ch->common[VPIF_VIDEO_INDEX];
 		/* Unregister video device */
 		video_unregister_device(&ch->video_dev);
 		kfree(vpif_obj.dev[i]);

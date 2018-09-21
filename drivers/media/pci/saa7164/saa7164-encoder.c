@@ -13,10 +13,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include "saa7164.h"
@@ -913,13 +909,13 @@ err:
 	return ret;
 }
 
-static unsigned int fops_poll(struct file *file, poll_table *wait)
+static __poll_t fops_poll(struct file *file, poll_table *wait)
 {
-	unsigned long req_events = poll_requested_events(wait);
+	__poll_t req_events = poll_requested_events(wait);
 	struct saa7164_encoder_fh *fh =
 		(struct saa7164_encoder_fh *)file->private_data;
 	struct saa7164_port *port = fh->port;
-	unsigned int mask = v4l2_ctrl_poll(file, wait);
+	__poll_t mask = v4l2_ctrl_poll(file, wait);
 
 	port->last_poll_msecs_diff = port->last_poll_msecs;
 	port->last_poll_msecs = jiffies_to_msecs(jiffies);
@@ -929,13 +925,13 @@ static unsigned int fops_poll(struct file *file, poll_table *wait)
 	saa7164_histogram_update(&port->poll_interval,
 		port->last_poll_msecs_diff);
 
-	if (!(req_events & (POLLIN | POLLRDNORM)))
+	if (!(req_events & (EPOLLIN | EPOLLRDNORM)))
 		return mask;
 
 	if (atomic_cmpxchg(&fh->v4l_reading, 0, 1) == 0) {
 		if (atomic_inc_return(&port->v4l_reader_count) == 1) {
 			if (saa7164_encoder_initialize(port) < 0)
-				return mask | POLLERR;
+				return mask | EPOLLERR;
 			saa7164_encoder_start_streaming(port);
 			msleep(200);
 		}
@@ -943,7 +939,7 @@ static unsigned int fops_poll(struct file *file, poll_table *wait)
 
 	/* Pull the first buffer from the used list */
 	if (!list_empty(&port->list_buf_used.list))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	return mask;
 }

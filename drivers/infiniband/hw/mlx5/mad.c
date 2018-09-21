@@ -42,11 +42,23 @@ enum {
 	MLX5_IB_VENDOR_CLASS2 = 0xa
 };
 
+static bool can_do_mad_ifc(struct mlx5_ib_dev *dev, u8 port_num,
+			   struct ib_mad *in_mad)
+{
+	if (in_mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_LID_ROUTED &&
+	    in_mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
+		return true;
+	return dev->mdev->port_caps[port_num - 1].has_smi;
+}
+
 int mlx5_MAD_IFC(struct mlx5_ib_dev *dev, int ignore_mkey, int ignore_bkey,
 		 u8 port, const struct ib_wc *in_wc, const struct ib_grh *in_grh,
 		 const void *in_mad, void *response_mad)
 {
 	u8 op_modifier = 0;
+
+	if (!can_do_mad_ifc(dev, port, (struct ib_mad *)in_mad))
+		return -EPERM;
 
 	/* Key check traps can't be generated unless we have in_wc to
 	 * tell us where to send the trap.
@@ -66,7 +78,7 @@ static int process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 	u16 slid;
 	int err;
 
-	slid = in_wc ? in_wc->slid : be16_to_cpu(IB_LID_PERMISSIVE);
+	slid = in_wc ? ib_lid_cpu16(in_wc->slid) : be16_to_cpu(IB_LID_PERMISSIVE);
 
 	if (in_mad->mad_hdr.method == IB_MGMT_METHOD_TRAP && slid == 0)
 		return IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_CONSUMED;
@@ -175,6 +187,8 @@ static void pma_cnt_assign(struct ib_pma_portcounters *pma_cnt,
 			     port_xmit_discards);
 	MLX5_ASSIGN_PMA_CNTR(pma_cnt->port_xmit_constraint_errors,
 			     port_xmit_constraint_errors);
+	MLX5_ASSIGN_PMA_CNTR(pma_cnt->port_xmit_wait,
+			     port_xmit_wait);
 	MLX5_ASSIGN_PMA_CNTR(pma_cnt->port_rcv_constraint_errors,
 			     port_rcv_constraint_errors);
 	MLX5_ASSIGN_PMA_CNTR(pma_cnt->link_overrun_errors,
@@ -183,14 +197,13 @@ static void pma_cnt_assign(struct ib_pma_portcounters *pma_cnt,
 			     vl_15_dropped);
 }
 
-static int process_pma_cmd(struct ib_device *ibdev, u8 port_num,
+static int process_pma_cmd(struct mlx5_core_dev *mdev, u8 port_num,
 			   const struct ib_mad *in_mad, struct ib_mad *out_mad)
 {
-	struct mlx5_ib_dev *dev = to_mdev(ibdev);
 	int err;
 	void *out_cnt;
 
-	/* Decalring support of extended counters */
+	/* Declaring support of extended counters */
 	if (in_mad->mad_hdr.attr_id == IB_PMA_CLASS_PORT_INFO) {
 		struct ib_class_port_info cpi = {};
 
@@ -204,11 +217,11 @@ static int process_pma_cmd(struct ib_device *ibdev, u8 port_num,
 			(struct ib_pma_portcounters_ext *)(out_mad->data + 40);
 		int sz = MLX5_ST_SZ_BYTES(query_vport_counter_out);
 
-		out_cnt = mlx5_vzalloc(sz);
+		out_cnt = kvzalloc(sz, GFP_KERNEL);
 		if (!out_cnt)
 			return IB_MAD_RESULT_FAILURE;
 
-		err = mlx5_core_query_vport_counter(dev->mdev, 0, 0,
+		err = mlx5_core_query_vport_counter(mdev, 0, 0,
 						    port_num, out_cnt, sz);
 		if (!err)
 			pma_cnt_ext_assign(pma_cnt_ext, out_cnt);
@@ -217,11 +230,11 @@ static int process_pma_cmd(struct ib_device *ibdev, u8 port_num,
 			(struct ib_pma_portcounters *)(out_mad->data + 40);
 		int sz = MLX5_ST_SZ_BYTES(ppcnt_reg);
 
-		out_cnt = mlx5_vzalloc(sz);
+		out_cnt = kvzalloc(sz, GFP_KERNEL);
 		if (!out_cnt)
 			return IB_MAD_RESULT_FAILURE;
 
-		err = mlx5_core_query_ib_ppcnt(dev->mdev, port_num,
+		err = mlx5_core_query_ib_ppcnt(mdev, port_num,
 					       out_cnt, sz);
 		if (!err)
 			pma_cnt_assign(pma_cnt, out_cnt);
@@ -241,9 +254,11 @@ int mlx5_ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 			u16 *out_mad_pkey_index)
 {
 	struct mlx5_ib_dev *dev = to_mdev(ibdev);
-	struct mlx5_core_dev *mdev = dev->mdev;
 	const struct ib_mad *in_mad = (const struct ib_mad *)in;
 	struct ib_mad *out_mad = (struct ib_mad *)out;
+	struct mlx5_core_dev *mdev;
+	u8 mdev_port_num;
+	int ret;
 
 	if (WARN_ON_ONCE(in_mad_size != sizeof(*in_mad) ||
 			 *out_mad_size != sizeof(*out_mad)))
@@ -251,14 +266,20 @@ int mlx5_ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 
 	memset(out_mad->data, 0, sizeof(out_mad->data));
 
+	mdev = mlx5_ib_get_native_port_mdev(dev, port_num, &mdev_port_num);
+	if (!mdev)
+		return IB_MAD_RESULT_FAILURE;
+
 	if (MLX5_CAP_GEN(mdev, vport_counters) &&
 	    in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_PERF_MGMT &&
 	    in_mad->mad_hdr.method == IB_MGMT_METHOD_GET) {
-		return process_pma_cmd(ibdev, port_num, in_mad, out_mad);
+		ret = process_pma_cmd(mdev, mdev_port_num, in_mad, out_mad);
 	} else {
-		return process_mad(ibdev, mad_flags, port_num, in_wc, in_grh,
+		ret =  process_mad(ibdev, mad_flags, port_num, in_wc, in_grh,
 				   in_mad, out_mad);
 	}
+	mlx5_ib_put_native_port_mdev(dev, port_num);
+	return ret;
 }
 
 int mlx5_query_ext_port_caps(struct mlx5_ib_dev *dev, u8 port)
@@ -505,7 +526,7 @@ int mlx5_query_mad_ifc_port(struct ib_device *ibdev, u8 port,
 	int ext_active_speed;
 	int err = -ENOMEM;
 
-	if (port < 1 || port > MLX5_CAP_GEN(mdev, num_ports)) {
+	if (port < 1 || port > dev->num_ports) {
 		mlx5_ib_warn(dev, "invalid port number %d\n", port);
 		return -EINVAL;
 	}
@@ -515,7 +536,7 @@ int mlx5_query_mad_ifc_port(struct ib_device *ibdev, u8 port,
 	if (!in_mad || !out_mad)
 		goto out;
 
-	memset(props, 0, sizeof(*props));
+	/* props being zeroed by the caller, avoid zeroing it here */
 
 	init_query_mad(in_mad);
 	in_mad->attr_id  = IB_SMP_ATTR_PORT_INFO;

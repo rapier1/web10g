@@ -20,10 +20,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -186,7 +182,7 @@ static void vicam_dostream(struct work_struct *work)
 
 	frame_sz = gspca_dev->cam.cam_mode[gspca_dev->curr_mode].sizeimage +
 		   HEADER_SIZE;
-	buffer = kmalloc(frame_sz, GFP_KERNEL | GFP_DMA);
+	buffer = kmalloc(frame_sz, GFP_KERNEL);
 	if (!buffer) {
 		pr_err("Couldn't allocate USB buffer\n");
 		goto exit;

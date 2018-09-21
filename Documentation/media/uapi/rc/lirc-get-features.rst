@@ -48,22 +48,31 @@ LIRC features
 
 ``LIRC_CAN_REC_PULSE``
 
-    The driver is capable of receiving using
-    :ref:`LIRC_MODE_PULSE <lirc-mode-pulse>`.
+    Unused. Kept just to avoid breaking uAPI.
+    :ref:`LIRC_MODE_PULSE <lirc-mode-pulse>` can only be used for transmitting.
 
 .. _LIRC-CAN-REC-MODE2:
 
 ``LIRC_CAN_REC_MODE2``
 
-    The driver is capable of receiving using
-    :ref:`LIRC_MODE_MODE2 <lirc-mode-MODE2>`.
+    This is raw IR driver for receiving. This means that
+    :ref:`LIRC_MODE_MODE2 <lirc-mode-MODE2>` is used. This also implies
+    that :ref:`LIRC_MODE_SCANCODE <lirc-mode-SCANCODE>` is also supported,
+    as long as the kernel is recent enough. Use the
+    :ref:`lirc_set_rec_mode` to switch modes.
 
 .. _LIRC-CAN-REC-LIRCCODE:
 
 ``LIRC_CAN_REC_LIRCCODE``
 
-    The driver is capable of receiving using
-    :ref:`LIRC_MODE_LIRCCODE <lirc-mode-LIRCCODE>`.
+    Unused. Kept just to avoid breaking uAPI.
+
+.. _LIRC-CAN-REC-SCANCODE:
+
+``LIRC_CAN_REC_SCANCODE``
+
+    This is a scancode driver for receiving. This means that
+    :ref:`LIRC_MODE_SCANCODE <lirc-mode-SCANCODE>` is used.
 
 .. _LIRC-CAN-SET-SEND-CARRIER:
 
@@ -156,19 +165,24 @@ LIRC features
 
 ``LIRC_CAN_SEND_PULSE``
 
-    The driver supports sending using :ref:`LIRC_MODE_PULSE <lirc-mode-pulse>`.
+    The driver supports sending (also called as IR blasting or IR TX) using
+    :ref:`LIRC_MODE_PULSE <lirc-mode-pulse>`. This implies that
+    :ref:`LIRC_MODE_SCANCODE <lirc-mode-SCANCODE>` is also supported for
+    transmit, as long as the kernel is recent enough. Use the
+    :ref:`lirc_set_send_mode` to switch modes.
 
 .. _LIRC-CAN-SEND-MODE2:
 
 ``LIRC_CAN_SEND_MODE2``
 
-    The driver supports sending using :ref:`LIRC_MODE_MODE2 <lirc-mode-mode2>`.
+    Unused. Kept just to avoid breaking uAPI.
+    :ref:`LIRC_MODE_MODE2 <lirc-mode-mode2>` can only be used for receiving.
 
 .. _LIRC-CAN-SEND-LIRCCODE:
 
 ``LIRC_CAN_SEND_LIRCCODE``
 
-    The driver supports sending codes (also called as IR blasting or IR TX).
+    Unused. Kept just to avoid breaking uAPI.
 
 
 Return Value

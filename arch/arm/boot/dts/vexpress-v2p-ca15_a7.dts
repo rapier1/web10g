@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ARM Ltd. Versatile Express
  *
@@ -8,6 +9,7 @@
  */
 
 /dts-v1/;
+#include "vexpress-v2m-rs1.dtsi"
 
 / {
 	model = "V2P-CA15_CA7";
@@ -202,7 +204,7 @@
 			     <1 10 0xf08>;
 	};
 
-	pmu_a15 {
+	pmu-a15 {
 		compatible = "arm,cortex-a15-pmu";
 		interrupts = <0 68 4>,
 			     <0 69 4>;
@@ -210,7 +212,7 @@
 				     <&cpu1>;
 	};
 
-	pmu_a7 {
+	pmu-a7 {
 		compatible = "arm,cortex-a7-pmu";
 		interrupts = <0 128 4>,
 			     <0 129 4>,
@@ -385,7 +387,7 @@
 		};
 	};
 
-	etb@0,20010000 {
+	etb@20010000 {
 		compatible = "arm,coresight-etb10", "arm,primecell";
 		reg = <0 0x20010000 0 0x1000>;
 
@@ -399,7 +401,7 @@
 		};
 	};
 
-	tpiu@0,20030000 {
+	tpiu@20030000 {
 		compatible = "arm,coresight-tpiu", "arm,primecell";
 		reg = <0 0x20030000 0 0x1000>;
 
@@ -449,7 +451,7 @@
 		};
 	};
 
-	funnel@0,20040000 {
+	funnel@20040000 {
 		compatible = "arm,coresight-funnel", "arm,primecell";
 		reg = <0 0x20040000 0 0x1000>;
 
@@ -513,7 +515,7 @@
 		};
 	};
 
-	ptm@0,2201c000 {
+	ptm@2201c000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2201c000 0 0x1000>;
 
@@ -527,7 +529,7 @@
 		};
 	};
 
-	ptm@0,2201d000 {
+	ptm@2201d000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2201d000 0 0x1000>;
 
@@ -541,7 +543,7 @@
 		};
 	};
 
-	etm@0,2203c000 {
+	etm@2203c000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2203c000 0 0x1000>;
 
@@ -555,7 +557,7 @@
 		};
 	};
 
-	etm@0,2203d000 {
+	etm@2203d000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2203d000 0 0x1000>;
 
@@ -569,7 +571,7 @@
 		};
 	};
 
-	etm@0,2203e000 {
+	etm@2203e000 {
 		compatible = "arm,coresight-etm3x", "arm,primecell";
 		reg = <0 0x2203e000 0 0x1000>;
 
@@ -583,7 +585,7 @@
 		};
 	};
 
-	smb@08000000 {
+	smb: smb@8000000 {
 		compatible = "simple-bus";
 
 		#address-cells = <2>;
@@ -640,8 +642,6 @@
 				<0 0 40 &gic 0 40 4>,
 				<0 0 41 &gic 0 41 4>,
 				<0 0 42 &gic 0 42 4>;
-
-		/include/ "vexpress-v2m-rs1.dtsi"
 	};
 
 	site2: hsb@40000000 {

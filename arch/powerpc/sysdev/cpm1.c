@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * General Purpose functions for the global management of the
  * Communication Processor Module.
@@ -377,6 +378,10 @@ static void cpm1_set_pin16(int port, int pin, int flags)
 			setbits16(&iop->odr_sor, pin);
 		else
 			clrbits16(&iop->odr_sor, pin);
+		if (flags & CPM_PIN_FALLEDGE)
+			setbits16(&iop->intr, pin);
+		else
+			clrbits16(&iop->intr, pin);
 	}
 }
 
@@ -528,6 +533,9 @@ struct cpm1_gpio16_chip {
 
 	/* shadowed data register to clear/set bits safely */
 	u16 cpdata;
+
+	/* IRQ associated with Pins when relevant */
+	int irq[16];
 };
 
 static void cpm1_gpio16_save_regs(struct of_mm_gpio_chip *mm_gc)
@@ -578,6 +586,14 @@ static void cpm1_gpio16_set(struct gpio_chip *gc, unsigned int gpio, int value)
 	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
 }
 
+static int cpm1_gpio16_to_irq(struct gpio_chip *gc, unsigned int gpio)
+{
+	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
+	struct cpm1_gpio16_chip *cpm1_gc = gpiochip_get_data(&mm_gc->gc);
+
+	return cpm1_gc->irq[gpio] ? : -ENXIO;
+}
+
 static int cpm1_gpio16_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
@@ -613,17 +629,27 @@ static int cpm1_gpio16_dir_in(struct gpio_chip *gc, unsigned int gpio)
 	return 0;
 }
 
-int cpm1_gpiochip_add16(struct device_node *np)
+int cpm1_gpiochip_add16(struct device *dev)
 {
+	struct device_node *np = dev->of_node;
 	struct cpm1_gpio16_chip *cpm1_gc;
 	struct of_mm_gpio_chip *mm_gc;
 	struct gpio_chip *gc;
+	u16 mask;
 
 	cpm1_gc = kzalloc(sizeof(*cpm1_gc), GFP_KERNEL);
 	if (!cpm1_gc)
 		return -ENOMEM;
 
 	spin_lock_init(&cpm1_gc->lock);
+
+	if (!of_property_read_u16(np, "fsl,cpm1-gpio-irq-mask", &mask)) {
+		int i, j;
+
+		for (i = 0, j = 0; i < 16; i++)
+			if (mask & (1 << (15 - i)))
+				cpm1_gc->irq[i] = irq_of_parse_and_map(np, j++);
+	}
 
 	mm_gc = &cpm1_gc->mm_gc;
 	gc = &mm_gc->gc;
@@ -634,6 +660,9 @@ int cpm1_gpiochip_add16(struct device_node *np)
 	gc->direction_output = cpm1_gpio16_dir_out;
 	gc->get = cpm1_gpio16_get;
 	gc->set = cpm1_gpio16_set;
+	gc->to_irq = cpm1_gpio16_to_irq;
+	gc->parent = dev;
+	gc->owner = THIS_MODULE;
 
 	return of_mm_gpiochip_add_data(np, mm_gc, cpm1_gc);
 }
@@ -729,8 +758,9 @@ static int cpm1_gpio32_dir_in(struct gpio_chip *gc, unsigned int gpio)
 	return 0;
 }
 
-int cpm1_gpiochip_add32(struct device_node *np)
+int cpm1_gpiochip_add32(struct device *dev)
 {
+	struct device_node *np = dev->of_node;
 	struct cpm1_gpio32_chip *cpm1_gc;
 	struct of_mm_gpio_chip *mm_gc;
 	struct gpio_chip *gc;
@@ -750,31 +780,10 @@ int cpm1_gpiochip_add32(struct device_node *np)
 	gc->direction_output = cpm1_gpio32_dir_out;
 	gc->get = cpm1_gpio32_get;
 	gc->set = cpm1_gpio32_set;
+	gc->parent = dev;
+	gc->owner = THIS_MODULE;
 
 	return of_mm_gpiochip_add_data(np, mm_gc, cpm1_gc);
 }
-
-static int cpm_init_par_io(void)
-{
-	struct device_node *np;
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-a")
-		cpm1_gpiochip_add16(np);
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-b")
-		cpm1_gpiochip_add32(np);
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-c")
-		cpm1_gpiochip_add16(np);
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-d")
-		cpm1_gpiochip_add16(np);
-
-	/* Port E uses CPM2 layout */
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-e")
-		cpm2_gpiochip_add32(np);
-	return 0;
-}
-arch_initcall(cpm_init_par_io);
 
 #endif /* CONFIG_8xx_GPIO */

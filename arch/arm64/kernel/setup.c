@@ -23,7 +23,6 @@
 #include <linux/stddef.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
-#include <linux/utsname.h>
 #include <linux/initrd.h>
 #include <linux/console.h>
 #include <linux/cache.h>
@@ -31,7 +30,6 @@
 #include <linux/screen_info.h>
 #include <linux/init.h>
 #include <linux/kexec.h>
-#include <linux/crash_dump.h>
 #include <linux/root_dev.h>
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
@@ -42,11 +40,14 @@
 #include <linux/of_fdt.h>
 #include <linux/efi.h>
 #include <linux/psci.h>
+#include <linux/sched/task.h>
+#include <linux/mm.h>
 
 #include <asm/acpi.h>
 #include <asm/fixmap.h>
 #include <asm/cpu.h>
 #include <asm/cputype.h>
+#include <asm/daifflags.h>
 #include <asm/elf.h>
 #include <asm/cpufeature.h>
 #include <asm/cpu_ops.h>
@@ -102,7 +103,8 @@ void __init smp_setup_processor_id(void)
 	 * access percpu variable inside lock_release
 	 */
 	set_my_cpu_offset(0);
-	pr_info("Booting Linux on physical CPU 0x%lx\n", (unsigned long)mpidr);
+	pr_info("Booting Linux on physical CPU 0x%010lx [0x%08x]\n",
+		(unsigned long)mpidr, read_cpuid_id());
 }
 
 bool arch_match_cpu_phys_id(int cpu, u64 phys_id)
@@ -179,6 +181,7 @@ static void __init smp_build_mpidr_hash(void)
 static void __init setup_machine_fdt(phys_addr_t dt_phys)
 {
 	void *dt_virt = fixmap_remap_fdt(dt_phys);
+	const char *name;
 
 	if (!dt_virt || !early_init_dt_scan(dt_virt)) {
 		pr_crit("\n"
@@ -191,7 +194,12 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 			cpu_relax();
 	}
 
-	dump_stack_set_arch_desc("%s (DT)", of_flat_dt_get_machine_name());
+	name = of_flat_dt_get_machine_name();
+	if (!name)
+		return;
+
+	pr_info("Machine model: %s\n", name);
+	dump_stack_set_arch_desc("%s (DT)", name);
 }
 
 static void __init request_standard_resources(void)
@@ -199,16 +207,16 @@ static void __init request_standard_resources(void)
 	struct memblock_region *region;
 	struct resource *res;
 
-	kernel_code.start   = virt_to_phys(_text);
-	kernel_code.end     = virt_to_phys(__init_begin - 1);
-	kernel_data.start   = virt_to_phys(_sdata);
-	kernel_data.end     = virt_to_phys(_end - 1);
+	kernel_code.start   = __pa_symbol(_text);
+	kernel_code.end     = __pa_symbol(__init_begin - 1);
+	kernel_data.start   = __pa_symbol(_sdata);
+	kernel_data.end     = __pa_symbol(_end - 1);
 
 	for_each_memblock(memory, region) {
 		res = alloc_bootmem_low(sizeof(*res));
 		if (memblock_is_nomap(region)) {
 			res->name  = "reserved";
-			res->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+			res->flags = IORESOURCE_MEM;
 		} else {
 			res->name  = "System RAM";
 			res->flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
@@ -224,6 +232,12 @@ static void __init request_standard_resources(void)
 		if (kernel_data.start >= res->start &&
 		    kernel_data.end <= res->end)
 			request_resource(res, &kernel_data);
+#ifdef CONFIG_KEXEC_CORE
+		/* Userspace will find "Crash kernel" region in /proc/iomem. */
+		if (crashk_res.end && crashk_res.start >= res->start &&
+		    crashk_res.end <= res->end)
+			request_resource(res, &crashk_res);
+#endif
 	}
 }
 
@@ -231,9 +245,6 @@ u64 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = INVALID_HWID };
 
 void __init setup_arch(char **cmdline_p)
 {
-	pr_info("Boot CPU: AArch64 Processor [%08x]\n", read_cpuid_id());
-
-	sprintf(init_utsname()->machine, UTS_MACHINE);
 	init_mm.start_code = (unsigned long) _text;
 	init_mm.end_code   = (unsigned long) _etext;
 	init_mm.end_data   = (unsigned long) _edata;
@@ -249,10 +260,11 @@ void __init setup_arch(char **cmdline_p)
 	parse_early_param();
 
 	/*
-	 *  Unmask asynchronous aborts after bringing up possible earlycon.
-	 * (Report possible System Errors once we can report this occurred)
+	 * Unmask asynchronous aborts and fiq after bringing up possible
+	 * earlycon. (Report possible System Errors once we can report this
+	 * occurred).
 	 */
-	local_async_enable();
+	local_daif_restore(DAIF_PROCCTX_NOIRQ);
 
 	/*
 	 * TTBR0 is only used for the identity mapping at this stage. Make it
@@ -297,7 +309,7 @@ void __init setup_arch(char **cmdline_p)
 	 * faults in case uaccess_enable() is inadvertently called by the init
 	 * thread.
 	 */
-	init_task.thread_info.ttbr0 = virt_to_phys(empty_zero_page);
+	init_task.thread_info.ttbr0 = __pa_symbol(empty_zero_page);
 #endif
 
 #ifdef CONFIG_VT

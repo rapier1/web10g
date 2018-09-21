@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Apple Cinema Display driver
  *
  * Copyright (C) 2006  Michael Hanselmann (linux-kernel@hansmi.ch)
  *
  * Thanks to Caskey L. Dickson for his work with acdctl.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -212,27 +199,20 @@ static int appledisplay_probe(struct usb_interface *iface,
 	struct backlight_properties props;
 	struct appledisplay *pdata;
 	struct usb_device *udev = interface_to_usbdev(iface);
-	struct usb_host_interface *iface_desc;
 	struct usb_endpoint_descriptor *endpoint;
 	int int_in_endpointAddr = 0;
-	int i, retval = -ENOMEM, brightness;
+	int retval, brightness;
 	char bl_name[20];
 
 	/* set up the endpoint information */
 	/* use only the first interrupt-in endpoint */
-	iface_desc = iface->cur_altsetting;
-	for (i = 0; i < iface_desc->desc.bNumEndpoints; i++) {
-		endpoint = &iface_desc->endpoint[i].desc;
-		if (!int_in_endpointAddr && usb_endpoint_is_int_in(endpoint)) {
-			/* we found an interrupt in endpoint */
-			int_in_endpointAddr = endpoint->bEndpointAddress;
-			break;
-		}
-	}
-	if (!int_in_endpointAddr) {
+	retval = usb_find_int_in_endpoint(iface->cur_altsetting, &endpoint);
+	if (retval) {
 		dev_err(&iface->dev, "Could not find int-in endpoint\n");
-		return -EIO;
+		return retval;
 	}
+
+	int_in_endpointAddr = endpoint->bEndpointAddress;
 
 	/* allocate memory for our device state and initialize it */
 	pdata = kzalloc(sizeof(struct appledisplay), GFP_KERNEL);

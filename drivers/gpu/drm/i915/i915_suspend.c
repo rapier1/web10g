@@ -56,13 +56,12 @@ static void i915_restore_display(struct drm_i915_private *dev_priv)
 	i915_redisable_vga(dev_priv);
 }
 
-int i915_save_state(struct drm_device *dev)
+int i915_save_state(struct drm_i915_private *dev_priv)
 {
-	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct pci_dev *pdev = dev_priv->drm.pdev;
 	int i;
 
-	mutex_lock(&dev->struct_mutex);
+	mutex_lock(&dev_priv->drm.struct_mutex);
 
 	i915_save_display(dev_priv);
 
@@ -97,20 +96,17 @@ int i915_save_state(struct drm_device *dev)
 			dev_priv->regfile.saveSWF3[i] = I915_READ(SWF3(i));
 	}
 
-	mutex_unlock(&dev->struct_mutex);
+	mutex_unlock(&dev_priv->drm.struct_mutex);
 
 	return 0;
 }
 
-int i915_restore_state(struct drm_device *dev)
+int i915_restore_state(struct drm_i915_private *dev_priv)
 {
-	struct drm_i915_private *dev_priv = to_i915(dev);
 	struct pci_dev *pdev = dev_priv->drm.pdev;
 	int i;
 
-	mutex_lock(&dev->struct_mutex);
-
-	i915_gem_restore_fences(dev_priv);
+	mutex_lock(&dev_priv->drm.struct_mutex);
 
 	if (IS_GEN4(dev_priv))
 		pci_write_config_word(pdev, GCDGMBUS,
@@ -145,9 +141,9 @@ int i915_restore_state(struct drm_device *dev)
 			I915_WRITE(SWF3(i), dev_priv->regfile.saveSWF3[i]);
 	}
 
-	mutex_unlock(&dev->struct_mutex);
+	mutex_unlock(&dev_priv->drm.struct_mutex);
 
-	intel_i2c_reset(dev);
+	intel_i2c_reset(dev_priv);
 
 	return 0;
 }

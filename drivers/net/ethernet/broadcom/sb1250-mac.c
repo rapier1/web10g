@@ -63,24 +63,24 @@ MODULE_DESCRIPTION("Broadcom SiByte SOC GB Ethernet driver");
 
 /* 1 normal messages, 0 quiet .. 7 verbose. */
 static int debug = 1;
-module_param(debug, int, S_IRUGO);
+module_param(debug, int, 0444);
 MODULE_PARM_DESC(debug, "Debug messages");
 
 #ifdef CONFIG_SBMAC_COALESCE
 static int int_pktcnt_tx = 255;
-module_param(int_pktcnt_tx, int, S_IRUGO);
+module_param(int_pktcnt_tx, int, 0444);
 MODULE_PARM_DESC(int_pktcnt_tx, "TX packet count");
 
 static int int_timeout_tx = 255;
-module_param(int_timeout_tx, int, S_IRUGO);
+module_param(int_timeout_tx, int, 0444);
 MODULE_PARM_DESC(int_timeout_tx, "TX timeout value");
 
 static int int_pktcnt_rx = 64;
-module_param(int_pktcnt_rx, int, S_IRUGO);
+module_param(int_pktcnt_rx, int, 0444);
 MODULE_PARM_DESC(int_pktcnt_rx, "RX packet count");
 
 static int int_timeout_rx = 64;
-module_param(int_timeout_rx, int, S_IRUGO);
+module_param(int_timeout_rx, int, 0444);
 MODULE_PARM_DESC(int_timeout_rx, "RX timeout value");
 #endif
 
@@ -1367,15 +1367,11 @@ static int sbmac_initctx(struct sbmac_softc *s)
 
 static void sbdma_uninitctx(struct sbmacdma *d)
 {
-	if (d->sbdma_dscrtable_unaligned) {
-		kfree(d->sbdma_dscrtable_unaligned);
-		d->sbdma_dscrtable_unaligned = d->sbdma_dscrtable = NULL;
-	}
+	kfree(d->sbdma_dscrtable_unaligned);
+	d->sbdma_dscrtable_unaligned = d->sbdma_dscrtable = NULL;
 
-	if (d->sbdma_ctxtable) {
-		kfree(d->sbdma_ctxtable);
-		d->sbdma_ctxtable = NULL;
-	}
+	kfree(d->sbdma_ctxtable);
+	d->sbdma_ctxtable = NULL;
 }
 
 
@@ -2537,7 +2533,7 @@ static int sbmac_poll(struct napi_struct *napi, int budget)
 	sbdma_tx_process(sc, &(sc->sbm_txdma), 1);
 
 	if (work_done < budget) {
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 
 #ifdef CONFIG_SBMAC_COALESCE
 		__raw_writeq(((M_MAC_INT_EOP_COUNT | M_MAC_INT_EOP_TIMER) << S_MAC_TX_CH0) |
@@ -2617,7 +2613,7 @@ out_out:
 	return err;
 }
 
-static int __exit sbmac_remove(struct platform_device *pldev)
+static int sbmac_remove(struct platform_device *pldev)
 {
 	struct net_device *dev = platform_get_drvdata(pldev);
 	struct sbmac_softc *sc = netdev_priv(dev);
@@ -2634,10 +2630,11 @@ static int __exit sbmac_remove(struct platform_device *pldev)
 
 static struct platform_driver sbmac_driver = {
 	.probe = sbmac_probe,
-	.remove = __exit_p(sbmac_remove),
+	.remove = sbmac_remove,
 	.driver = {
 		.name = sbmac_string,
 	},
 };
 
 module_platform_driver(sbmac_driver);
+MODULE_LICENSE("GPL");

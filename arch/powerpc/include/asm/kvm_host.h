@@ -35,6 +35,7 @@
 #include <asm/page.h>
 #include <asm/cacheflush.h>
 #include <asm/hvcall.h>
+#include <asm/mce.h>
 
 #define KVM_MAX_VCPUS		NR_CPUS
 #define KVM_MAX_VCORES		NR_CPUS
@@ -45,9 +46,6 @@
 
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
-#ifdef CONFIG_KVM_MMIO
-#define KVM_COALESCED_MMIO_PAGE_OFFSET 1
-#endif
 #define KVM_HALT_POLL_NS_DEFAULT 10000	/* 10 us */
 
 /* These values are internal and can be increased later */
@@ -55,24 +53,18 @@
 #define KVM_IRQCHIP_NUM_PINS     256
 
 /* PPC-specific vcpu->requests bit members */
-#define KVM_REQ_WATCHDOG           8
-#define KVM_REQ_EPR_EXIT           9
+#define KVM_REQ_WATCHDOG	KVM_ARCH_REQ(0)
+#define KVM_REQ_EPR_EXIT	KVM_ARCH_REQ(1)
 
 #include <linux/mmu_notifier.h>
 
 #define KVM_ARCH_WANT_MMU_NOTIFIER
 
-extern int kvm_unmap_hva(struct kvm *kvm, unsigned long hva);
 extern int kvm_unmap_hva_range(struct kvm *kvm,
 			       unsigned long start, unsigned long end);
 extern int kvm_age_hva(struct kvm *kvm, unsigned long start, unsigned long end);
 extern int kvm_test_age_hva(struct kvm *kvm, unsigned long hva);
 extern void kvm_set_spte_hva(struct kvm *kvm, unsigned long hva, pte_t pte);
-
-static inline void kvm_arch_mmu_notifier_invalidate_page(struct kvm *kvm,
-							 unsigned long address)
-{
-}
 
 #define HPTEG_CACHE_NUM			(1 << 15)
 #define HPTEG_HASH_BITS_PTE		13
@@ -191,6 +183,13 @@ struct kvmppc_pginfo {
 	atomic_t refcnt;
 };
 
+struct kvmppc_spapr_tce_iommu_table {
+	struct rcu_head rcu;
+	struct list_head next;
+	struct iommu_table *tbl;
+	struct kref kref;
+};
+
 struct kvmppc_spapr_tce_table {
 	struct list_head list;
 	struct kvm *kvm;
@@ -199,12 +198,19 @@ struct kvmppc_spapr_tce_table {
 	u32 page_shift;
 	u64 offset;		/* in pages */
 	u64 size;		/* window size in pages */
+	struct list_head iommu_tables;
 	struct page *pages[0];
 };
 
 /* XICS components, defined in book3s_xics.c */
 struct kvmppc_xics;
 struct kvmppc_icp;
+extern struct kvm_device_ops kvm_xics_ops;
+
+/* XIVE components, defined in book3s_xive.c */
+struct kvmppc_xive;
+struct kvmppc_xive_vcpu;
+extern struct kvm_device_ops kvm_xive_ops;
 
 struct kvmppc_passthru_irqmap;
 
@@ -228,10 +234,7 @@ struct revmap_entry {
  */
 #define KVMPPC_RMAP_LOCK_BIT	63
 #define KVMPPC_RMAP_RC_SHIFT	32
-#define KVMPPC_RMAP_CHG_SHIFT	48
 #define KVMPPC_RMAP_REFERENCED	(HPTE_R_R << KVMPPC_RMAP_RC_SHIFT)
-#define KVMPPC_RMAP_CHANGED	(HPTE_R_C << KVMPPC_RMAP_RC_SHIFT)
-#define KVMPPC_RMAP_CHG_ORDER	(0x3ful << KVMPPC_RMAP_CHG_SHIFT)
 #define KVMPPC_RMAP_PRESENT	0x100000000ul
 #define KVMPPC_RMAP_INDEX	0xfffffffful
 
@@ -241,31 +244,47 @@ struct kvm_arch_memory_slot {
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
 };
 
+struct kvm_hpt_info {
+	/* Host virtual (linear mapping) address of guest HPT */
+	unsigned long virt;
+	/* Array of reverse mapping entries for each guest HPTE */
+	struct revmap_entry *rev;
+	/* Guest HPT size is 2**(order) bytes */
+	u32 order;
+	/* 1 if HPT allocated with CMA, 0 otherwise */
+	int cma;
+};
+
+struct kvm_resize_hpt;
+
 struct kvm_arch {
 	unsigned int lpid;
+	unsigned int smt_mode;		/* # vcpus per virtual core */
+	unsigned int emul_smt_mode;	/* emualted SMT mode, on P9 */
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
 	unsigned int tlb_sets;
-	unsigned long hpt_virt;
-	struct revmap_entry *revmap;
+	struct kvm_hpt_info hpt;
 	atomic64_t mmio_update;
 	unsigned int host_lpid;
 	unsigned long host_lpcr;
 	unsigned long sdr1;
 	unsigned long host_sdr1;
-	int tlbie_lock;
 	unsigned long lpcr;
 	unsigned long vrma_slb_v;
-	int hpte_setup_done;
-	u32 hpt_order;
+	int mmu_ready;
 	atomic_t vcpus_running;
 	u32 online_vcores;
-	unsigned long hpt_npte;
-	unsigned long hpt_mask;
 	atomic_t hpte_mod_interest;
 	cpumask_t need_tlb_flush;
-	int hpt_cma_alloc;
+	cpumask_t cpu_in_guest;
+	u8 radix;
+	u8 fwnmi_enabled;
+	bool threads_indep;
+	pgd_t *pgtable;
+	u64 process_table;
 	struct dentry *debugfs_dir;
 	struct dentry *htab_dentry;
+	struct kvm_resize_hpt *resize_hpt; /* protected by kvm->lock */
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
 #ifdef CONFIG_KVM_BOOK3S_PR_POSSIBLE
 	struct mutex hpt_mutex;
@@ -280,6 +299,7 @@ struct kvm_arch {
 #endif
 #ifdef CONFIG_KVM_XICS
 	struct kvmppc_xics *xics;
+	struct kvmppc_xive *xive;
 	struct kvmppc_passthru_irqmap *pimap;
 #endif
 	struct kvmppc_ops *kvm_ops;
@@ -332,6 +352,7 @@ struct kvmppc_pte {
 	bool may_read		: 1;
 	bool may_write		: 1;
 	bool may_execute	: 1;
+	unsigned long wimg;
 	u8 page_size;		/* MMU_PAGE_xxx */
 };
 
@@ -408,7 +429,7 @@ struct kvmppc_passthru_irqmap {
 
 #define KVMPPC_IRQ_DEFAULT	0
 #define KVMPPC_IRQ_MPIC		1
-#define KVMPPC_IRQ_XICS		2
+#define KVMPPC_IRQ_XICS		2 /* Includes a XIVE option */
 
 #define MMIO_HPTE_CACHE_SIZE	4
 
@@ -428,7 +449,33 @@ struct mmio_hpte_cache {
 	unsigned int index;
 };
 
+#define KVMPPC_VSX_COPY_NONE		0
+#define KVMPPC_VSX_COPY_WORD		1
+#define KVMPPC_VSX_COPY_DWORD		2
+#define KVMPPC_VSX_COPY_DWORD_LOAD_DUMP	3
+#define KVMPPC_VSX_COPY_WORD_LOAD_DUMP	4
+
+#define KVMPPC_VMX_COPY_BYTE		8
+#define KVMPPC_VMX_COPY_HWORD		9
+#define KVMPPC_VMX_COPY_WORD		10
+#define KVMPPC_VMX_COPY_DWORD		11
+
 struct openpic;
+
+/* W0 and W1 of a XIVE thread management context */
+union xive_tma_w01 {
+	struct {
+		u8	nsr;
+		u8	cppr;
+		u8	ipb;
+		u8	lsmfb;
+		u8	ack;
+		u8	inc;
+		u8	age;
+		u8	pipr;
+	};
+	__be64 w01;
+};
 
 struct kvm_vcpu_arch {
 	ulong host_stack;
@@ -444,7 +491,7 @@ struct kvm_vcpu_arch {
 	struct kvmppc_book3s_shadow_vcpu *shadow_vcpu;
 #endif
 
-	ulong gpr[32];
+	struct pt_regs regs;
 
 	struct thread_fp_state fp;
 
@@ -479,14 +526,10 @@ struct kvm_vcpu_arch {
 	u32 qpr[32];
 #endif
 
-	ulong pc;
-	ulong ctr;
-	ulong lr;
 #ifdef CONFIG_PPC_BOOK3S
 	ulong tar;
 #endif
 
-	ulong xer;
 	u32 cr;
 
 #ifdef CONFIG_PPC_BOOK3S
@@ -520,6 +563,7 @@ struct kvm_vcpu_arch {
 	ulong wort;
 	ulong tid;
 	ulong psscr;
+	ulong hfscr;
 	ulong shadow_srr1;
 #endif
 	u32 vrsave; /* also USPRG0 */
@@ -533,7 +577,7 @@ struct kvm_vcpu_arch {
 	ulong mcsrr0;
 	ulong mcsrr1;
 	ulong mcsr;
-	u32 dec;
+	ulong dec;
 #ifdef CONFIG_BOOKE
 	u32 decar;
 #endif
@@ -566,6 +610,7 @@ struct kvm_vcpu_arch {
 	u64 tfhar;
 	u64 texasr;
 	u64 tfiar;
+	u64 orig_texasr;
 
 	u32 cr_tm;
 	u64 xer_tm;
@@ -582,7 +627,6 @@ struct kvm_vcpu_arch {
 
 	struct thread_vr_state vr_tm;
 	u32 vrsave_tm; /* also USPRG0 */
-
 #endif
 
 #ifdef CONFIG_KVM_EXIT_TIMING
@@ -603,6 +647,7 @@ struct kvm_vcpu_arch {
 	ulong fault_dar;
 	u32 fault_dsisr;
 	unsigned long intr_msr;
+	ulong fault_gpa;	/* guest real address of page fault (POWER9) */
 #endif
 
 #ifdef CONFIG_BOOKE
@@ -630,6 +675,23 @@ struct kvm_vcpu_arch {
 	u8 io_gpr; /* GPR used as IO source/target */
 	u8 mmio_host_swabbed;
 	u8 mmio_sign_extend;
+	/* conversion between single and double precision */
+	u8 mmio_sp64_extend;
+	/*
+	 * Number of simulations for vsx.
+	 * If we use 2*8bytes to simulate 1*16bytes,
+	 * then the number should be 2 and
+	 * mmio_copy_type=KVMPPC_VSX_COPY_DWORD.
+	 * If we use 4*4bytes to simulate 1*16bytes,
+	 * the number should be 4 and
+	 * mmio_vsx_copy_type=KVMPPC_VSX_COPY_WORD.
+	 */
+	u8 mmio_vsx_copy_nums;
+	u8 mmio_vsx_offset;
+	u8 mmio_vsx_tx_sx_enabled;
+	u8 mmio_vmx_copy_nums;
+	u8 mmio_vmx_offset;
+	u8 mmio_copy_type;
 	u8 osi_needed;
 	u8 osi_enabled;
 	u8 papr_enabled;
@@ -648,6 +710,8 @@ struct kvm_vcpu_arch {
 	unsigned long pending_exceptions;
 	u8 ceded;
 	u8 prodded;
+	u8 doorbell_request;
+	u8 irq_pending; /* Used by XIVE to signal pending guest irqs */
 	u32 last_inst;
 
 	struct swait_queue_head *wqp;
@@ -657,8 +721,10 @@ struct kvm_vcpu_arch {
 	int state;
 	int ptid;
 	int thread_cpu;
+	int prev_cpu;
 	bool timer_running;
 	wait_queue_head_t cpu_run;
+	struct machine_check_event mce_evt; /* Valid if trap == 0x200 */
 
 	struct kvm_vcpu_arch_shared *shared;
 #if defined(CONFIG_PPC_BOOK3S_64) && defined(CONFIG_KVM_BOOK3S_PR_POSSIBLE)
@@ -673,6 +739,13 @@ struct kvm_vcpu_arch {
 	struct openpic *mpic;	/* KVM_IRQ_MPIC */
 #ifdef CONFIG_KVM_XICS
 	struct kvmppc_icp *icp; /* XICS presentation controller */
+	struct kvmppc_xive_vcpu *xive_vcpu; /* XIVE virtual CPU data */
+	__be32 xive_cam_word;    /* Cooked W2 in proper endian with valid bit */
+	u8 xive_pushed;		 /* Is the VP pushed on the physical CPU ? */
+	u8 xive_esc_on;		 /* Is the escalation irq enabled ? */
+	union xive_tma_w01 xive_saved_state; /* W0..1 of XIVE thread state */
+	u64 xive_esc_raddr;	 /* Escalation interrupt ESB real addr */
+	u64 xive_esc_vaddr;	 /* Escalation interrupt ESB virt addr */
 #endif
 
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
@@ -700,6 +773,8 @@ struct kvm_vcpu_arch {
 	u64 busy_preempt;
 
 	u32 emul_inst;
+
+	u32 online;
 #endif
 
 #ifdef CONFIG_KVM_BOOK3S_HV_EXIT_TIMING
@@ -717,6 +792,8 @@ struct kvm_vcpu_arch {
 };
 
 #define VCPU_FPR(vcpu, i)	(vcpu)->arch.fp.fpr[i][TS_FPROFFSET]
+#define VCPU_VSX_FPR(vcpu, i, j)	((vcpu)->arch.fp.fpr[i][j])
+#define VCPU_VSX_VR(vcpu, i)		((vcpu)->arch.vr.vr[i])
 
 /* Values for vcpu->arch.state */
 #define KVMPPC_VCPU_NOTREADY		0
@@ -730,6 +807,8 @@ struct kvm_vcpu_arch {
 #define KVM_MMIO_REG_FPR	0x0020
 #define KVM_MMIO_REG_QPR	0x0040
 #define KVM_MMIO_REG_FQPR	0x0060
+#define KVM_MMIO_REG_VSX	0x0080
+#define KVM_MMIO_REG_VMX	0x00c0
 
 #define __KVM_HAVE_ARCH_WQP
 #define __KVM_HAVE_CREATE_DEVICE

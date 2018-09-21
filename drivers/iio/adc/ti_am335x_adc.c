@@ -169,7 +169,9 @@ static irqreturn_t tiadc_irq_h(int irq, void *private)
 {
 	struct iio_dev *indio_dev = private;
 	struct tiadc_device *adc_dev = iio_priv(indio_dev);
-	unsigned int status, config;
+	unsigned int status, config, adc_fsm;
+	unsigned short count = 0;
+
 	status = tiadc_readl(adc_dev, REG_IRQSTATUS);
 
 	/*
@@ -183,6 +185,15 @@ static irqreturn_t tiadc_irq_h(int irq, void *private)
 		tiadc_writel(adc_dev, REG_CTRL, config);
 		tiadc_writel(adc_dev, REG_IRQSTATUS, IRQENB_FIFO1OVRRUN
 				| IRQENB_FIFO1UNDRFLW | IRQENB_FIFO1THRES);
+
+		/* wait for idle state.
+		 * ADC needs to finish the current conversion
+		 * before disabling the module
+		 */
+		do {
+			adc_fsm = tiadc_readl(adc_dev, REG_ADCFSM);
+		} while (adc_fsm != 0x10 && count++ < 100);
+
 		tiadc_writel(adc_dev, REG_CTRL, (config | CNTRLREG_TSCSSENB));
 		return IRQ_HANDLED;
 	} else if (status & IRQENB_FIFO1THRES) {
@@ -512,7 +523,7 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 	}
 	am335x_tsc_se_adc_done(adc_dev->mfd_tscadc);
 
-	if (found == false)
+	if (!found)
 		ret =  -EBUSY;
 
 err_unlock:
@@ -522,7 +533,6 @@ err_unlock:
 
 static const struct iio_info tiadc_info = {
 	.read_raw = &tiadc_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static int tiadc_request_dma(struct platform_device *pdev,
@@ -603,7 +613,7 @@ static int tiadc_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*indio_dev));
+	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*adc_dev));
 	if (indio_dev == NULL) {
 		dev_err(&pdev->dev, "failed to allocate iio device\n");
 		return -ENOMEM;

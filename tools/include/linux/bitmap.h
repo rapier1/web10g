@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PERF_BITOPS_H
 #define _PERF_BITOPS_H
 
 #include <string.h>
 #include <linux/bitops.h>
 #include <stdlib.h>
+#include <linux/kernel.h>
 
 #define DECLARE_BITMAP(name,bits) \
 	unsigned long name[BITS_TO_LONGS(bits)]
@@ -96,7 +98,7 @@ static inline int test_and_set_bit(int nr, unsigned long *addr)
 
 /**
  * bitmap_alloc - Allocate bitmap
- * @nr: Bit to set
+ * @nbits: Number of bits
  */
 static inline unsigned long *bitmap_alloc(int nbits)
 {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ioport.c:  Simple io mapping allocator.
  *
@@ -121,12 +122,12 @@ static void xres_free(struct xresource *xrp) {
  *
  * Bus type is always zero on IIep.
  */
-void __iomem *ioremap(unsigned long offset, unsigned long size)
+void __iomem *ioremap(phys_addr_t offset, size_t size)
 {
 	char name[14];
 
 	sprintf(name, "phys_%08x", (u32)offset);
-	return _sparc_alloc_io(0, offset, size, name);
+	return _sparc_alloc_io(0, (unsigned long)offset, size, name);
 }
 EXPORT_SYMBOL(ioremap);
 
@@ -401,7 +402,12 @@ static void sbus_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 	BUG();
 }
 
-static struct dma_map_ops sbus_dma_ops = {
+static int sbus_dma_supported(struct device *dev, u64 mask)
+{
+	return 0;
+}
+
+static const struct dma_map_ops sbus_dma_ops = {
 	.alloc			= sbus_alloc_coherent,
 	.free			= sbus_free_coherent,
 	.map_page		= sbus_map_page,
@@ -410,6 +416,7 @@ static struct dma_map_ops sbus_dma_ops = {
 	.unmap_sg		= sbus_unmap_sg,
 	.sync_sg_for_cpu	= sbus_sync_sg_for_cpu,
 	.sync_sg_for_device	= sbus_sync_sg_for_device,
+	.dma_supported		= sbus_dma_supported,
 };
 
 static int __init sparc_register_ioport(void)
@@ -637,7 +644,8 @@ static void pci32_sync_sg_for_device(struct device *device, struct scatterlist *
 	}
 }
 
-struct dma_map_ops pci32_dma_ops = {
+/* note: leon re-uses pci32_dma_ops */
+const struct dma_map_ops pci32_dma_ops = {
 	.alloc			= pci32_alloc_coherent,
 	.free			= pci32_free_coherent,
 	.map_page		= pci32_map_page,
@@ -651,28 +659,8 @@ struct dma_map_ops pci32_dma_ops = {
 };
 EXPORT_SYMBOL(pci32_dma_ops);
 
-/* leon re-uses pci32_dma_ops */
-struct dma_map_ops *leon_dma_ops = &pci32_dma_ops;
-EXPORT_SYMBOL(leon_dma_ops);
-
-struct dma_map_ops *dma_ops = &sbus_dma_ops;
+const struct dma_map_ops *dma_ops = &sbus_dma_ops;
 EXPORT_SYMBOL(dma_ops);
-
-
-/*
- * Return whether the given PCI device DMA address mask can be
- * supported properly.  For example, if your device can only drive the
- * low 24-bits during PCI bus mastering, then you would pass
- * 0x00ffffff as the mask to this function.
- */
-int dma_supported(struct device *dev, u64 mask)
-{
-	if (dev_is_pci(dev))
-		return 1;
-
-	return 0;
-}
-EXPORT_SYMBOL(dma_supported);
 
 #ifdef CONFIG_PROC_FS
 
@@ -690,25 +678,14 @@ static int sparc_io_proc_show(struct seq_file *m, void *v)
 
 	return 0;
 }
-
-static int sparc_io_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, sparc_io_proc_show, PDE_DATA(inode));
-}
-
-static const struct file_operations sparc_io_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= sparc_io_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif /* CONFIG_PROC_FS */
 
 static void register_proc_sparc_ioport(void)
 {
 #ifdef CONFIG_PROC_FS
-	proc_create_data("io_map", 0, NULL, &sparc_io_proc_fops, &sparc_iomap);
-	proc_create_data("dvma_map", 0, NULL, &sparc_io_proc_fops, &_sparc_dvma);
+	proc_create_single_data("io_map", 0, NULL, sparc_io_proc_show,
+			&sparc_iomap);
+	proc_create_single_data("dvma_map", 0, NULL, sparc_io_proc_show,
+			&_sparc_dvma);
 #endif
 }

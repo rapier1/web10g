@@ -46,17 +46,6 @@ static int __init setup_noreplace_smp(char *str)
 }
 __setup("noreplace-smp", setup_noreplace_smp);
 
-#ifdef CONFIG_PARAVIRT
-static int __initdata_or_module noreplace_paravirt = 0;
-
-static int __init setup_noreplace_paravirt(char *str)
-{
-	noreplace_paravirt = 1;
-	return 1;
-}
-__setup("noreplace-paravirt", setup_noreplace_paravirt);
-#endif
-
 #define DPRINTK(fmt, args...)						\
 do {									\
 	if (debug_alternative)						\
@@ -298,7 +287,7 @@ recompute_jump(struct alt_instr *a, u8 *orig_insn, u8 *repl_insn, u8 *insnbuf)
 	tgt_rip  = next_rip + o_dspl;
 	n_dspl = tgt_rip - orig_insn;
 
-	DPRINTK("target RIP: %p, new_displ: 0x%x", tgt_rip, n_dspl);
+	DPRINTK("target RIP: %px, new_displ: 0x%x", tgt_rip, n_dspl);
 
 	if (tgt_rip - orig_insn >= 0) {
 		if (n_dspl - 2 <= 127)
@@ -344,15 +333,18 @@ done:
 static void __init_or_module noinline optimize_nops(struct alt_instr *a, u8 *instr)
 {
 	unsigned long flags;
+	int i;
 
-	if (instr[0] != 0x90)
-		return;
+	for (i = 0; i < a->padlen; i++) {
+		if (instr[i] != 0x90)
+			return;
+	}
 
 	local_irq_save(flags);
 	add_nops(instr + (a->instrlen - a->padlen), a->padlen);
 	local_irq_restore(flags);
 
-	DUMP_BYTES(instr, a->instrlen, "%p: [%d:%d) optimized NOPs: ",
+	DUMP_BYTES(instr, a->instrlen, "%px: [%d:%d) optimized NOPs: ",
 		   instr, a->instrlen - a->padlen, a->padlen);
 }
 
@@ -373,7 +365,7 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 	u8 *instr, *replacement;
 	u8 insnbuf[MAX_PATCH_LEN];
 
-	DPRINTK("alt table %p -> %p", start, end);
+	DPRINTK("alt table %px, -> %px", start, end);
 	/*
 	 * The scan order should be from start to end. A later scanned
 	 * alternative code can overwrite previously scanned alternative code.
@@ -397,20 +389,25 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 			continue;
 		}
 
-		DPRINTK("feat: %d*32+%d, old: (%p, len: %d), repl: (%p, len: %d), pad: %d",
+		DPRINTK("feat: %d*32+%d, old: (%px len: %d), repl: (%px, len: %d), pad: %d",
 			a->cpuid >> 5,
 			a->cpuid & 0x1f,
 			instr, a->instrlen,
 			replacement, a->replacementlen, a->padlen);
 
-		DUMP_BYTES(instr, a->instrlen, "%p: old_insn: ", instr);
-		DUMP_BYTES(replacement, a->replacementlen, "%p: rpl_insn: ", replacement);
+		DUMP_BYTES(instr, a->instrlen, "%px: old_insn: ", instr);
+		DUMP_BYTES(replacement, a->replacementlen, "%px: rpl_insn: ", replacement);
 
 		memcpy(insnbuf, replacement, a->replacementlen);
 		insnbuf_sz = a->replacementlen;
 
-		/* 0xe8 is a relative jump; fix the offset. */
-		if (*insnbuf == 0xe8 && a->replacementlen == 5) {
+		/*
+		 * 0xe8 is a relative jump; fix the offset.
+		 *
+		 * Instruction length is checked before the opcode to avoid
+		 * accessing uninitialized bytes for zero-length replacements.
+		 */
+		if (a->replacementlen == 5 && *insnbuf == 0xe8) {
 			*(s32 *)(insnbuf + 1) += replacement - instr;
 			DPRINTK("Fix CALL offset: 0x%x, CALL 0x%lx",
 				*(s32 *)(insnbuf + 1),
@@ -425,7 +422,7 @@ void __init_or_module noinline apply_alternatives(struct alt_instr *start,
 				 a->instrlen - a->replacementlen);
 			insnbuf_sz += a->instrlen - a->replacementlen;
 		}
-		DUMP_BYTES(insnbuf, insnbuf_sz, "%p: final_insn: ", instr);
+		DUMP_BYTES(insnbuf, insnbuf_sz, "%px: final_insn: ", instr);
 
 		text_poke_early(instr, insnbuf, insnbuf_sz);
 	}
@@ -437,7 +434,6 @@ static void alternatives_smp_lock(const s32 *start, const s32 *end,
 {
 	const s32 *poff;
 
-	mutex_lock(&text_mutex);
 	for (poff = start; poff < end; poff++) {
 		u8 *ptr = (u8 *)poff + *poff;
 
@@ -447,7 +443,6 @@ static void alternatives_smp_lock(const s32 *start, const s32 *end,
 		if (*ptr == 0x3e)
 			text_poke(ptr, ((unsigned char []){0xf0}), 1);
 	}
-	mutex_unlock(&text_mutex);
 }
 
 static void alternatives_smp_unlock(const s32 *start, const s32 *end,
@@ -455,7 +450,6 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
 {
 	const s32 *poff;
 
-	mutex_lock(&text_mutex);
 	for (poff = start; poff < end; poff++) {
 		u8 *ptr = (u8 *)poff + *poff;
 
@@ -465,7 +459,6 @@ static void alternatives_smp_unlock(const s32 *start, const s32 *end,
 		if (*ptr == 0xf0)
 			text_poke(ptr, ((unsigned char []){0x3E}), 1);
 	}
-	mutex_unlock(&text_mutex);
 }
 
 struct smp_alt_module {
@@ -484,8 +477,7 @@ struct smp_alt_module {
 	struct list_head next;
 };
 static LIST_HEAD(smp_alt_modules);
-static DEFINE_MUTEX(smp_alt);
-static bool uniproc_patched = false;	/* protected by smp_alt */
+static bool uniproc_patched = false;	/* protected by text_mutex */
 
 void __init_or_module alternatives_smp_module_add(struct module *mod,
 						  char *name,
@@ -494,7 +486,7 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
 {
 	struct smp_alt_module *smp;
 
-	mutex_lock(&smp_alt);
+	mutex_lock(&text_mutex);
 	if (!uniproc_patched)
 		goto unlock;
 
@@ -521,14 +513,14 @@ void __init_or_module alternatives_smp_module_add(struct module *mod,
 smp_unlock:
 	alternatives_smp_unlock(locks, locks_end, text, text_end);
 unlock:
-	mutex_unlock(&smp_alt);
+	mutex_unlock(&text_mutex);
 }
 
 void __init_or_module alternatives_smp_module_del(struct module *mod)
 {
 	struct smp_alt_module *item;
 
-	mutex_lock(&smp_alt);
+	mutex_lock(&text_mutex);
 	list_for_each_entry(item, &smp_alt_modules, next) {
 		if (mod != item->mod)
 			continue;
@@ -536,7 +528,7 @@ void __init_or_module alternatives_smp_module_del(struct module *mod)
 		kfree(item);
 		break;
 	}
-	mutex_unlock(&smp_alt);
+	mutex_unlock(&text_mutex);
 }
 
 void alternatives_enable_smp(void)
@@ -546,7 +538,7 @@ void alternatives_enable_smp(void)
 	/* Why bother if there are no other CPUs? */
 	BUG_ON(num_possible_cpus() == 1);
 
-	mutex_lock(&smp_alt);
+	mutex_lock(&text_mutex);
 
 	if (uniproc_patched) {
 		pr_info("switching to SMP code\n");
@@ -558,16 +550,21 @@ void alternatives_enable_smp(void)
 					      mod->text, mod->text_end);
 		uniproc_patched = false;
 	}
-	mutex_unlock(&smp_alt);
+	mutex_unlock(&text_mutex);
 }
 
-/* Return 1 if the address range is reserved for smp-alternatives */
+/*
+ * Return 1 if the address range is reserved for SMP-alternatives.
+ * Must hold text_mutex.
+ */
 int alternatives_text_reserved(void *start, void *end)
 {
 	struct smp_alt_module *mod;
 	const s32 *poff;
 	u8 *text_start = start;
 	u8 *text_end = end;
+
+	lockdep_assert_held(&text_mutex);
 
 	list_for_each_entry(mod, &smp_alt_modules, next) {
 		if (mod->text > text_end || mod->text_end < text_start)
@@ -590,9 +587,6 @@ void __init_or_module apply_paravirt(struct paravirt_patch_site *start,
 {
 	struct paravirt_patch_site *p;
 	char insnbuf[MAX_PATCH_LEN];
-
-	if (noreplace_paravirt)
-		return;
 
 	for (p = start; p < end; p++) {
 		unsigned int used;
@@ -737,7 +731,16 @@ static void *bp_int3_handler, *bp_int3_addr;
 
 int poke_int3_handler(struct pt_regs *regs)
 {
-	/* bp_patching_in_progress */
+	/*
+	 * Having observed our INT3 instruction, we now must observe
+	 * bp_patching_in_progress.
+	 *
+	 * 	in_progress = TRUE		INT3
+	 * 	WMB				RMB
+	 * 	write INT3			if (in_progress)
+	 *
+	 * Idem for bp_int3_handler.
+	 */
 	smp_rmb();
 
 	if (likely(!bp_patching_in_progress))
@@ -783,9 +786,8 @@ void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler)
 	bp_int3_addr = (u8 *)addr + sizeof(int3);
 	bp_patching_in_progress = true;
 	/*
-	 * Corresponding read barrier in int3 notifier for
-	 * making sure the in_progress flags is correctly ordered wrt.
-	 * patching
+	 * Corresponding read barrier in int3 notifier for making sure the
+	 * in_progress and handler are correctly ordered wrt. patching.
 	 */
 	smp_wmb();
 
@@ -810,9 +812,11 @@ void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler)
 	text_poke(addr, opcode, sizeof(int3));
 
 	on_each_cpu(do_sync_core, NULL, 1);
-
+	/*
+	 * sync_core() implies an smp_mb() and orders this store against
+	 * the writing of the new instruction.
+	 */
 	bp_patching_in_progress = false;
-	smp_wmb();
 
 	return addr;
 }

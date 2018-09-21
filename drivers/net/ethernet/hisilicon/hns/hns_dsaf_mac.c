@@ -82,9 +82,12 @@ void hns_mac_get_link_status(struct hns_mac_cb *mac_cb, u32 *link_status)
 	else
 		*link_status = 0;
 
-	ret = mac_cb->dsaf_dev->misc_op->get_sfp_prsnt(mac_cb, &sfp_prsnt);
-	if (!ret)
-		*link_status = *link_status && sfp_prsnt;
+	if (mac_cb->media_type == HNAE_MEDIA_TYPE_FIBER) {
+		ret = mac_cb->dsaf_dev->misc_op->get_sfp_prsnt(mac_cb,
+							       &sfp_prsnt);
+		if (!ret)
+			*link_status = *link_status && sfp_prsnt;
+	}
 
 	mac_cb->link = *link_status;
 }
@@ -332,44 +335,6 @@ int hns_mac_set_multi(struct hns_mac_cb *mac_cb,
 	return 0;
 }
 
-/**
- *hns_mac_del_mac - delete mac address into dsaf table,can't delete the same
- *                  address twice
- *@net_dev: net device
- *@vfn :   vf lan
- *@mac : mac address
- *return status
- */
-int hns_mac_del_mac(struct hns_mac_cb *mac_cb, u32 vfn, char *mac)
-{
-	struct mac_entry_idx *old_mac;
-	struct dsaf_device *dsaf_dev;
-	u32 ret;
-
-	dsaf_dev = mac_cb->dsaf_dev;
-
-	if (vfn < DSAF_MAX_VM_NUM) {
-		old_mac = &mac_cb->addr_entry_idx[vfn];
-	} else {
-		dev_err(mac_cb->dev,
-			"vf queue is too large, %s mac%d queue = %#x!\n",
-			mac_cb->dsaf_dev->ae_dev.name, mac_cb->mac_id, vfn);
-		return -EINVAL;
-	}
-
-	if (dsaf_dev) {
-		ret = hns_dsaf_del_mac_entry(dsaf_dev, old_mac->vlan_id,
-					     mac_cb->mac_id, old_mac->addr);
-		if (ret)
-			return ret;
-
-		if (memcmp(old_mac->addr, mac, sizeof(old_mac->addr)) == 0)
-			old_mac->valid = 0;
-	}
-
-	return 0;
-}
-
 int hns_mac_clr_multicast(struct hns_mac_cb *mac_cb, int vfn)
 {
 	struct dsaf_device *dsaf_dev = mac_cb->dsaf_dev;
@@ -404,7 +369,6 @@ static int hns_mac_port_config_bc_en(struct hns_mac_cb *mac_cb,
 {
 	int ret;
 	struct dsaf_device *dsaf_dev = mac_cb->dsaf_dev;
-	u8 addr[ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 	struct dsaf_drv_mac_single_dest_entry mac_entry;
 
 	/* directy return ok in debug network mode */
@@ -412,7 +376,7 @@ static int hns_mac_port_config_bc_en(struct hns_mac_cb *mac_cb,
 		return 0;
 
 	if (!HNS_DSAF_IS_DEBUG(dsaf_dev)) {
-		memcpy(mac_entry.addr, addr, sizeof(mac_entry.addr));
+		eth_broadcast_addr(mac_entry.addr);
 		mac_entry.in_vlan_id = vlan_id;
 		mac_entry.in_port_num = mac_cb->mac_id;
 		mac_entry.port_num = port_num;
@@ -439,7 +403,6 @@ int hns_mac_vm_config_bc_en(struct hns_mac_cb *mac_cb, u32 vmid, bool enable)
 	int ret;
 	struct dsaf_device *dsaf_dev = mac_cb->dsaf_dev;
 	u8 port_num;
-	u8 addr[ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 	struct mac_entry_idx *uc_mac_entry;
 	struct dsaf_drv_mac_single_dest_entry mac_entry;
 
@@ -449,7 +412,7 @@ int hns_mac_vm_config_bc_en(struct hns_mac_cb *mac_cb, u32 vmid, bool enable)
 	uc_mac_entry = &mac_cb->addr_entry_idx[vmid];
 
 	if (!HNS_DSAF_IS_DEBUG(dsaf_dev))  {
-		memcpy(mac_entry.addr, addr, sizeof(mac_entry.addr));
+		eth_broadcast_addr(mac_entry.addr);
 		mac_entry.in_vlan_id = uc_mac_entry->vlan_id;
 		mac_entry.in_port_num = mac_cb->mac_id;
 		ret = hns_mac_get_inner_port_num(mac_cb, vmid, &port_num);
@@ -491,10 +454,9 @@ void hns_mac_reset(struct hns_mac_cb *mac_cb)
 	}
 }
 
-int hns_mac_set_mtu(struct hns_mac_cb *mac_cb, u32 new_mtu)
+int hns_mac_set_mtu(struct hns_mac_cb *mac_cb, u32 new_mtu, u32 buf_size)
 {
 	struct mac_driver *drv = hns_mac_get_drv(mac_cb);
-	u32 buf_size = mac_cb->dsaf_dev->buf_size;
 	u32 new_frm = new_mtu + ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN;
 	u32 max_frm = AE_IS_VER1(mac_cb->dsaf_dev->dsaf_ver) ?
 			MAC_MAX_MTU : MAC_MAX_MTU_V2;
@@ -732,6 +694,8 @@ hns_mac_register_phydev(struct mii_bus *mdio, struct hns_mac_cb *mac_cb,
 	rc = phy_device_register(phy);
 	if (rc) {
 		phy_device_free(phy);
+		dev_err(&mdio->dev, "registered phy fail at address %i\n",
+			addr);
 		return -ENODEV;
 	}
 
@@ -742,7 +706,7 @@ hns_mac_register_phydev(struct mii_bus *mdio, struct hns_mac_cb *mac_cb,
 	return 0;
 }
 
-static void hns_mac_register_phy(struct hns_mac_cb *mac_cb)
+static int hns_mac_register_phy(struct hns_mac_cb *mac_cb)
 {
 	struct acpi_reference_args args;
 	struct platform_device *pdev;
@@ -752,24 +716,39 @@ static void hns_mac_register_phy(struct hns_mac_cb *mac_cb)
 
 	/* Loop over the child nodes and register a phy_device for each one */
 	if (!to_acpi_device_node(mac_cb->fw_port))
-		return;
+		return -ENODEV;
 
 	rc = acpi_node_get_property_reference(
 			mac_cb->fw_port, "mdio-node", 0, &args);
 	if (rc)
-		return;
+		return rc;
 
 	addr = hns_mac_phy_parse_addr(mac_cb->dev, mac_cb->fw_port);
 	if (addr < 0)
-		return;
+		return addr;
 
 	/* dev address in adev */
 	pdev = hns_dsaf_find_platform_device(acpi_fwnode_handle(args.adev));
+	if (!pdev) {
+		dev_err(mac_cb->dev, "mac%d mdio pdev is NULL\n",
+			mac_cb->mac_id);
+		return  -EINVAL;
+	}
+
 	mii_bus = platform_get_drvdata(pdev);
+	if (!mii_bus) {
+		dev_err(mac_cb->dev,
+			"mac%d mdio is NULL, dsaf will probe again later\n",
+			mac_cb->mac_id);
+		return -EPROBE_DEFER;
+	}
+
 	rc = hns_mac_register_phydev(mii_bus, mac_cb, addr);
 	if (!rc)
 		dev_dbg(mac_cb->dev, "mac%d register phy addr:%d\n",
 			mac_cb->mac_id, addr);
+
+	return rc;
 }
 
 #define MAC_MEDIA_TYPE_MAX_LEN		16
@@ -790,7 +769,7 @@ static const struct {
  *@np:device node
  * return: 0 --success, negative --fail
  */
-static int  hns_mac_get_info(struct hns_mac_cb *mac_cb)
+static int hns_mac_get_info(struct hns_mac_cb *mac_cb)
 {
 	struct device_node *np;
 	struct regmap *syscon;
@@ -855,7 +834,7 @@ static int  hns_mac_get_info(struct hns_mac_cb *mac_cb)
 		of_node_put(np);
 
 		np = of_parse_phandle(to_of_node(mac_cb->fw_port),
-					"serdes-syscon", 0);
+				      "serdes-syscon", 0);
 		syscon = syscon_node_to_regmap(np);
 		of_node_put(np);
 		if (IS_ERR_OR_NULL(syscon)) {
@@ -900,7 +879,15 @@ static int  hns_mac_get_info(struct hns_mac_cb *mac_cb)
 			}
 		}
 	} else if (is_acpi_node(mac_cb->fw_port)) {
-		hns_mac_register_phy(mac_cb);
+		ret = hns_mac_register_phy(mac_cb);
+		/*
+		 * Mac can work well if there is phy or not.If the port don't
+		 * connect with phy, the return value will be ignored. Only
+		 * when there is phy but can't find mdio bus, the return value
+		 * will be handled.
+		 */
+		if (ret == -EPROBE_DEFER)
+			return ret;
 	} else {
 		dev_err(mac_cb->dev, "mac%d cannot find phy node\n",
 			mac_cb->mac_id);
@@ -1062,6 +1049,7 @@ int hns_mac_init(struct dsaf_device *dsaf_dev)
 			dsaf_dev->mac_cb[port_id] = mac_cb;
 		}
 	}
+
 	/* init mac_cb for all port */
 	for (port_id = 0; port_id < max_port_num; port_id++) {
 		mac_cb = dsaf_dev->mac_cb[port_id];
@@ -1071,6 +1059,7 @@ int hns_mac_init(struct dsaf_device *dsaf_dev)
 		ret = hns_mac_get_cfg(dsaf_dev, mac_cb);
 		if (ret)
 			return ret;
+
 		ret = hns_mac_init_ex(mac_cb);
 		if (ret)
 			return ret;
@@ -1177,7 +1166,7 @@ void hns_set_led_opt(struct hns_mac_cb *mac_cb)
 int hns_cpld_led_set_id(struct hns_mac_cb *mac_cb,
 			enum hnae_led_state status)
 {
-	if (!mac_cb || !mac_cb->cpld_ctrl)
+	if (!mac_cb)
 		return 0;
 
 	return mac_cb->dsaf_dev->misc_op->cpld_set_led_id(mac_cb, status);

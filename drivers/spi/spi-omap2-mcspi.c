@@ -255,6 +255,7 @@ static void omap2_mcspi_set_cs(struct spi_device *spi, bool enable)
 	if (spi->controller_state) {
 		int err = pm_runtime_get_sync(mcspi->dev);
 		if (err < 0) {
+			pm_runtime_put_noidle(mcspi->dev);
 			dev_err(mcspi->dev, "failed to get sync: %d\n", err);
 			return;
 		}
@@ -350,20 +351,6 @@ disable_fifo:
 	mcspi->fifo_depth = 0;
 }
 
-static void omap2_mcspi_restore_ctx(struct omap2_mcspi *mcspi)
-{
-	struct spi_master	*spi_cntrl = mcspi->master;
-	struct omap2_mcspi_regs	*ctx = &mcspi->ctx;
-	struct omap2_mcspi_cs	*cs;
-
-	/* McSPI: context restore */
-	mcspi_write_reg(spi_cntrl, OMAP2_MCSPI_MODULCTRL, ctx->modulctrl);
-	mcspi_write_reg(spi_cntrl, OMAP2_MCSPI_WAKEUPENABLE, ctx->wakeupenable);
-
-	list_for_each_entry(cs, &ctx->cs, node)
-		writel_relaxed(cs->chconf0, cs->base + OMAP2_MCSPI_CHCONF0);
-}
-
 static int mcspi_wait_for_reg_bit(void __iomem *reg, unsigned long bit)
 {
 	unsigned long timeout;
@@ -454,6 +441,8 @@ omap2_mcspi_rx_dma(struct spi_device *spi, struct spi_transfer *xfer,
 	int			elements = 0;
 	int			word_len, element_count;
 	struct omap2_mcspi_cs	*cs = spi->controller_state;
+	void __iomem		*chstat_reg = cs->base + OMAP2_MCSPI_CHSTAT0;
+
 	mcspi = spi_master_get_devdata(spi->master);
 	mcspi_dma = &mcspi->dma_channels[spi->chip_select];
 	count = xfer->len;
@@ -549,8 +538,8 @@ omap2_mcspi_rx_dma(struct spi_device *spi, struct spi_transfer *xfer,
 	if (l & OMAP2_MCSPI_CHCONF_TURBO) {
 		elements--;
 
-		if (likely(mcspi_read_cs_reg(spi, OMAP2_MCSPI_CHSTAT0)
-				   & OMAP2_MCSPI_CHSTAT_RXS)) {
+		if (!mcspi_wait_for_reg_bit(chstat_reg,
+					    OMAP2_MCSPI_CHSTAT_RXS)) {
 			u32 w;
 
 			w = mcspi_read_cs_reg(spi, OMAP2_MCSPI_RX0);
@@ -568,8 +557,7 @@ omap2_mcspi_rx_dma(struct spi_device *spi, struct spi_transfer *xfer,
 			return count;
 		}
 	}
-	if (likely(mcspi_read_cs_reg(spi, OMAP2_MCSPI_CHSTAT0)
-				& OMAP2_MCSPI_CHSTAT_RXS)) {
+	if (!mcspi_wait_for_reg_bit(chstat_reg, OMAP2_MCSPI_CHSTAT_RXS)) {
 		u32 w;
 
 		w = mcspi_read_cs_reg(spi, OMAP2_MCSPI_RX0);
@@ -1064,8 +1052,11 @@ static int omap2_mcspi_setup(struct spi_device *spi)
 	}
 
 	ret = pm_runtime_get_sync(mcspi->dev);
-	if (ret < 0)
+	if (ret < 0) {
+		pm_runtime_put_noidle(mcspi->dev);
+
 		return ret;
+	}
 
 	ret = omap2_mcspi_setup_transfer(spi, NULL);
 	pm_runtime_mark_last_busy(mcspi->dev);
@@ -1283,8 +1274,11 @@ static int omap2_mcspi_master_setup(struct omap2_mcspi *mcspi)
 	int			ret = 0;
 
 	ret = pm_runtime_get_sync(mcspi->dev);
-	if (ret < 0)
+	if (ret < 0) {
+		pm_runtime_put_noidle(mcspi->dev);
+
 		return ret;
+	}
 
 	mcspi_write_reg(master, OMAP2_MCSPI_WAKEUPENABLE,
 			OMAP2_MCSPI_WAKEUPENABLE_WKEN);
@@ -1296,14 +1290,39 @@ static int omap2_mcspi_master_setup(struct omap2_mcspi *mcspi)
 	return 0;
 }
 
+/*
+ * When SPI wake up from off-mode, CS is in activate state. If it was in
+ * inactive state when driver was suspend, then force it to inactive state at
+ * wake up.
+ */
 static int omap_mcspi_runtime_resume(struct device *dev)
 {
-	struct omap2_mcspi	*mcspi;
-	struct spi_master	*master;
+	struct spi_master *master = dev_get_drvdata(dev);
+	struct omap2_mcspi *mcspi = spi_master_get_devdata(master);
+	struct omap2_mcspi_regs *ctx = &mcspi->ctx;
+	struct omap2_mcspi_cs *cs;
 
-	master = dev_get_drvdata(dev);
-	mcspi = spi_master_get_devdata(master);
-	omap2_mcspi_restore_ctx(mcspi);
+	/* McSPI: context restore */
+	mcspi_write_reg(master, OMAP2_MCSPI_MODULCTRL, ctx->modulctrl);
+	mcspi_write_reg(master, OMAP2_MCSPI_WAKEUPENABLE, ctx->wakeupenable);
+
+	list_for_each_entry(cs, &ctx->cs, node) {
+		/*
+		 * We need to toggle CS state for OMAP take this
+		 * change in account.
+		 */
+		if ((cs->chconf0 & OMAP2_MCSPI_CHCONF_FORCE) == 0) {
+			cs->chconf0 |= OMAP2_MCSPI_CHCONF_FORCE;
+			writel_relaxed(cs->chconf0,
+				       cs->base + OMAP2_MCSPI_CHCONF0);
+			cs->chconf0 &= ~OMAP2_MCSPI_CHCONF_FORCE;
+			writel_relaxed(cs->chconf0,
+				       cs->base + OMAP2_MCSPI_CHCONF0);
+		} else {
+			writel_relaxed(cs->chconf0,
+				       cs->base + OMAP2_MCSPI_CHCONF0);
+		}
+	}
 
 	return 0;
 }
@@ -1337,7 +1356,6 @@ static int omap2_mcspi_probe(struct platform_device *pdev)
 	struct resource		*r;
 	int			status = 0, i;
 	u32			regs_offset = 0;
-	static int		bus_num = 1;
 	struct device_node	*node = pdev->dev.of_node;
 	const struct of_device_id *match;
 
@@ -1373,14 +1391,11 @@ static int omap2_mcspi_probe(struct platform_device *pdev)
 
 		of_property_read_u32(node, "ti,spi-num-cs", &num_cs);
 		master->num_chipselect = num_cs;
-		master->bus_num = bus_num++;
 		if (of_get_property(node, "ti,pindir-d0-out-d1-in", NULL))
 			mcspi->pin_dir = MCSPI_PINDIR_D0_OUT_D1_IN;
 	} else {
 		pdata = dev_get_platdata(&pdev->dev);
 		master->num_chipselect = pdata->num_cs;
-		if (pdev->id != -1)
-			master->bus_num = pdev->id;
 		mcspi->pin_dir = pdata->pin_dir;
 	}
 	regs_offset = pdata->regs_offset;
@@ -1410,9 +1425,6 @@ static int omap2_mcspi_probe(struct platform_device *pdev)
 		sprintf(mcspi->dma_channels[i].dma_rx_ch_name, "rx%d", i);
 		sprintf(mcspi->dma_channels[i].dma_tx_ch_name, "tx%d", i);
 	}
-
-	if (status < 0)
-		goto free_master;
 
 	pm_runtime_use_autosuspend(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, SPI_AUTOSUSPEND_TIMEOUT);
@@ -1453,50 +1465,33 @@ static int omap2_mcspi_remove(struct platform_device *pdev)
 MODULE_ALIAS("platform:omap2_mcspi");
 
 #ifdef	CONFIG_SUSPEND
-/*
- * When SPI wake up from off-mode, CS is in activate state. If it was in
- * unactive state when driver was suspend, then force it to unactive state at
- * wake up.
- */
-static int omap2_mcspi_resume(struct device *dev)
-{
-	struct spi_master	*master = dev_get_drvdata(dev);
-	struct omap2_mcspi	*mcspi = spi_master_get_devdata(master);
-	struct omap2_mcspi_regs	*ctx = &mcspi->ctx;
-	struct omap2_mcspi_cs	*cs;
-
-	pm_runtime_get_sync(mcspi->dev);
-	list_for_each_entry(cs, &ctx->cs, node) {
-		if ((cs->chconf0 & OMAP2_MCSPI_CHCONF_FORCE) == 0) {
-			/*
-			 * We need to toggle CS state for OMAP take this
-			 * change in account.
-			 */
-			cs->chconf0 |= OMAP2_MCSPI_CHCONF_FORCE;
-			writel_relaxed(cs->chconf0, cs->base + OMAP2_MCSPI_CHCONF0);
-			cs->chconf0 &= ~OMAP2_MCSPI_CHCONF_FORCE;
-			writel_relaxed(cs->chconf0, cs->base + OMAP2_MCSPI_CHCONF0);
-		}
-	}
-	pm_runtime_mark_last_busy(mcspi->dev);
-	pm_runtime_put_autosuspend(mcspi->dev);
-
-	return pinctrl_pm_select_default_state(dev);
-}
-
-static int omap2_mcspi_suspend(struct device *dev)
+static int omap2_mcspi_suspend_noirq(struct device *dev)
 {
 	return pinctrl_pm_select_sleep_state(dev);
 }
 
+static int omap2_mcspi_resume_noirq(struct device *dev)
+{
+	struct spi_master *master = dev_get_drvdata(dev);
+	struct omap2_mcspi *mcspi = spi_master_get_devdata(master);
+	int error;
+
+	error = pinctrl_pm_select_default_state(dev);
+	if (error)
+		dev_warn(mcspi->dev, "%s: failed to set pins: %i\n",
+			 __func__, error);
+
+	return 0;
+}
+
 #else
-#define omap2_mcspi_suspend	NULL
-#define	omap2_mcspi_resume	NULL
+#define omap2_mcspi_suspend_noirq	NULL
+#define omap2_mcspi_resume_noirq	NULL
 #endif
 
 static const struct dev_pm_ops omap2_mcspi_pm_ops = {
-	.resume = omap2_mcspi_resume,
-	.suspend = omap2_mcspi_suspend,
+	.suspend_noirq = omap2_mcspi_suspend_noirq,
+	.resume_noirq = omap2_mcspi_resume_noirq,
 	.runtime_resume	= omap_mcspi_runtime_resume,
 };
 

@@ -119,31 +119,49 @@ u8 drm_dp_get_adjust_request_pre_emphasis(const u8 link_status[DP_LINK_STATUS_SI
 EXPORT_SYMBOL(drm_dp_get_adjust_request_pre_emphasis);
 
 void drm_dp_link_train_clock_recovery_delay(const u8 dpcd[DP_RECEIVER_CAP_SIZE]) {
-	if (dpcd[DP_TRAINING_AUX_RD_INTERVAL] == 0)
+	int rd_interval = dpcd[DP_TRAINING_AUX_RD_INTERVAL] &
+			  DP_TRAINING_AUX_RD_MASK;
+
+	if (rd_interval > 4)
+		DRM_DEBUG_KMS("AUX interval %d, out of range (max 4)\n",
+			      rd_interval);
+
+	if (rd_interval == 0 || dpcd[DP_DPCD_REV] >= DP_DPCD_REV_14)
 		udelay(100);
 	else
-		mdelay(dpcd[DP_TRAINING_AUX_RD_INTERVAL] * 4);
+		mdelay(rd_interval * 4);
 }
 EXPORT_SYMBOL(drm_dp_link_train_clock_recovery_delay);
 
 void drm_dp_link_train_channel_eq_delay(const u8 dpcd[DP_RECEIVER_CAP_SIZE]) {
-	if (dpcd[DP_TRAINING_AUX_RD_INTERVAL] == 0)
+	int rd_interval = dpcd[DP_TRAINING_AUX_RD_INTERVAL] &
+			  DP_TRAINING_AUX_RD_MASK;
+
+	if (rd_interval > 4)
+		DRM_DEBUG_KMS("AUX interval %d, out of range (max 4)\n",
+			      rd_interval);
+
+	if (rd_interval == 0)
 		udelay(400);
 	else
-		mdelay(dpcd[DP_TRAINING_AUX_RD_INTERVAL] * 4);
+		mdelay(rd_interval * 4);
 }
 EXPORT_SYMBOL(drm_dp_link_train_channel_eq_delay);
 
 u8 drm_dp_link_rate_to_bw_code(int link_rate)
 {
 	switch (link_rate) {
-	case 162000:
 	default:
+		WARN(1, "unknown DP link rate %d, using %x\n", link_rate,
+		     DP_LINK_BW_1_62);
+	case 162000:
 		return DP_LINK_BW_1_62;
 	case 270000:
 		return DP_LINK_BW_2_7;
 	case 540000:
 		return DP_LINK_BW_5_4;
+	case 810000:
+		return DP_LINK_BW_8_1;
 	}
 }
 EXPORT_SYMBOL(drm_dp_link_rate_to_bw_code);
@@ -151,13 +169,16 @@ EXPORT_SYMBOL(drm_dp_link_rate_to_bw_code);
 int drm_dp_bw_code_to_link_rate(u8 link_bw)
 {
 	switch (link_bw) {
-	case DP_LINK_BW_1_62:
 	default:
+		WARN(1, "unknown DP link BW code %x, using 162000\n", link_bw);
+	case DP_LINK_BW_1_62:
 		return 162000;
 	case DP_LINK_BW_2_7:
 		return 270000;
 	case DP_LINK_BW_5_4:
 		return 540000;
+	case DP_LINK_BW_8_1:
+		return 810000;
 	}
 }
 EXPORT_SYMBOL(drm_dp_bw_code_to_link_rate);
@@ -544,7 +565,7 @@ void drm_dp_downstream_debug(struct seq_file *m,
 				 DP_DETAILED_CAP_INFO_AVAILABLE;
 	int clk;
 	int bpc;
-	char id[6];
+	char id[7];
 	int len;
 	uint8_t rev[2];
 	int type = port_cap[0] & DP_DS_PORT_TYPE_MASK;
@@ -583,6 +604,7 @@ void drm_dp_downstream_debug(struct seq_file *m,
 		seq_puts(m, "\t\tType: N/A\n");
 	}
 
+	memset(id, 0, sizeof(id));
 	drm_dp_downstream_id(aux, id);
 	seq_printf(m, "\t\tID: %s\n", id);
 
@@ -591,7 +613,7 @@ void drm_dp_downstream_debug(struct seq_file *m,
 		seq_printf(m, "\t\tHW: %d.%d\n",
 			   (rev[0] & 0xf0) >> 4, rev[0] & 0xf);
 
-	len = drm_dp_dpcd_read(aux, DP_BRANCH_SW_REV, &rev, 2);
+	len = drm_dp_dpcd_read(aux, DP_BRANCH_SW_REV, rev, 2);
 	if (len > 0)
 		seq_printf(m, "\t\tSW: %d.%d\n", rev[0], rev[1]);
 
@@ -725,7 +747,7 @@ MODULE_PARM_DESC(dp_aux_i2c_speed_khz,
 /*
  * Transfer a single I2C-over-AUX message and handle various error conditions,
  * retrying the transaction as appropriate.  It is assumed that the
- * aux->transfer function does not modify anything in the msg other than the
+ * &drm_dp_aux.transfer function does not modify anything in the msg other than the
  * reply field.
  *
  * Returns bytes transferred on success, or a negative error code on failure.
@@ -981,6 +1003,78 @@ static const struct i2c_lock_operations drm_dp_i2c_lock_ops = {
 	.unlock_bus = unlock_bus,
 };
 
+static int drm_dp_aux_get_crc(struct drm_dp_aux *aux, u8 *crc)
+{
+	u8 buf, count;
+	int ret;
+
+	ret = drm_dp_dpcd_readb(aux, DP_TEST_SINK, &buf);
+	if (ret < 0)
+		return ret;
+
+	WARN_ON(!(buf & DP_TEST_SINK_START));
+
+	ret = drm_dp_dpcd_readb(aux, DP_TEST_SINK_MISC, &buf);
+	if (ret < 0)
+		return ret;
+
+	count = buf & DP_TEST_COUNT_MASK;
+	if (count == aux->crc_count)
+		return -EAGAIN; /* No CRC yet */
+
+	aux->crc_count = count;
+
+	/*
+	 * At DP_TEST_CRC_R_CR, there's 6 bytes containing CRC data, 2 bytes
+	 * per component (RGB or CrYCb).
+	 */
+	ret = drm_dp_dpcd_read(aux, DP_TEST_CRC_R_CR, crc, 6);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static void drm_dp_aux_crc_work(struct work_struct *work)
+{
+	struct drm_dp_aux *aux = container_of(work, struct drm_dp_aux,
+					      crc_work);
+	struct drm_crtc *crtc;
+	u8 crc_bytes[6];
+	uint32_t crcs[3];
+	int ret;
+
+	if (WARN_ON(!aux->crtc))
+		return;
+
+	crtc = aux->crtc;
+	while (crtc->crc.opened) {
+		drm_crtc_wait_one_vblank(crtc);
+		if (!crtc->crc.opened)
+			break;
+
+		ret = drm_dp_aux_get_crc(aux, crc_bytes);
+		if (ret == -EAGAIN) {
+			usleep_range(1000, 2000);
+			ret = drm_dp_aux_get_crc(aux, crc_bytes);
+		}
+
+		if (ret == -EAGAIN) {
+			DRM_DEBUG_KMS("Get CRC failed after retrying: %d\n",
+				      ret);
+			continue;
+		} else if (ret) {
+			DRM_DEBUG_KMS("Failed to get a CRC: %d\n", ret);
+			continue;
+		}
+
+		crcs[0] = crc_bytes[0] | crc_bytes[1] << 8;
+		crcs[1] = crc_bytes[2] | crc_bytes[3] << 8;
+		crcs[2] = crc_bytes[4] | crc_bytes[5] << 8;
+		drm_crtc_add_crc_entry(crtc, false, 0, crcs);
+	}
+}
+
 /**
  * drm_dp_aux_init() - minimally initialise an aux channel
  * @aux: DisplayPort AUX channel
@@ -993,6 +1087,7 @@ static const struct i2c_lock_operations drm_dp_i2c_lock_ops = {
 void drm_dp_aux_init(struct drm_dp_aux *aux)
 {
 	mutex_init(&aux->hw_mutex);
+	INIT_WORK(&aux->crc_work, drm_dp_aux_crc_work);
 
 	aux->ddc.algo = &drm_dp_i2c_algo;
 	aux->ddc.algo_data = aux;
@@ -1020,7 +1115,6 @@ int drm_dp_aux_register(struct drm_dp_aux *aux)
 	aux->ddc.class = I2C_CLASS_DDC;
 	aux->ddc.owner = THIS_MODULE;
 	aux->ddc.dev.parent = aux->dev;
-	aux->ddc.dev.of_node = aux->dev->of_node;
 
 	strlcpy(aux->ddc.name, aux->name ? aux->name : dev_name(aux->dev),
 		sizeof(aux->ddc.name));
@@ -1065,6 +1159,7 @@ int drm_dp_psr_setup_time(const u8 psr_cap[EDP_PSR_RECEIVER_CAP_SIZE])
 	static const u16 psr_setup_time_us[] = {
 		PSR_SETUP_TIME(330),
 		PSR_SETUP_TIME(275),
+		PSR_SETUP_TIME(220),
 		PSR_SETUP_TIME(165),
 		PSR_SETUP_TIME(110),
 		PSR_SETUP_TIME(55),
@@ -1081,3 +1176,140 @@ int drm_dp_psr_setup_time(const u8 psr_cap[EDP_PSR_RECEIVER_CAP_SIZE])
 EXPORT_SYMBOL(drm_dp_psr_setup_time);
 
 #undef PSR_SETUP_TIME
+
+/**
+ * drm_dp_start_crc() - start capture of frame CRCs
+ * @aux: DisplayPort AUX channel
+ * @crtc: CRTC displaying the frames whose CRCs are to be captured
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int drm_dp_start_crc(struct drm_dp_aux *aux, struct drm_crtc *crtc)
+{
+	u8 buf;
+	int ret;
+
+	ret = drm_dp_dpcd_readb(aux, DP_TEST_SINK, &buf);
+	if (ret < 0)
+		return ret;
+
+	ret = drm_dp_dpcd_writeb(aux, DP_TEST_SINK, buf | DP_TEST_SINK_START);
+	if (ret < 0)
+		return ret;
+
+	aux->crc_count = 0;
+	aux->crtc = crtc;
+	schedule_work(&aux->crc_work);
+
+	return 0;
+}
+EXPORT_SYMBOL(drm_dp_start_crc);
+
+/**
+ * drm_dp_stop_crc() - stop capture of frame CRCs
+ * @aux: DisplayPort AUX channel
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int drm_dp_stop_crc(struct drm_dp_aux *aux)
+{
+	u8 buf;
+	int ret;
+
+	ret = drm_dp_dpcd_readb(aux, DP_TEST_SINK, &buf);
+	if (ret < 0)
+		return ret;
+
+	ret = drm_dp_dpcd_writeb(aux, DP_TEST_SINK, buf & ~DP_TEST_SINK_START);
+	if (ret < 0)
+		return ret;
+
+	flush_work(&aux->crc_work);
+	aux->crtc = NULL;
+
+	return 0;
+}
+EXPORT_SYMBOL(drm_dp_stop_crc);
+
+struct dpcd_quirk {
+	u8 oui[3];
+	bool is_branch;
+	u32 quirks;
+};
+
+#define OUI(first, second, third) { (first), (second), (third) }
+
+static const struct dpcd_quirk dpcd_quirk_list[] = {
+	/* Analogix 7737 needs reduced M and N at HBR2 link rates */
+	{ OUI(0x00, 0x22, 0xb9), true, BIT(DP_DPCD_QUIRK_LIMITED_M_N) },
+};
+
+#undef OUI
+
+/*
+ * Get a bit mask of DPCD quirks for the sink/branch device identified by
+ * ident. The quirk data is shared but it's up to the drivers to act on the
+ * data.
+ *
+ * For now, only the OUI (first three bytes) is used, but this may be extended
+ * to device identification string and hardware/firmware revisions later.
+ */
+static u32
+drm_dp_get_quirks(const struct drm_dp_dpcd_ident *ident, bool is_branch)
+{
+	const struct dpcd_quirk *quirk;
+	u32 quirks = 0;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(dpcd_quirk_list); i++) {
+		quirk = &dpcd_quirk_list[i];
+
+		if (quirk->is_branch != is_branch)
+			continue;
+
+		if (memcmp(quirk->oui, ident->oui, sizeof(ident->oui)) != 0)
+			continue;
+
+		quirks |= quirk->quirks;
+	}
+
+	return quirks;
+}
+
+/**
+ * drm_dp_read_desc - read sink/branch descriptor from DPCD
+ * @aux: DisplayPort AUX channel
+ * @desc: Device decriptor to fill from DPCD
+ * @is_branch: true for branch devices, false for sink devices
+ *
+ * Read DPCD 0x400 (sink) or 0x500 (branch) into @desc. Also debug log the
+ * identification.
+ *
+ * Returns 0 on success or a negative error code on failure.
+ */
+int drm_dp_read_desc(struct drm_dp_aux *aux, struct drm_dp_desc *desc,
+		     bool is_branch)
+{
+	struct drm_dp_dpcd_ident *ident = &desc->ident;
+	unsigned int offset = is_branch ? DP_BRANCH_OUI : DP_SINK_OUI;
+	int ret, dev_id_len;
+
+	ret = drm_dp_dpcd_read(aux, offset, ident, sizeof(*ident));
+	if (ret < 0)
+		return ret;
+
+	desc->quirks = drm_dp_get_quirks(ident, is_branch);
+
+	dev_id_len = strnlen(ident->device_id, sizeof(ident->device_id));
+
+	DRM_DEBUG_KMS("DP %s: OUI %*phD dev-ID %*pE HW-rev %d.%d SW-rev %d.%d quirks 0x%04x\n",
+		      is_branch ? "branch" : "sink",
+		      (int)sizeof(ident->oui), ident->oui,
+		      dev_id_len, ident->device_id,
+		      ident->hw_rev >> 4, ident->hw_rev & 0xf,
+		      ident->sw_major_rev, ident->sw_minor_rev,
+		      desc->quirks);
+
+	return 0;
+}
+EXPORT_SYMBOL(drm_dp_read_desc);

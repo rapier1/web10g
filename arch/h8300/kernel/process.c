@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/h8300/kernel/process.c
  *
@@ -25,6 +26,9 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/smp.h>
@@ -124,11 +128,6 @@ int copy_thread(unsigned long clone_flags,
 	p->thread.ksp = (unsigned long)childregs;
 
 	return 0;
-}
-
-unsigned long thread_saved_pc(struct task_struct *tsk)
-{
-	return ((struct pt_regs *)tsk->thread.esp0)->pc;
 }
 
 unsigned long get_wchan(struct task_struct *p)

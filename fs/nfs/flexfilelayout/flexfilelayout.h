@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * NFSv4 flexfile layout driver data structures.
  *
@@ -13,6 +14,7 @@
 #define FF_FLAGS_NO_IO_THRU_MDS  2
 #define FF_FLAGS_NO_READ_IO      4
 
+#include <linux/refcount.h>
 #include "../pnfs.h"
 
 /* XXX: Let's filter out insanely large mirror count for now to avoid oom
@@ -81,7 +83,7 @@ struct nfs4_ff_layout_mirror {
 	nfs4_stateid			stateid;
 	struct rpc_cred	__rcu		*ro_cred;
 	struct rpc_cred	__rcu		*rw_cred;
-	atomic_t			ref;
+	refcount_t			ref;
 	spinlock_t			lock;
 	unsigned long			flags;
 	struct nfs4_ff_layoutstat	read_stat;
@@ -175,7 +177,19 @@ ff_layout_no_read_on_rw(struct pnfs_layout_segment *lseg)
 static inline bool
 ff_layout_test_devid_unavailable(struct nfs4_deviceid_node *node)
 {
-	return nfs4_test_deviceid_unavailable(node);
+	/*
+	 * Flexfiles should never mark a DS unavailable, but if it does
+	 * print a (ratelimited) warning as this can affect performance.
+	 */
+	if (nfs4_test_deviceid_unavailable(node)) {
+		u32 *p = (u32 *)node->deviceid.data;
+
+		pr_warn_ratelimited("NFS: flexfiles layout referencing an "
+				"unavailable device [%x%x%x%x]\n",
+				p[0], p[1], p[2], p[3]);
+		return true;
+	}
+	return false;
 }
 
 static inline int

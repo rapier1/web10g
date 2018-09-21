@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Broadcom Corporation
+ * Copyright (C) 2015-2017 Broadcom
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
@@ -56,7 +56,7 @@ int bcm54xx_auxctl_read(struct phy_device *phydev, u16 regnum)
 	/* The register must be written to both the Shadow Register Select and
 	 * the Shadow Read Register Selector
 	 */
-	phy_write(phydev, MII_BCM54XX_AUX_CTL, regnum |
+	phy_write(phydev, MII_BCM54XX_AUX_CTL, MII_BCM54XX_AUXCTL_SHDWSEL_MASK |
 		  regnum << MII_BCM54XX_AUXCTL_SHDWSEL_READ_SHIFT);
 	return phy_read(phydev, MII_BCM54XX_AUX_CTL);
 }
@@ -201,8 +201,7 @@ int bcm_phy_set_eee(struct phy_device *phydev, bool enable)
 	int val;
 
 	/* Enable EEE at PHY level */
-	val = phy_read_mmd_indirect(phydev, BRCM_CL45VEN_EEE_CONTROL,
-				    MDIO_MMD_AN);
+	val = phy_read_mmd(phydev, MDIO_MMD_AN, BRCM_CL45VEN_EEE_CONTROL);
 	if (val < 0)
 		return val;
 
@@ -211,22 +210,19 @@ int bcm_phy_set_eee(struct phy_device *phydev, bool enable)
 	else
 		val &= ~(LPI_FEATURE_EN | LPI_FEATURE_EN_DIG1000X);
 
-	phy_write_mmd_indirect(phydev, BRCM_CL45VEN_EEE_CONTROL,
-			       MDIO_MMD_AN, (u32)val);
+	phy_write_mmd(phydev, MDIO_MMD_AN, BRCM_CL45VEN_EEE_CONTROL, (u32)val);
 
 	/* Advertise EEE */
-	val = phy_read_mmd_indirect(phydev, BCM_CL45VEN_EEE_ADV,
-				    MDIO_MMD_AN);
+	val = phy_read_mmd(phydev, MDIO_MMD_AN, BCM_CL45VEN_EEE_ADV);
 	if (val < 0)
 		return val;
 
 	if (enable)
-		val |= (MDIO_AN_EEE_ADV_100TX | MDIO_AN_EEE_ADV_1000T);
+		val |= (MDIO_EEE_100TX | MDIO_EEE_1000T);
 	else
-		val &= ~(MDIO_AN_EEE_ADV_100TX | MDIO_AN_EEE_ADV_1000T);
+		val &= ~(MDIO_EEE_100TX | MDIO_EEE_1000T);
 
-	phy_write_mmd_indirect(phydev, BCM_CL45VEN_EEE_ADV,
-			       MDIO_MMD_AN, (u32)val);
+	phy_write_mmd(phydev, MDIO_MMD_AN, BCM_CL45VEN_EEE_ADV, (u32)val);
 
 	return 0;
 }
@@ -345,14 +341,10 @@ void bcm_phy_get_strings(struct phy_device *phydev, u8 *data)
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(bcm_phy_hw_stats); i++)
-		memcpy(data + i * ETH_GSTRING_LEN,
-		       bcm_phy_hw_stats[i].string, ETH_GSTRING_LEN);
+		strlcpy(data + i * ETH_GSTRING_LEN,
+			bcm_phy_hw_stats[i].string, ETH_GSTRING_LEN);
 }
 EXPORT_SYMBOL_GPL(bcm_phy_get_strings);
-
-#ifndef UINT64_MAX
-#define UINT64_MAX              (u64)(~((u64)0))
-#endif
 
 /* Caller is supposed to provide appropriate storage for the library code to
  * access the shadow copy
@@ -366,7 +358,7 @@ static u64 bcm_phy_get_stat(struct phy_device *phydev, u64 *shadow,
 
 	val = phy_read(phydev, stat.reg);
 	if (val < 0) {
-		ret = UINT64_MAX;
+		ret = U64_MAX;
 	} else {
 		val >>= stat.shift;
 		val = val & ((1 << stat.bits) - 1);

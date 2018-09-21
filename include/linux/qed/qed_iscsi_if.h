@@ -1,9 +1,33 @@
 /* QLogic qed NIC Driver
- * Copyright (c) 2015 QLogic Corporation
+ * Copyright (c) 2015-2017  QLogic Corporation
  *
- * This software is available under the terms of the GNU General Public License
- * (GPL) Version 2, available from the file COPYING in the main directory of
- * this source tree.
+ * This software is available to you under a choice of one of two
+ * licenses.  You may choose to be licensed under the terms of the GNU
+ * General Public License (GPL) Version 2, available from the file
+ * COPYING in the main directory of this source tree, or the
+ * OpenIB.org BSD license below:
+ *
+ *     Redistribution and use in source and binary forms, with or
+ *     without modification, are permitted provided that the following
+ *     conditions are met:
+ *
+ *      - Redistributions of source code must retain the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer.
+ *
+ *      - Redistributions in binary form must reproduce the above
+ *        copyright notice, this list of conditions and the following
+ *        disclaimer in the documentation and /or other materials
+ *        provided with the distribution.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef _QED_ISCSI_IF_H
@@ -43,6 +67,8 @@ struct qed_dev_iscsi_info {
 
 	void __iomem *primary_dbq_rq_addr;
 	void __iomem *secondary_bdq_rq_addr;
+
+	u8 num_cqs;
 };
 
 struct qed_iscsi_id_params {
@@ -76,7 +102,6 @@ struct qed_iscsi_params_offload {
 	u32 ss_thresh;
 	u16 srtt;
 	u16 rtt_var;
-	u32 ts_time;
 	u32 ts_recent;
 	u32 ts_recent_age;
 	u32 total_rt;
@@ -98,7 +123,6 @@ struct qed_iscsi_params_offload {
 	u16 mss;
 	u8 snd_wnd_scale;
 	u8 rcv_wnd_scale;
-	u32 ts_ticks_per_second;
 	u16 da_timeout_value;
 	u8 ack_frequency;
 };
@@ -184,6 +208,11 @@ struct qed_iscsi_cb_ops {
  *			@param stats - pointer to struck that would be filled
  *				we stats
  *			@return 0 on success, error otherwise.
+ * @change_mac		Change MAC of interface
+ *			@param cdev
+ *			@param handle - the connection handle.
+ *			@param mac - new MAC to configure.
+ *			@return 0 on success, otherwise error value.
  */
 struct qed_iscsi_ops {
 	const struct qed_common_ops *common;
@@ -222,6 +251,8 @@ struct qed_iscsi_ops {
 
 	int (*get_stats)(struct qed_dev *cdev,
 			 struct qed_iscsi_stats *stats);
+
+	int (*change_mac)(struct qed_dev *cdev, u32 handle, const u8 *mac);
 };
 
 const struct qed_iscsi_ops *qed_get_iscsi_ops(void);

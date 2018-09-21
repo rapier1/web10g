@@ -183,8 +183,6 @@ static char mv643xx_eth_driver_version[] = "1.4";
 #define DEFAULT_TX_QUEUE_SIZE	512
 #define SKB_DMA_REALIGN		((PAGE_SIZE - NET_SKB_PAD) % SMP_CACHE_BYTES)
 
-#define TSO_HEADER_SIZE		128
-
 /* Max number of allowed TCP segments for software TSO */
 #define MV643XX_MAX_TSO_SEGS 100
 #define MV643XX_MAX_SKB_DESCS (MV643XX_MAX_TSO_SEGS * 2 + MAX_SKB_FRAGS)
@@ -1123,7 +1121,7 @@ static int txq_reclaim(struct tx_queue *txq, int budget, int force)
 			struct sk_buff *skb = __skb_dequeue(&txq->tx_skb);
 
 			if (!WARN_ON(!skb))
-				dev_kfree_skb(skb);
+				dev_consume_skb_any(skb);
 		}
 
 		if (cmd_sts & ERROR_SUMMARY) {
@@ -1348,9 +1346,9 @@ static void mib_counters_update(struct mv643xx_eth_private *mp)
 	spin_unlock_bh(&mp->mib_counters_lock);
 }
 
-static void mib_counters_timer_wrapper(unsigned long _mp)
+static void mib_counters_timer_wrapper(struct timer_list *t)
 {
-	struct mv643xx_eth_private *mp = (void *)_mp;
+	struct mv643xx_eth_private *mp = from_timer(mp, t, mib_counters_timer);
 	mib_counters_update(mp);
 	mod_timer(&mp->mib_counters_timer, jiffies + 30 * HZ);
 }
@@ -1501,12 +1499,9 @@ mv643xx_eth_get_link_ksettings_phy(struct mv643xx_eth_private *mp,
 				   struct ethtool_link_ksettings *cmd)
 {
 	struct net_device *dev = mp->dev;
-	int err;
 	u32 supported, advertising;
 
-	err = phy_read_status(dev->phydev);
-	if (err == 0)
-		err = phy_ethtool_ksettings_get(dev->phydev, cmd);
+	phy_ethtool_ksettings_get(dev->phydev, cmd);
 
 	/*
 	 * The MAC does not support 1000baseT_Half.
@@ -1522,7 +1517,7 @@ mv643xx_eth_get_link_ksettings_phy(struct mv643xx_eth_private *mp,
 	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
 						advertising);
 
-	return err;
+	return 0;
 }
 
 static int
@@ -2029,7 +2024,7 @@ static void rxq_deinit(struct rx_queue *rxq)
 
 	for (i = 0; i < rxq->rx_ring_size; i++) {
 		if (rxq->rx_skb[i]) {
-			dev_kfree_skb(rxq->rx_skb[i]);
+			dev_consume_skb_any(rxq->rx_skb[i]);
 			rxq->rx_desc_count--;
 		}
 	}
@@ -2319,16 +2314,16 @@ static int mv643xx_eth_poll(struct napi_struct *napi, int budget)
 	if (work_done < budget) {
 		if (mp->oom)
 			mod_timer(&mp->rx_oom, jiffies + (HZ / 10));
-		napi_complete(napi);
+		napi_complete_done(napi, work_done);
 		wrlp(mp, INT_MASK, mp->int_mask);
 	}
 
 	return work_done;
 }
 
-static inline void oom_timer_wrapper(unsigned long data)
+static inline void oom_timer_wrapper(struct timer_list *t)
 {
-	struct mv643xx_eth_private *mp = (void *)data;
+	struct mv643xx_eth_private *mp = from_timer(mp, t, rx_oom);
 
 	napi_schedule(&mp->napi);
 }
@@ -2737,7 +2732,7 @@ static int mv643xx_eth_shared_of_add_port(struct platform_device *pdev,
 	ppd.shared = pdev;
 
 	memset(&res, 0, sizeof(res));
-	if (!of_irq_to_resource(pnp, 0, &res)) {
+	if (of_irq_to_resource(pnp, 0, &res) <= 0) {
 		dev_err(&pdev->dev, "missing interrupt on %s\n", pnp->name);
 		return -EINVAL;
 	}
@@ -3183,8 +3178,7 @@ static int mv643xx_eth_probe(struct platform_device *pdev)
 
 	mib_counters_clear(mp);
 
-	setup_timer(&mp->mib_counters_timer, mib_counters_timer_wrapper,
-		    (unsigned long)mp);
+	timer_setup(&mp->mib_counters_timer, mib_counters_timer_wrapper, 0);
 	mp->mib_counters_timer.expires = jiffies + 30 * HZ;
 
 	spin_lock_init(&mp->mib_counters_lock);
@@ -3193,7 +3187,7 @@ static int mv643xx_eth_probe(struct platform_device *pdev)
 
 	netif_napi_add(dev, &mp->napi, mv643xx_eth_poll, NAPI_POLL_WEIGHT);
 
-	setup_timer(&mp->rx_oom, oom_timer_wrapper, (unsigned long)mp);
+	timer_setup(&mp->rx_oom, oom_timer_wrapper, 0);
 
 
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);

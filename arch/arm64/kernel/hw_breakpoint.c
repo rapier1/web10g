@@ -28,8 +28,8 @@
 #include <linux/perf_event.h>
 #include <linux/ptrace.h>
 #include <linux/smp.h>
+#include <linux/uaccess.h>
 
-#include <asm/compat.h>
 #include <asm/current.h>
 #include <asm/debug-monitors.h>
 #include <asm/hw_breakpoint.h>
@@ -720,6 +720,8 @@ static u64 get_distance_from_watchpoint(unsigned long addr, u64 val,
 {
 	u64 wp_low, wp_high;
 	u32 lens, lene;
+
+	addr = untagged_addr(addr);
 
 	lens = __ffs(ctrl->len);
 	lene = __fls(ctrl->len);

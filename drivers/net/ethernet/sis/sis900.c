@@ -176,7 +176,7 @@ struct sis900_private {
 
 	u32 msg_enable;
 
-	unsigned int cur_rx, dirty_rx; /* producer/comsumer pointers for Tx/Rx ring */
+	unsigned int cur_rx, dirty_rx; /* producer/consumer pointers for Tx/Rx ring */
 	unsigned int cur_tx, dirty_tx;
 
 	/* The saved address of a sent/receive-in-place packet buffer */
@@ -218,7 +218,7 @@ static void sis900_init_rxfilter (struct net_device * net_dev);
 static u16 read_eeprom(void __iomem *ioaddr, int location);
 static int mdio_read(struct net_device *net_dev, int phy_id, int location);
 static void mdio_write(struct net_device *net_dev, int phy_id, int location, int val);
-static void sis900_timer(unsigned long data);
+static void sis900_timer(struct timer_list *t);
 static void sis900_check_mode (struct net_device *net_dev, struct mii_phy *mii_phy);
 static void sis900_tx_timeout(struct net_device *net_dev);
 static void sis900_init_tx_ring(struct net_device *net_dev);
@@ -1065,10 +1065,8 @@ sis900_open(struct net_device *net_dev)
 
 	/* Set the timer to switch to check for link beat and perhaps switch
 	   to an alternate media type. */
-	init_timer(&sis_priv->timer);
+	timer_setup(&sis_priv->timer, sis900_timer, 0);
 	sis_priv->timer.expires = jiffies + HZ;
-	sis_priv->timer.data = (unsigned long)net_dev;
-	sis_priv->timer.function = sis900_timer;
 	add_timer(&sis_priv->timer);
 
 	return 0;
@@ -1302,10 +1300,10 @@ static void sis630_set_eq(struct net_device *net_dev, u8 revision)
  *	link status (ON/OFF) and link mode (10/100/Full/Half)
  */
 
-static void sis900_timer(unsigned long data)
+static void sis900_timer(struct timer_list *t)
 {
-	struct net_device *net_dev = (struct net_device *)data;
-	struct sis900_private *sis_priv = netdev_priv(net_dev);
+	struct sis900_private *sis_priv = from_timer(sis_priv, t, timer);
+	struct net_device *net_dev = sis_priv->mii_info.dev;
 	struct mii_phy *mii_phy = sis_priv->mii;
 	static const int next_tick = 5*HZ;
 	int speed = 0, duplex = 0;
@@ -2035,23 +2033,23 @@ static u32 sis900_get_link(struct net_device *net_dev)
 	return mii_link_ok(&sis_priv->mii_info);
 }
 
-static int sis900_get_settings(struct net_device *net_dev,
-				struct ethtool_cmd *cmd)
+static int sis900_get_link_ksettings(struct net_device *net_dev,
+				     struct ethtool_link_ksettings *cmd)
 {
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 	spin_lock_irq(&sis_priv->lock);
-	mii_ethtool_gset(&sis_priv->mii_info, cmd);
+	mii_ethtool_get_link_ksettings(&sis_priv->mii_info, cmd);
 	spin_unlock_irq(&sis_priv->lock);
 	return 0;
 }
 
-static int sis900_set_settings(struct net_device *net_dev,
-				struct ethtool_cmd *cmd)
+static int sis900_set_link_ksettings(struct net_device *net_dev,
+				     const struct ethtool_link_ksettings *cmd)
 {
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 	int rt;
 	spin_lock_irq(&sis_priv->lock);
-	rt = mii_ethtool_sset(&sis_priv->mii_info, cmd);
+	rt = mii_ethtool_set_link_ksettings(&sis_priv->mii_info, cmd);
 	spin_unlock_irq(&sis_priv->lock);
 	return rt;
 }
@@ -2129,11 +2127,11 @@ static const struct ethtool_ops sis900_ethtool_ops = {
 	.get_msglevel	= sis900_get_msglevel,
 	.set_msglevel	= sis900_set_msglevel,
 	.get_link	= sis900_get_link,
-	.get_settings	= sis900_get_settings,
-	.set_settings	= sis900_set_settings,
 	.nway_reset	= sis900_nway_reset,
 	.get_wol	= sis900_get_wol,
-	.set_wol	= sis900_set_wol
+	.set_wol	= sis900_set_wol,
+	.get_link_ksettings = sis900_get_link_ksettings,
+	.set_link_ksettings = sis900_set_link_ksettings,
 };
 
 /**

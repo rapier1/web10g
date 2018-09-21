@@ -196,6 +196,9 @@ static void parse_user_hints(struct hda_codec *codec)
 	val = snd_hda_get_bool_hint(codec, "hp_mic_detect");
 	if (val >= 0)
 		spec->suppress_hp_mic_detect = !val;
+	val = snd_hda_get_bool_hint(codec, "vmaster");
+	if (val >= 0)
+		spec->suppress_vmaster = !val;
 
 	if (!snd_hda_get_int_hint(codec, "mixer_nid", &val))
 		spec->mixer_nid = val;
@@ -261,10 +264,10 @@ static struct nid_path *get_nid_path(struct hda_codec *codec,
 				     int anchor_nid)
 {
 	struct hda_gen_spec *spec = codec->spec;
+	struct nid_path *path;
 	int i;
 
-	for (i = 0; i < spec->paths.used; i++) {
-		struct nid_path *path = snd_array_elem(&spec->paths, i);
+	snd_array_for_each(&spec->paths, i, path) {
 		if (path->depth <= 0)
 			continue;
 		if ((!from_nid || path->path[0] == from_nid) &&
@@ -322,10 +325,10 @@ EXPORT_SYMBOL_GPL(snd_hda_get_path_from_idx);
 static bool is_dac_already_used(struct hda_codec *codec, hda_nid_t nid)
 {
 	struct hda_gen_spec *spec = codec->spec;
+	const struct nid_path *path;
 	int i;
 
-	for (i = 0; i < spec->paths.used; i++) {
-		struct nid_path *path = snd_array_elem(&spec->paths, i);
+	snd_array_for_each(&spec->paths, i, path) {
 		if (path->path[0] == nid)
 			return true;
 	}
@@ -348,11 +351,11 @@ static bool is_reachable_path(struct hda_codec *codec,
 static bool is_ctl_used(struct hda_codec *codec, unsigned int val, int type)
 {
 	struct hda_gen_spec *spec = codec->spec;
+	const struct nid_path *path;
 	int i;
 
 	val &= AMP_VAL_COMPARE_MASK;
-	for (i = 0; i < spec->paths.used; i++) {
-		struct nid_path *path = snd_array_elem(&spec->paths, i);
+	snd_array_for_each(&spec->paths, i, path) {
 		if ((path->ctls[type] & AMP_VAL_COMPARE_MASK) == val)
 			return true;
 	}
@@ -635,13 +638,13 @@ static bool is_active_nid(struct hda_codec *codec, hda_nid_t nid,
 {
 	struct hda_gen_spec *spec = codec->spec;
 	int type = get_wcaps_type(get_wcaps(codec, nid));
+	const struct nid_path *path;
 	int i, n;
 
 	if (nid == codec->core.afg)
 		return true;
 
-	for (n = 0; n < spec->paths.used; n++) {
-		struct nid_path *path = snd_array_elem(&spec->paths, n);
+	snd_array_for_each(&spec->paths, n, path) {
 		if (!path->active)
 			continue;
 		if (codec->power_save_node) {
@@ -792,6 +795,8 @@ static void activate_amp_in(struct hda_codec *codec, struct nid_path *path,
 	hda_nid_t nid = path->path[i];
 
 	nums = snd_hda_get_conn_list(codec, nid, &conn);
+	if (nums < 0)
+		return;
 	type = get_wcaps_type(get_wcaps(codec, nid));
 	if (type == AC_WID_PIN ||
 	    (type == AC_WID_AUD_IN && codec->single_adc_amp)) {
@@ -945,6 +950,8 @@ static void resume_path_from_idx(struct hda_codec *codec, int path_idx)
 
 static int hda_gen_mixer_mute_put(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol);
+static int hda_gen_bind_mute_get(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol);
 static int hda_gen_bind_mute_put(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol);
 
@@ -967,7 +974,7 @@ static const struct snd_kcontrol_new control_templates[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.info = snd_hda_mixer_amp_switch_info,
-		.get = snd_hda_mixer_bind_switch_get,
+		.get = hda_gen_bind_mute_get,
 		.put = hda_gen_bind_mute_put, /* replaced */
 		.private_value = HDA_COMPOSE_AMP_VAL(0, 3, 0, 0),
 	},
@@ -1098,11 +1105,51 @@ static int hda_gen_mixer_mute_put(struct snd_kcontrol *kcontrol,
 	return snd_hda_mixer_amp_switch_put(kcontrol, ucontrol);
 }
 
+/*
+ * Bound mute controls
+ */
+#define AMP_VAL_IDX_SHIFT	19
+#define AMP_VAL_IDX_MASK	(0x0f<<19)
+
+static int hda_gen_bind_mute_get(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol)
+{
+	struct hda_codec *codec = snd_kcontrol_chip(kcontrol);
+	unsigned long pval;
+	int err;
+
+	mutex_lock(&codec->control_mutex);
+	pval = kcontrol->private_value;
+	kcontrol->private_value = pval & ~AMP_VAL_IDX_MASK; /* index 0 */
+	err = snd_hda_mixer_amp_switch_get(kcontrol, ucontrol);
+	kcontrol->private_value = pval;
+	mutex_unlock(&codec->control_mutex);
+	return err;
+}
+
 static int hda_gen_bind_mute_put(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol)
 {
+	struct hda_codec *codec = snd_kcontrol_chip(kcontrol);
+	unsigned long pval;
+	int i, indices, err = 0, change = 0;
+
 	sync_auto_mute_bits(kcontrol, ucontrol);
-	return snd_hda_mixer_bind_switch_put(kcontrol, ucontrol);
+
+	mutex_lock(&codec->control_mutex);
+	pval = kcontrol->private_value;
+	indices = (pval & AMP_VAL_IDX_MASK) >> AMP_VAL_IDX_SHIFT;
+	for (i = 0; i < indices; i++) {
+		kcontrol->private_value = (pval & ~AMP_VAL_IDX_MASK) |
+			(i << AMP_VAL_IDX_SHIFT);
+		err = snd_hda_mixer_amp_switch_put(kcontrol, ucontrol);
+		if (err < 0)
+			break;
+		change |= err;
+	}
+	kcontrol->private_value = pval;
+	mutex_unlock(&codec->control_mutex);
+	return err < 0 ? err : change;
 }
 
 /* any ctl assigned to the path with the given index? */
@@ -1125,6 +1172,7 @@ static const char *get_line_out_pfx(struct hda_codec *codec, int ch,
 
 	*index = 0;
 	if (cfg->line_outs == 1 && !spec->multi_ios &&
+	    !codec->force_pin_prefix &&
 	    !cfg->hp_outs && !cfg->speaker_outs)
 		return spec->vmaster_mute.hook ? "PCM" : "Master";
 
@@ -1132,6 +1180,7 @@ static const char *get_line_out_pfx(struct hda_codec *codec, int ch,
 	 * use it master (or "PCM" if a vmaster hook is present)
 	 */
 	if (spec->multiout.num_dacs == 1 && !spec->mixer_nid &&
+	    !codec->force_pin_prefix &&
 	    !spec->multiout.hp_out_nid[0] && !spec->multiout.extra_out_nid[0])
 		return spec->vmaster_mute.hook ? "PCM" : "Master";
 
@@ -2016,7 +2065,7 @@ static int parse_output_paths(struct hda_codec *codec)
 			snd_hda_set_vmaster_tlv(codec, spec->vmaster_nid,
 						HDA_OUTPUT, spec->vmaster_tlv);
 			if (spec->dac_min_mute)
-				spec->vmaster_tlv[3] |= TLV_DB_SCALE_MUTE;
+				spec->vmaster_tlv[SNDRV_CTL_TLVO_DB_SCALE_MUTE_AND_STEP] |= TLV_DB_SCALE_MUTE;
 		}
 	}
 
@@ -2647,10 +2696,10 @@ static const struct snd_kcontrol_new out_jack_mode_enum = {
 static bool find_kctl_name(struct hda_codec *codec, const char *name, int idx)
 {
 	struct hda_gen_spec *spec = codec->spec;
+	const struct snd_kcontrol_new *kctl;
 	int i;
 
-	for (i = 0; i < spec->kctls.used; i++) {
-		struct snd_kcontrol_new *kctl = snd_array_elem(&spec->kctls, i);
+	snd_array_for_each(&spec->kctls, i, kctl) {
 		if (!strcmp(kctl->name, name) && kctl->index == idx)
 			return true;
 	}
@@ -3169,6 +3218,7 @@ static int check_dyn_adc_switch(struct hda_codec *codec)
 						spec->input_paths[i][nums]);
 					spec->input_paths[i][nums] =
 						spec->input_paths[i][n];
+					spec->input_paths[i][n] = 0;
 				}
 			}
 			nums++;
@@ -3971,8 +4021,7 @@ static hda_nid_t set_path_power(struct hda_codec *codec, hda_nid_t nid,
 	struct nid_path *path;
 	int n;
 
-	for (n = 0; n < spec->paths.used; n++) {
-		path = snd_array_elem(&spec->paths, n);
+	snd_array_for_each(&spec->paths, n, path) {
 		if (!path->depth)
 			continue;
 		if (path->path[0] == nid ||
@@ -5031,7 +5080,7 @@ int snd_hda_gen_build_controls(struct hda_codec *codec)
 	}
 
 	/* if we have no master control, let's create it */
-	if (!spec->no_analog &&
+	if (!spec->no_analog && !spec->suppress_vmaster &&
 	    !snd_hda_find_mixer_ctl(codec, "Master Playback Volume")) {
 		err = snd_hda_add_vmaster(codec, "Master Playback Volume",
 					  spec->vmaster_tlv, slave_pfxs,
@@ -5039,7 +5088,7 @@ int snd_hda_gen_build_controls(struct hda_codec *codec)
 		if (err < 0)
 			return err;
 	}
-	if (!spec->no_analog &&
+	if (!spec->no_analog && !spec->suppress_vmaster &&
 	    !snd_hda_find_mixer_ctl(codec, "Master Playback Switch")) {
 		err = __snd_hda_add_vmaster(codec, "Master Playback Switch",
 					    NULL, slave_pfxs,
@@ -5781,10 +5830,10 @@ static void init_digital(struct hda_codec *codec)
  */
 static void clear_unsol_on_unused_pins(struct hda_codec *codec)
 {
+	const struct hda_pincfg *pin;
 	int i;
 
-	for (i = 0; i < codec->init_pins.used; i++) {
-		struct hda_pincfg *pin = snd_array_elem(&codec->init_pins, i);
+	snd_array_for_each(&codec->init_pins, i, pin) {
 		hda_nid_t nid = pin->nid;
 		if (is_jack_detectable(codec, nid) &&
 		    !snd_hda_jack_tbl_get(codec, nid))

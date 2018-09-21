@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * comedi/drivers/s626.c
  * Sensoray s626 Comedi driver
@@ -7,16 +8,6 @@
  *
  * Based on Sensoray Model 626 Linux driver Version 0.2
  * Copyright (C) 2002-2004 Sensoray Co., Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 /*
@@ -74,26 +65,34 @@ struct s626_buffer_dma {
 	void *logical_base;
 };
 
+/**
+ * struct s626_private - Working data for s626 driver.
+ * @ai_cmd_running: non-zero if ai_cmd is running.
+ * @ai_sample_timer: time between samples in units of the timer.
+ * @ai_convert_count: conversion counter.
+ * @ai_convert_timer: time between conversion in units of the timer.
+ * @counter_int_enabs: counter interrupt enable mask for MISC2 register.
+ * @adc_items: number of items in ADC poll list.
+ * @rps_buf: DMA buffer used to hold ADC (RPS1) program.
+ * @ana_buf:  DMA buffer used to receive ADC data and hold DAC data.
+ * @dac_wbuf: pointer to logical adrs of DMA buffer used to hold DAC data.
+ * @dacpol: image of DAC polarity register.
+ * @trim_setpoint: images of TrimDAC setpoints.
+ * @i2c_adrs: I2C device address for onboard EEPROM (board rev dependent)
+ */
 struct s626_private {
-	u8 ai_cmd_running;		/* ai_cmd is running */
-	unsigned int ai_sample_timer;	/* time between samples in
-					 * units of the timer */
-	int ai_convert_count;		/* conversion counter */
-	unsigned int ai_convert_timer;	/* time between conversion in
-					 * units of the timer */
-	u16 counter_int_enabs;	        /* counter interrupt enable mask
-					 * for MISC2 register */
-	u8 adc_items;		        /* number of items in ADC poll list */
-	struct s626_buffer_dma rps_buf;	/* DMA buffer used to hold ADC (RPS1)
-					 * program */
-	struct s626_buffer_dma ana_buf;	/* DMA buffer used to receive ADC data
-					 * and hold DAC data */
-	u32 *dac_wbuf;		        /* pointer to logical adrs of DMA buffer
-					 * used to hold DAC data */
-	u16 dacpol;		        /* image of DAC polarity register */
-	u8 trim_setpoint[12];	        /* images of TrimDAC setpoints */
-	u32 i2c_adrs;		        /* I2C device address for onboard EEPROM
-					 * (board rev dependent) */
+	u8 ai_cmd_running;
+	unsigned int ai_sample_timer;
+	int ai_convert_count;
+	unsigned int ai_convert_timer;
+	u16 counter_int_enabs;
+	u8 adc_items;
+	struct s626_buffer_dma rps_buf;
+	struct s626_buffer_dma ana_buf;
+	u32 *dac_wbuf;
+	u16 dacpol;
+	u8 trim_setpoint[12];
+	u32 i2c_adrs;
 };
 
 /* Counter overflow/index event flag masks for RDMISC2. */
@@ -572,11 +571,14 @@ static int s626_set_dac(struct comedi_device *dev,
 	 * running after the packet has been sent to the target DAC.
 	 */
 	val = 0x0F000000;	/* Continue clock after target DAC data
-				 * (write to non-existent trimdac). */
+				 * (write to non-existent trimdac).
+				 */
 	val |= 0x00004000;	/* Address the two main dual-DAC devices
-				 * (TSL's chip select enables target device). */
+				 * (TSL's chip select enables target device).
+				 */
 	val |= ((u32)(chan & 1) << 15);	/* Address the DAC channel
-						 * within the device. */
+					 * within the device.
+					 */
 	val |= (u32)dacdata;	/* Include DAC setpoint data. */
 	return s626_send_dac(dev, val);
 }
@@ -591,7 +593,7 @@ static int s626_write_trim_dac(struct comedi_device *dev,
 	 * Save the new setpoint in case the application needs to read it back
 	 * later.
 	 */
-	devpriv->trim_setpoint[logical_chan] = (u8)dac_data;
+	devpriv->trim_setpoint[logical_chan] = dac_data;
 
 	/* Map logical channel number to physical channel number. */
 	chan = s626_trimchan[logical_chan];
@@ -1374,8 +1376,7 @@ static void s626_reset_adc(struct comedi_device *dev, u8 *ppl)
 		jmp_adrs =
 			(u32)devpriv->rps_buf.physical_base +
 			(u32)((unsigned long)rps -
-				   (unsigned long)devpriv->
-						  rps_buf.logical_base);
+			      (unsigned long)devpriv->rps_buf.logical_base);
 		for (i = 0; i < (10 * S626_RPSCLK_PER_US / 2); i++) {
 			jmp_adrs += 8;	/* Repeat to implement time delay: */
 			/* Jump to next RPS instruction. */
@@ -1513,7 +1514,7 @@ static int s626_ai_insn_read(struct comedi_device *dev,
 
 	for (n = 0; n < insn->n; n++) {
 		/* Delay 10 microseconds for analog input settling. */
-		udelay(10);
+		usleep_range(10, 20);
 
 		/* Start ADC by pulsing GPIO1 low */
 		gpio_image = readl(dev->mmio + S626_P_GPIO);
@@ -1699,7 +1700,7 @@ static int s626_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 
 	if (devpriv->ai_cmd_running) {
 		dev_err(dev->class_dev,
-			"s626_ai_cmd: Another ai_cmd is running\n");
+			"%s: Another ai_cmd is running\n", __func__);
 		return -EBUSY;
 	}
 	/* disable interrupt */
@@ -1892,9 +1893,9 @@ static int s626_ai_cmdtest(struct comedi_device *dev,
 
 		if (cmd->scan_begin_src == TRIG_TIMER) {
 			arg = cmd->convert_arg * cmd->scan_end_arg;
-			err |= comedi_check_trigger_arg_min(&cmd->
-							    scan_begin_arg,
-							    arg);
+			err |= comedi_check_trigger_arg_min(
+				&cmd->scan_begin_arg,
+				arg);
 		}
 	}
 
@@ -1928,7 +1929,7 @@ static int s626_ao_insn_write(struct comedi_device *dev,
 	int i;
 
 	for (i = 0; i < insn->n; i++) {
-		int16_t dacdata = (int16_t)data[i];
+		s16 dacdata = (s16)data[i];
 		int ret;
 
 		dacdata -= (0x1fff);
@@ -2267,10 +2268,10 @@ static int s626_initialize(struct comedi_device *dev)
 	 */
 	{
 		struct comedi_subdevice *s = dev->read_subdev;
-		uint8_t poll_list;
-		uint16_t adc_data;
-		uint16_t start_val;
-		uint16_t index;
+		u8 poll_list;
+		u16 adc_data;
+		u16 start_val;
+		u16 index;
 		unsigned int data[16];
 
 		/* Create a simple polling list for analog input channel 0 */

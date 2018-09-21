@@ -1,8 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_SORT_H
 #define __PERF_SORT_H
 #include "../builtin.h"
 
-#include "util.h"
+#include <regex.h>
 
 #include "color.h"
 #include <linux/list.h>
@@ -11,7 +12,6 @@
 #include "symbol.h"
 #include "string.h"
 #include "callchain.h"
-#include "strlist.h"
 #include "values.h"
 
 #include "../perf.h"
@@ -21,7 +21,9 @@
 #include <subcmd/parse-options.h>
 #include "parse-events.h"
 #include "hist.h"
-#include "thread.h"
+#include "srcline.h"
+
+struct thread;
 
 extern regex_t parent_regex;
 extern const char *sort_order;
@@ -52,6 +54,11 @@ struct he_stat {
 	u64			period_guest_us;
 	u64			weight;
 	u32			nr_events;
+};
+
+struct namespace_id {
+	u64			dev;
+	u64			ino;
 };
 
 struct hist_entry_diff {
@@ -91,6 +98,7 @@ struct hist_entry {
 	struct map_symbol	ms;
 	struct thread		*thread;
 	struct comm		*comm;
+	struct namespace_id	cgroup_id;
 	u64			ip;
 	u64			transaction;
 	s32			socket;
@@ -104,11 +112,13 @@ struct hist_entry {
 
 	char			level;
 	u8			filtered;
+
+	u16			callchain_size;
 	union {
 		/*
 		 * Since perf diff only supports the stdio output, TUI
 		 * fields are only accessed from perf report (or perf
-		 * top).  So make it an union to reduce memory usage.
+		 * top).  So make it a union to reduce memory usage.
 		 */
 		struct hist_entry_diff	diff;
 		struct /* for TUI */ {
@@ -142,6 +152,11 @@ struct hist_entry {
 	};
 	struct callchain_root	callchain[0]; /* must be last member */
 };
+
+static __pure inline bool hist_entry__has_callchains(struct hist_entry *he)
+{
+	return he->callchain_size != 0;
+}
 
 static inline bool hist_entry__has_pairs(struct hist_entry *he)
 {
@@ -178,13 +193,13 @@ static inline float hist_entry__get_percent_limit(struct hist_entry *he)
 static inline u64 cl_address(u64 address)
 {
 	/* return the cacheline of the address */
-	return (address & ~(cacheline_size - 1));
+	return (address & ~(cacheline_size() - 1));
 }
 
 static inline u64 cl_offset(u64 address)
 {
 	/* return the cacheline of the address */
-	return (address & (cacheline_size - 1));
+	return (address & (cacheline_size() - 1));
 }
 
 enum sort_mode {
@@ -211,6 +226,9 @@ enum sort_type {
 	SORT_GLOBAL_WEIGHT,
 	SORT_TRANSACTION,
 	SORT_TRACE,
+	SORT_SYM_SIZE,
+	SORT_DSO_SIZE,
+	SORT_CGROUP_ID,
 
 	/* branch stack specific sort keys */
 	__SORT_BRANCH_STACK,
@@ -235,6 +253,7 @@ enum sort_type {
 	SORT_MEM_SNOOP,
 	SORT_MEM_DCACHELINE,
 	SORT_MEM_IADDR_SYMBOL,
+	SORT_MEM_PHYS_DADDR,
 };
 
 /*
@@ -280,5 +299,5 @@ int64_t
 sort__daddr_cmp(struct hist_entry *left, struct hist_entry *right);
 int64_t
 sort__dcacheline_cmp(struct hist_entry *left, struct hist_entry *right);
-char *hist_entry__get_srcline(struct hist_entry *he);
+char *hist_entry__srcline(struct hist_entry *he);
 #endif	/* __PERF_SORT_H */

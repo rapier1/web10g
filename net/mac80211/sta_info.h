@@ -1,7 +1,7 @@
 /*
  * Copyright 2002-2005, Devicescape Software, Inc.
  * Copyright 2013-2014  Intel Mobile Communications GmbH
- * Copyright(c) 2015-2016 Intel Deutschland GmbH
+ * Copyright(c) 2015-2017 Intel Deutschland GmbH
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -16,6 +16,7 @@
 #include <linux/if_ether.h>
 #include <linux/workqueue.h>
 #include <linux/average.h>
+#include <linux/bitfield.h>
 #include <linux/etherdevice.h>
 #include <linux/rhashtable.h>
 #include <linux/u64_stats_sync.h>
@@ -115,13 +116,18 @@ enum ieee80211_sta_info_flags {
 #define HT_AGG_STATE_STOPPING		3
 #define HT_AGG_STATE_WANT_START		4
 #define HT_AGG_STATE_WANT_STOP		5
+#define HT_AGG_STATE_START_CB		6
+#define HT_AGG_STATE_STOP_CB		7
 
+DECLARE_EWMA(avg_signal, 10, 8)
 enum ieee80211_agg_stop_reason {
 	AGG_STOP_DECLINED,
 	AGG_STOP_LOCAL_REQUEST,
 	AGG_STOP_PEER_REQUEST,
 	AGG_STOP_DESTROY_STA,
 };
+
+struct sta_info;
 
 /**
  * struct tid_ampdu_tx - TID aggregation information (Tx).
@@ -130,8 +136,10 @@ enum ieee80211_agg_stop_reason {
  * @session_timer: check if we keep Tx-ing on the TID (by timeout value)
  * @addba_resp_timer: timer for peer's response to addba request
  * @pending: pending frames queue -- use sta's spinlock to protect
+ * @sta: station we are attached to
  * @dialog_token: dialog token for aggregation session
  * @timeout: session timeout value to be filled in ADDBA requests
+ * @tid: TID number
  * @state: session state (see above)
  * @last_tx: jiffies of last tx activity
  * @stop_initiator: initiator of a session stop
@@ -155,6 +163,7 @@ struct tid_ampdu_tx {
 	struct timer_list session_timer;
 	struct timer_list addba_resp_timer;
 	struct sk_buff_head pending;
+	struct sta_info *sta;
 	unsigned long state;
 	unsigned long last_tx;
 	u16 timeout;
@@ -166,6 +175,7 @@ struct tid_ampdu_tx {
 	u16 failed_bar_ssn;
 	bool bar_pending;
 	bool amsdu;
+	u8 tid;
 };
 
 /**
@@ -178,17 +188,20 @@ struct tid_ampdu_tx {
  * @reorder_time: jiffies when skb was added
  * @session_timer: check if peer keeps Tx-ing on the TID (by timeout value)
  * @reorder_timer: releases expired frames from the reorder buffer.
+ * @sta: station we are attached to
  * @last_rx: jiffies of last rx activity
  * @head_seq_num: head sequence number in reordering buffer.
  * @stored_mpdu_num: number of MPDUs in reordering buffer
  * @ssn: Starting Sequence Number expected to be aggregated.
  * @buf_size: buffer size for incoming A-MPDUs
  * @timeout: reset timer value (in TUs).
+ * @tid: TID number
  * @rcu_head: RCU head used for freeing this struct
  * @reorder_lock: serializes access to reorder buffer, see below.
  * @auto_seq: used for offloaded BA sessions to automatically pick head_seq_and
  *	and ssn.
  * @removed: this session is removed (but might have been found due to RCU)
+ * @started: this session has started (head ssn or higher was received)
  *
  * This structure's lifetime is managed by RCU, assignments to
  * the array holding it must hold the aggregation mutex.
@@ -204,6 +217,7 @@ struct tid_ampdu_rx {
 	u64 reorder_buf_filtered;
 	struct sk_buff_head *reorder_buf;
 	unsigned long *reorder_time;
+	struct sta_info *sta;
 	struct timer_list session_timer;
 	struct timer_list reorder_timer;
 	unsigned long last_rx;
@@ -212,8 +226,10 @@ struct tid_ampdu_rx {
 	u16 ssn;
 	u16 buf_size;
 	u16 timeout;
-	bool auto_seq;
-	bool removed;
+	u8 tid;
+	u8 auto_seq:1,
+	   removed:1,
+	   started:1;
 };
 
 /**
@@ -228,6 +244,8 @@ struct tid_ampdu_rx {
  *	RX timer expired until the work for it runs
  * @tid_rx_stop_requested:  bitmap indicating which BA sessions per TID the
  *	driver requested to close until the work for it runs
+ * @tid_rx_manage_offl: bitmap indicating which BA sessions were requested
+ *	to be treated as started/stopped due to offloading
  * @agg_session_valid: bitmap indicating which TID has a rx BA session open on
  * @unexpected_agg: bitmap indicating which TID already sent a delBA due to
  *	unexpected aggregation related frames outside a session
@@ -245,6 +263,7 @@ struct sta_ampdu_mlme {
 	u8 tid_rx_token[IEEE80211_NUM_TIDS];
 	unsigned long tid_rx_timer_expired[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
 	unsigned long tid_rx_stop_requested[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
+	unsigned long tid_rx_manage_offl[BITS_TO_LONGS(2 * IEEE80211_NUM_TIDS)];
 	unsigned long agg_session_valid[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
 	unsigned long unexpected_agg[BITS_TO_LONGS(IEEE80211_NUM_TIDS)];
 	/* tx */
@@ -322,6 +341,9 @@ struct ieee80211_fast_rx {
 	struct rcu_head rcu_head;
 };
 
+/* we use only values in the range 0-100, so pick a large precision */
+DECLARE_EWMA(mesh_fail_avg, 20, 8)
+
 /**
  * struct mesh_sta - mesh STA information
  * @plink_lock: serialize access to plink fields
@@ -333,6 +355,7 @@ struct ieee80211_fast_rx {
  * @plink_state: peer link state
  * @plink_timeout: timeout of peer link
  * @plink_timer: peer link watch timer
+ * @plink_sta: peer link watch timer's sta_info
  * @t_offset: timing offset relative to this host
  * @t_offset_setpoint: reference timing offset of this sta to be used when
  * 	calculating clockdrift
@@ -345,6 +368,7 @@ struct ieee80211_fast_rx {
  */
 struct mesh_sta {
 	struct timer_list plink_timer;
+	struct sta_info *plink_sta;
 
 	s64 t_offset;
 	s64 t_offset_setpoint;
@@ -367,10 +391,10 @@ struct mesh_sta {
 	enum nl80211_mesh_power_mode nonpeer_pm;
 
 	/* moving percentage of failed MSDUs */
-	unsigned int fail_avg;
+	struct ewma_mesh_fail_avg fail_avg;
 };
 
-DECLARE_EWMA(signal, 1024, 8)
+DECLARE_EWMA(signal, 10, 8)
 
 struct ieee80211_sta_rx_stats {
 	unsigned long packets;
@@ -386,6 +410,14 @@ struct ieee80211_sta_rx_stats {
 	u64 bytes;
 	u64 msdu[IEEE80211_NUM_TIDS + 1];
 };
+
+/*
+ * The bandwidth threshold below which the per-station CoDel parameters will be
+ * scaled to be more lenient (to prevent starvation of slow stations). This
+ * value will be scaled by the number of active stations when it is being
+ * applied.
+ */
+#define STA_SLOW_THRESHOLD 6000 /* 6 Mbps */
 
 /**
  * struct sta_info - STA information
@@ -426,7 +458,6 @@ struct ieee80211_sta_rx_stats {
  *	plus one for non-QoS frames)
  * @tid_seq: per-TID sequence numbers for sending to this STA
  * @ampdu_mlme: A-MPDU state machine state
- * @timer_to_tid: identity mapping to ID timers
  * @mesh: mesh STA information
  * @debugfs_dir: debug filesystem directory dentry
  * @dead: set to true when sta is unlinked
@@ -440,6 +471,7 @@ struct ieee80211_sta_rx_stats {
  * @known_smps_mode: the smps_mode the client thinks we are in. Relevant for
  *	AP only.
  * @cipher_scheme: optional cipher scheme for this station
+ * @cparams: CoDel parameters for this station.
  * @reserved_tid: reserved TID (if any, otherwise IEEE80211_TID_UNRESERVED)
  * @fast_tx: TX fastpath information
  * @fast_rx: RX fastpath information
@@ -517,6 +549,9 @@ struct sta_info {
 		u64 msdu_retries[IEEE80211_NUM_TIDS + 1];
 		u64 msdu_failed[IEEE80211_NUM_TIDS + 1];
 		unsigned long last_ack;
+		s8 last_ack_signal;
+		bool ack_signal_filled;
+		struct ewma_avg_signal avg_ack_signal;
 	} status_stats;
 
 	/* Updated from TX path only, no locking requirements */
@@ -532,7 +567,6 @@ struct sta_info {
 	 * Aggregation information, locked with lock.
 	 */
 	struct sta_ampdu_mlme ampdu_mlme;
-	u8 timer_to_tid[IEEE80211_NUM_TIDS];
 
 #ifdef CONFIG_MAC80211_DEBUGFS
 	struct dentry *debugfs_dir;
@@ -542,6 +576,8 @@ struct sta_info {
 
 	enum ieee80211_smps_mode known_smps_mode;
 	const struct ieee80211_cipher_scheme *cipher_scheme;
+
+	struct codel_params cparams;
 
 	u8 reserved_tid;
 
@@ -708,7 +744,8 @@ static inline int sta_info_flush(struct ieee80211_sub_if_data *sdata)
 void sta_set_rate_info_tx(struct sta_info *sta,
 			  const struct ieee80211_tx_rate *rate,
 			  struct rate_info *rinfo);
-void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo);
+void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo,
+		   bool tidstats);
 
 u32 sta_get_expected_throughput(struct sta_info *sta);
 
@@ -722,40 +759,55 @@ void ieee80211_sta_ps_deliver_uapsd(struct sta_info *sta);
 
 unsigned long ieee80211_sta_last_active(struct sta_info *sta);
 
+enum sta_stats_type {
+	STA_STATS_RATE_TYPE_INVALID = 0,
+	STA_STATS_RATE_TYPE_LEGACY,
+	STA_STATS_RATE_TYPE_HT,
+	STA_STATS_RATE_TYPE_VHT,
+};
+
+#define STA_STATS_FIELD_HT_MCS		GENMASK( 7,  0)
+#define STA_STATS_FIELD_LEGACY_IDX	GENMASK( 3,  0)
+#define STA_STATS_FIELD_LEGACY_BAND	GENMASK( 7,  4)
+#define STA_STATS_FIELD_VHT_MCS		GENMASK( 3,  0)
+#define STA_STATS_FIELD_VHT_NSS		GENMASK( 7,  4)
+#define STA_STATS_FIELD_BW		GENMASK(11,  8)
+#define STA_STATS_FIELD_SGI		GENMASK(12, 12)
+#define STA_STATS_FIELD_TYPE		GENMASK(15, 13)
+
+#define STA_STATS_FIELD(_n, _v)		FIELD_PREP(STA_STATS_FIELD_ ## _n, _v)
+#define STA_STATS_GET(_n, _v)		FIELD_GET(STA_STATS_FIELD_ ## _n, _v)
+
 #define STA_STATS_RATE_INVALID		0
-#define STA_STATS_RATE_VHT		0x8000
-#define STA_STATS_RATE_HT		0x4000
-#define STA_STATS_RATE_LEGACY		0x2000
-#define STA_STATS_RATE_SGI		0x1000
-#define STA_STATS_RATE_BW_SHIFT		9
-#define STA_STATS_RATE_BW_MASK		(0x7 << STA_STATS_RATE_BW_SHIFT)
 
-static inline u16 sta_stats_encode_rate(struct ieee80211_rx_status *s)
+static inline u32 sta_stats_encode_rate(struct ieee80211_rx_status *s)
 {
-	u16 r = s->rate_idx;
+	u16 r;
 
-	if (s->vht_flag & RX_VHT_FLAG_80MHZ)
-		r |= RATE_INFO_BW_80 << STA_STATS_RATE_BW_SHIFT;
-	else if (s->vht_flag & RX_VHT_FLAG_160MHZ)
-		r |= RATE_INFO_BW_160 << STA_STATS_RATE_BW_SHIFT;
-	else if (s->flag & RX_FLAG_40MHZ)
-		r |= RATE_INFO_BW_40 << STA_STATS_RATE_BW_SHIFT;
-	else if (s->flag & RX_FLAG_10MHZ)
-		r |= RATE_INFO_BW_10 << STA_STATS_RATE_BW_SHIFT;
-	else if (s->flag & RX_FLAG_5MHZ)
-		r |= RATE_INFO_BW_5 << STA_STATS_RATE_BW_SHIFT;
-	else
-		r |= RATE_INFO_BW_20 << STA_STATS_RATE_BW_SHIFT;
+	r = STA_STATS_FIELD(BW, s->bw);
 
-	if (s->flag & RX_FLAG_SHORT_GI)
-		r |= STA_STATS_RATE_SGI;
+	if (s->enc_flags & RX_ENC_FLAG_SHORT_GI)
+		r |= STA_STATS_FIELD(SGI, 1);
 
-	if (s->flag & RX_FLAG_VHT)
-		r |= STA_STATS_RATE_VHT | (s->vht_nss << 4);
-	else if (s->flag & RX_FLAG_HT)
-		r |= STA_STATS_RATE_HT;
-	else
-		r |= STA_STATS_RATE_LEGACY | (s->band << 4);
+	switch (s->encoding) {
+	case RX_ENC_VHT:
+		r |= STA_STATS_FIELD(TYPE, STA_STATS_RATE_TYPE_VHT);
+		r |= STA_STATS_FIELD(VHT_NSS, s->nss);
+		r |= STA_STATS_FIELD(VHT_MCS, s->rate_idx);
+		break;
+	case RX_ENC_HT:
+		r |= STA_STATS_FIELD(TYPE, STA_STATS_RATE_TYPE_HT);
+		r |= STA_STATS_FIELD(HT_MCS, s->rate_idx);
+		break;
+	case RX_ENC_LEGACY:
+		r |= STA_STATS_FIELD(TYPE, STA_STATS_RATE_TYPE_LEGACY);
+		r |= STA_STATS_FIELD(LEGACY_BAND, s->band);
+		r |= STA_STATS_FIELD(LEGACY_IDX, s->rate_idx);
+		break;
+	default:
+		WARN_ON(1);
+		return STA_STATS_RATE_INVALID;
+	}
 
 	return r;
 }

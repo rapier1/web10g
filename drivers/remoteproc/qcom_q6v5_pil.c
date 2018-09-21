@@ -23,21 +23,21 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/remoteproc.h>
 #include <linux/reset.h>
+#include <linux/soc/qcom/mdt_loader.h>
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
+#include <linux/iopoll.h>
 
 #include "remoteproc_internal.h"
-#include "qcom_mdt_loader.h"
+#include "qcom_common.h"
 
 #include <linux/qcom_scm.h>
-
-#define MBA_FIRMWARE_NAME		"mba.b00"
-#define MPSS_FIRMWARE_NAME		"modem.mdt"
 
 #define MPSS_CRASH_REASON_SMEM		421
 
@@ -57,6 +57,8 @@
 #define RMB_PMI_META_DATA_REG		0x10
 #define RMB_PMI_CODE_START_REG		0x14
 #define RMB_PMI_CODE_LENGTH_REG		0x18
+#define RMB_MBA_MSS_STATUS		0x40
+#define RMB_MBA_ALT_RESET		0x44
 
 #define RMB_CMD_META_DATA_READY		0x1
 #define RMB_CMD_LOAD_READY		0x2
@@ -65,6 +67,8 @@
 #define QDSP6SS_RESET_REG		0x014
 #define QDSP6SS_GFMUX_CTL_REG		0x020
 #define QDSP6SS_PWR_CTL_REG		0x030
+#define QDSP6SS_MEM_PWR_CTL		0x0B0
+#define QDSP6SS_STRAP_ACC		0x110
 
 /* AXI Halt Register Offsets */
 #define AXI_HALTREQ_REG			0x0
@@ -93,6 +97,46 @@
 #define QDSS_BHS_ON			BIT(21)
 #define QDSS_LDO_BYP			BIT(22)
 
+/* QDSP6v56 parameters */
+#define QDSP6v56_LDO_BYP		BIT(25)
+#define QDSP6v56_BHS_ON		BIT(24)
+#define QDSP6v56_CLAMP_WL		BIT(21)
+#define QDSP6v56_CLAMP_QMC_MEM		BIT(22)
+#define HALT_CHECK_MAX_LOOPS		200
+#define QDSP6SS_XO_CBCR		0x0038
+#define QDSP6SS_ACC_OVERRIDE_VAL		0x20
+
+/* QDSP6v65 parameters */
+#define QDSP6SS_SLEEP                   0x3C
+#define QDSP6SS_BOOT_CORE_START         0x400
+#define QDSP6SS_BOOT_CMD                0x404
+#define SLEEP_CHECK_MAX_LOOPS           200
+#define BOOT_FSM_TIMEOUT                10000
+
+struct reg_info {
+	struct regulator *reg;
+	int uV;
+	int uA;
+};
+
+struct qcom_mss_reg_res {
+	const char *supply;
+	int uV;
+	int uA;
+};
+
+struct rproc_hexagon_res {
+	const char *hexagon_mba_image;
+	struct qcom_mss_reg_res *proxy_supply;
+	struct qcom_mss_reg_res *active_supply;
+	char **proxy_clk_names;
+	char **reset_clk_names;
+	char **active_clk_names;
+	int version;
+	bool need_mem_protection;
+	bool has_alt_reset;
+};
+
 struct q6v5 {
 	struct device *dev;
 	struct rproc *rproc;
@@ -110,11 +154,21 @@ struct q6v5 {
 	struct qcom_smem_state *state;
 	unsigned stop_bit;
 
-	struct regulator_bulk_data supply[4];
+	int handover_irq;
 
-	struct clk *ahb_clk;
-	struct clk *axi_clk;
-	struct clk *rom_clk;
+	bool proxy_unvoted;
+
+	struct clk *active_clks[8];
+	struct clk *reset_clks[4];
+	struct clk *proxy_clks[4];
+	int active_clk_count;
+	int reset_clk_count;
+	int proxy_clk_count;
+
+	struct reg_info active_regs[1];
+	struct reg_info proxy_regs[3];
+	int active_reg_count;
+	int proxy_reg_count;
 
 	struct completion start_done;
 	struct completion stop_done;
@@ -128,65 +182,166 @@ struct q6v5 {
 	phys_addr_t mpss_reloc;
 	void *mpss_region;
 	size_t mpss_size;
+
+	struct qcom_rproc_glink glink_subdev;
+	struct qcom_rproc_subdev smd_subdev;
+	struct qcom_rproc_ssr ssr_subdev;
+	struct qcom_sysmon *sysmon;
+	bool need_mem_protection;
+	bool has_alt_reset;
+	int mpss_perm;
+	int mba_perm;
+	int version;
 };
 
 enum {
-	Q6V5_SUPPLY_CX,
-	Q6V5_SUPPLY_MX,
-	Q6V5_SUPPLY_MSS,
-	Q6V5_SUPPLY_PLL,
+	MSS_MSM8916,
+	MSS_MSM8974,
+	MSS_MSM8996,
+	MSS_SDM845,
 };
 
-static int q6v5_regulator_init(struct q6v5 *qproc)
+static int q6v5_regulator_init(struct device *dev, struct reg_info *regs,
+			       const struct qcom_mss_reg_res *reg_res)
 {
-	int ret;
+	int rc;
+	int i;
 
-	qproc->supply[Q6V5_SUPPLY_CX].supply = "cx";
-	qproc->supply[Q6V5_SUPPLY_MX].supply = "mx";
-	qproc->supply[Q6V5_SUPPLY_MSS].supply = "mss";
-	qproc->supply[Q6V5_SUPPLY_PLL].supply = "pll";
+	if (!reg_res)
+		return 0;
 
-	ret = devm_regulator_bulk_get(qproc->dev,
-				      ARRAY_SIZE(qproc->supply), qproc->supply);
-	if (ret < 0) {
-		dev_err(qproc->dev, "failed to get supplies\n");
-		return ret;
+	for (i = 0; reg_res[i].supply; i++) {
+		regs[i].reg = devm_regulator_get(dev, reg_res[i].supply);
+		if (IS_ERR(regs[i].reg)) {
+			rc = PTR_ERR(regs[i].reg);
+			if (rc != -EPROBE_DEFER)
+				dev_err(dev, "Failed to get %s\n regulator",
+					reg_res[i].supply);
+			return rc;
+		}
+
+		regs[i].uV = reg_res[i].uV;
+		regs[i].uA = reg_res[i].uA;
 	}
 
-	regulator_set_load(qproc->supply[Q6V5_SUPPLY_CX].consumer, 100000);
-	regulator_set_load(qproc->supply[Q6V5_SUPPLY_MSS].consumer, 100000);
-	regulator_set_load(qproc->supply[Q6V5_SUPPLY_PLL].consumer, 10000);
+	return i;
+}
+
+static int q6v5_regulator_enable(struct q6v5 *qproc,
+				 struct reg_info *regs, int count)
+{
+	int ret;
+	int i;
+
+	for (i = 0; i < count; i++) {
+		if (regs[i].uV > 0) {
+			ret = regulator_set_voltage(regs[i].reg,
+					regs[i].uV, INT_MAX);
+			if (ret) {
+				dev_err(qproc->dev,
+					"Failed to request voltage for %d.\n",
+						i);
+				goto err;
+			}
+		}
+
+		if (regs[i].uA > 0) {
+			ret = regulator_set_load(regs[i].reg,
+						 regs[i].uA);
+			if (ret < 0) {
+				dev_err(qproc->dev,
+					"Failed to set regulator mode\n");
+				goto err;
+			}
+		}
+
+		ret = regulator_enable(regs[i].reg);
+		if (ret) {
+			dev_err(qproc->dev, "Regulator enable failed\n");
+			goto err;
+		}
+	}
 
 	return 0;
+err:
+	for (; i >= 0; i--) {
+		if (regs[i].uV > 0)
+			regulator_set_voltage(regs[i].reg, 0, INT_MAX);
+
+		if (regs[i].uA > 0)
+			regulator_set_load(regs[i].reg, 0);
+
+		regulator_disable(regs[i].reg);
+	}
+
+	return ret;
 }
 
-static int q6v5_regulator_enable(struct q6v5 *qproc)
+static void q6v5_regulator_disable(struct q6v5 *qproc,
+				   struct reg_info *regs, int count)
 {
-	struct regulator *mss = qproc->supply[Q6V5_SUPPLY_MSS].consumer;
-	struct regulator *mx = qproc->supply[Q6V5_SUPPLY_MX].consumer;
-	int ret;
+	int i;
 
-	/* TODO: Q6V5_SUPPLY_CX is supposed to be set to super-turbo here */
+	for (i = 0; i < count; i++) {
+		if (regs[i].uV > 0)
+			regulator_set_voltage(regs[i].reg, 0, INT_MAX);
 
-	ret = regulator_set_voltage(mx, 1050000, INT_MAX);
-	if (ret)
-		return ret;
+		if (regs[i].uA > 0)
+			regulator_set_load(regs[i].reg, 0);
 
-	regulator_set_voltage(mss, 1000000, 1150000);
-
-	return regulator_bulk_enable(ARRAY_SIZE(qproc->supply), qproc->supply);
+		regulator_disable(regs[i].reg);
+	}
 }
 
-static void q6v5_regulator_disable(struct q6v5 *qproc)
+static int q6v5_clk_enable(struct device *dev,
+			   struct clk **clks, int count)
 {
-	struct regulator *mss = qproc->supply[Q6V5_SUPPLY_MSS].consumer;
-	struct regulator *mx = qproc->supply[Q6V5_SUPPLY_MX].consumer;
+	int rc;
+	int i;
 
-	/* TODO: Q6V5_SUPPLY_CX corner votes should be released */
+	for (i = 0; i < count; i++) {
+		rc = clk_prepare_enable(clks[i]);
+		if (rc) {
+			dev_err(dev, "Clock enable failed\n");
+			goto err;
+		}
+	}
 
-	regulator_bulk_disable(ARRAY_SIZE(qproc->supply), qproc->supply);
-	regulator_set_voltage(mx, 0, INT_MAX);
-	regulator_set_voltage(mss, 0, 1150000);
+	return 0;
+err:
+	for (i--; i >= 0; i--)
+		clk_disable_unprepare(clks[i]);
+
+	return rc;
+}
+
+static void q6v5_clk_disable(struct device *dev,
+			     struct clk **clks, int count)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+		clk_disable_unprepare(clks[i]);
+}
+
+static int q6v5_xfer_mem_ownership(struct q6v5 *qproc, int *current_perm,
+				   bool remote_owner, phys_addr_t addr,
+				   size_t size)
+{
+	struct qcom_scm_vmperm next;
+
+	if (!qproc->need_mem_protection)
+		return 0;
+	if (remote_owner && *current_perm == BIT(QCOM_SCM_VMID_MSS_MSA))
+		return 0;
+	if (!remote_owner && *current_perm == BIT(QCOM_SCM_VMID_HLOS))
+		return 0;
+
+	next.vmid = remote_owner ? QCOM_SCM_VMID_MSS_MSA : QCOM_SCM_VMID_HLOS;
+	next.perm = remote_owner ? QCOM_SCM_PERM_RW : QCOM_SCM_PERM_RWX;
+
+	return qcom_scm_assign_mem(addr, ALIGN(size, SZ_4K),
+				   current_perm, &next, 1);
 }
 
 static int q6v5_load(struct rproc *rproc, const struct firmware *fw)
@@ -198,10 +353,28 @@ static int q6v5_load(struct rproc *rproc, const struct firmware *fw)
 	return 0;
 }
 
-static const struct rproc_fw_ops q6v5_fw_ops = {
-	.find_rsc_table = qcom_mdt_find_rsc_table,
-	.load = q6v5_load,
-};
+static int q6v5_reset_assert(struct q6v5 *qproc)
+{
+	if (qproc->has_alt_reset)
+		return reset_control_reset(qproc->mss_restart);
+	else
+		return reset_control_assert(qproc->mss_restart);
+}
+
+static int q6v5_reset_deassert(struct q6v5 *qproc)
+{
+	int ret;
+
+	if (qproc->has_alt_reset) {
+		writel(1, qproc->rmb_base + RMB_MBA_ALT_RESET);
+		ret = reset_control_reset(qproc->mss_restart);
+		writel(0, qproc->rmb_base + RMB_MBA_ALT_RESET);
+	} else {
+		ret = reset_control_deassert(qproc->mss_restart);
+	}
+
+	return ret;
+}
 
 static int q6v5_rmb_pbl_wait(struct q6v5 *qproc, int ms)
 {
@@ -253,33 +426,125 @@ static int q6v5proc_reset(struct q6v5 *qproc)
 {
 	u32 val;
 	int ret;
+	int i;
 
-	/* Assert resets, stop core */
-	val = readl(qproc->reg_base + QDSP6SS_RESET_REG);
-	val |= (Q6SS_CORE_ARES | Q6SS_BUS_ARES_ENABLE | Q6SS_STOP_CORE);
-	writel(val, qproc->reg_base + QDSP6SS_RESET_REG);
+	if (qproc->version == MSS_SDM845) {
+		val = readl(qproc->reg_base + QDSP6SS_SLEEP);
+		val |= 0x1;
+		writel(val, qproc->reg_base + QDSP6SS_SLEEP);
 
-	/* Enable power block headswitch, and wait for it to stabilize */
-	val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
-	val |= QDSS_BHS_ON | QDSS_LDO_BYP;
-	writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
-	udelay(1);
+		ret = readl_poll_timeout(qproc->reg_base + QDSP6SS_SLEEP,
+					 val, !(val & BIT(31)), 1,
+					 SLEEP_CHECK_MAX_LOOPS);
+		if (ret) {
+			dev_err(qproc->dev, "QDSP6SS Sleep clock timed out\n");
+			return -ETIMEDOUT;
+		}
 
-	/*
-	 * Turn on memories. L2 banks should be done individually
-	 * to minimize inrush current.
-	 */
-	val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
-	val |= Q6SS_SLP_RET_N | Q6SS_L2TAG_SLP_NRET_N |
-		Q6SS_ETB_SLP_NRET_N | Q6SS_L2DATA_STBY_N;
-	writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
-	val |= Q6SS_L2DATA_SLP_NRET_N_2;
-	writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
-	val |= Q6SS_L2DATA_SLP_NRET_N_1;
-	writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
-	val |= Q6SS_L2DATA_SLP_NRET_N_0;
-	writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		/* De-assert QDSP6 stop core */
+		writel(1, qproc->reg_base + QDSP6SS_BOOT_CORE_START);
+		/* Trigger boot FSM */
+		writel(1, qproc->reg_base + QDSP6SS_BOOT_CMD);
 
+		ret = readl_poll_timeout(qproc->rmb_base + RMB_MBA_MSS_STATUS,
+				val, (val & BIT(0)) != 0, 10, BOOT_FSM_TIMEOUT);
+		if (ret) {
+			dev_err(qproc->dev, "Boot FSM failed to complete.\n");
+			/* Reset the modem so that boot FSM is in reset state */
+			q6v5_reset_deassert(qproc);
+			return ret;
+		}
+
+		goto pbl_wait;
+	} else if (qproc->version == MSS_MSM8996) {
+		/* Override the ACC value if required */
+		writel(QDSP6SS_ACC_OVERRIDE_VAL,
+		       qproc->reg_base + QDSP6SS_STRAP_ACC);
+
+		/* Assert resets, stop core */
+		val = readl(qproc->reg_base + QDSP6SS_RESET_REG);
+		val |= Q6SS_CORE_ARES | Q6SS_BUS_ARES_ENABLE | Q6SS_STOP_CORE;
+		writel(val, qproc->reg_base + QDSP6SS_RESET_REG);
+
+		/* BHS require xo cbcr to be enabled */
+		val = readl(qproc->reg_base + QDSP6SS_XO_CBCR);
+		val |= 0x1;
+		writel(val, qproc->reg_base + QDSP6SS_XO_CBCR);
+
+		/* Read CLKOFF bit to go low indicating CLK is enabled */
+		ret = readl_poll_timeout(qproc->reg_base + QDSP6SS_XO_CBCR,
+					 val, !(val & BIT(31)), 1,
+					 HALT_CHECK_MAX_LOOPS);
+		if (ret) {
+			dev_err(qproc->dev,
+				"xo cbcr enabling timed out (rc:%d)\n", ret);
+			return ret;
+		}
+		/* Enable power block headswitch and wait for it to stabilize */
+		val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= QDSP6v56_BHS_ON;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		udelay(1);
+
+		/* Put LDO in bypass mode */
+		val |= QDSP6v56_LDO_BYP;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+
+		/* Deassert QDSP6 compiler memory clamp */
+		val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val &= ~QDSP6v56_CLAMP_QMC_MEM;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+
+		/* Deassert memory peripheral sleep and L2 memory standby */
+		val |= Q6SS_L2DATA_STBY_N | Q6SS_SLP_RET_N;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+
+		/* Turn on L1, L2, ETB and JU memories 1 at a time */
+		val = readl(qproc->reg_base + QDSP6SS_MEM_PWR_CTL);
+		for (i = 19; i >= 0; i--) {
+			val |= BIT(i);
+			writel(val, qproc->reg_base +
+						QDSP6SS_MEM_PWR_CTL);
+			/*
+			 * Read back value to ensure the write is done then
+			 * wait for 1us for both memory peripheral and data
+			 * array to turn on.
+			 */
+			val |= readl(qproc->reg_base + QDSP6SS_MEM_PWR_CTL);
+			udelay(1);
+		}
+		/* Remove word line clamp */
+		val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val &= ~QDSP6v56_CLAMP_WL;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+	} else {
+		/* Assert resets, stop core */
+		val = readl(qproc->reg_base + QDSP6SS_RESET_REG);
+		val |= Q6SS_CORE_ARES | Q6SS_BUS_ARES_ENABLE | Q6SS_STOP_CORE;
+		writel(val, qproc->reg_base + QDSP6SS_RESET_REG);
+
+		/* Enable power block headswitch and wait for it to stabilize */
+		val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= QDSS_BHS_ON | QDSS_LDO_BYP;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		udelay(1);
+		/*
+		 * Turn on memories. L2 banks should be done individually
+		 * to minimize inrush current.
+		 */
+		val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= Q6SS_SLP_RET_N | Q6SS_L2TAG_SLP_NRET_N |
+			Q6SS_ETB_SLP_NRET_N | Q6SS_L2DATA_STBY_N;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= Q6SS_L2DATA_SLP_NRET_N_2;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= Q6SS_L2DATA_SLP_NRET_N_1;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= Q6SS_L2DATA_SLP_NRET_N_0;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+	}
 	/* Remove IO clamp */
 	val &= ~Q6SS_CLAMP_IO;
 	writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
@@ -299,6 +564,7 @@ static int q6v5proc_reset(struct q6v5 *qproc)
 	val &= ~Q6SS_STOP_CORE;
 	writel(val, qproc->reg_base + QDSP6SS_RESET_REG);
 
+pbl_wait:
 	/* Wait for PBL status */
 	ret = q6v5_rmb_pbl_wait(qproc, 1000);
 	if (ret == -ETIMEDOUT) {
@@ -351,6 +617,8 @@ static int q6v5_mpss_init_image(struct q6v5 *qproc, const struct firmware *fw)
 {
 	unsigned long dma_attrs = DMA_ATTR_FORCE_CONTIGUOUS;
 	dma_addr_t phys;
+	int mdata_perm;
+	int xferop_ret;
 	void *ptr;
 	int ret;
 
@@ -362,6 +630,17 @@ static int q6v5_mpss_init_image(struct q6v5 *qproc, const struct firmware *fw)
 
 	memcpy(ptr, fw->data, fw->size);
 
+	/* Hypervisor mapping to access metadata by modem */
+	mdata_perm = BIT(QCOM_SCM_VMID_HLOS);
+	ret = q6v5_xfer_mem_ownership(qproc, &mdata_perm,
+				      true, phys, fw->size);
+	if (ret) {
+		dev_err(qproc->dev,
+			"assigning Q6 access to metadata failed: %d\n", ret);
+		ret = -EAGAIN;
+		goto free_dma_attrs;
+	}
+
 	writel(phys, qproc->rmb_base + RMB_PMI_META_DATA_REG);
 	writel(RMB_CMD_META_DATA_READY, qproc->rmb_base + RMB_MBA_COMMAND_REG);
 
@@ -371,88 +650,57 @@ static int q6v5_mpss_init_image(struct q6v5 *qproc, const struct firmware *fw)
 	else if (ret < 0)
 		dev_err(qproc->dev, "MPSS header authentication failed: %d\n", ret);
 
+	/* Metadata authentication done, remove modem access */
+	xferop_ret = q6v5_xfer_mem_ownership(qproc, &mdata_perm,
+					     false, phys, fw->size);
+	if (xferop_ret)
+		dev_warn(qproc->dev,
+			 "mdt buffer not reclaimed system may become unstable\n");
+
+free_dma_attrs:
 	dma_free_attrs(qproc->dev, fw->size, ptr, phys, dma_attrs);
 
 	return ret < 0 ? ret : 0;
 }
 
-static int q6v5_mpss_validate(struct q6v5 *qproc, const struct firmware *fw)
+static bool q6v5_phdr_valid(const struct elf32_phdr *phdr)
 {
-	const struct elf32_phdr *phdrs;
-	const struct elf32_phdr *phdr;
-	struct elf32_hdr *ehdr;
-	phys_addr_t boot_addr;
-	phys_addr_t fw_addr;
-	bool relocate;
-	size_t size;
-	int ret;
-	int i;
+	if (phdr->p_type != PT_LOAD)
+		return false;
 
-	ret = qcom_mdt_parse(fw, &fw_addr, NULL, &relocate);
-	if (ret) {
-		dev_err(qproc->dev, "failed to parse mdt header\n");
-		return ret;
-	}
+	if ((phdr->p_flags & QCOM_MDT_TYPE_MASK) == QCOM_MDT_TYPE_HASH)
+		return false;
 
-	if (relocate)
-		boot_addr = qproc->mpss_phys;
-	else
-		boot_addr = fw_addr;
+	if (!phdr->p_memsz)
+		return false;
 
-	ehdr = (struct elf32_hdr *)fw->data;
-	phdrs = (struct elf32_phdr *)(ehdr + 1);
-	for (i = 0; i < ehdr->e_phnum; i++, phdr++) {
-		phdr = &phdrs[i];
-
-		if (phdr->p_type != PT_LOAD)
-			continue;
-
-		if ((phdr->p_flags & QCOM_MDT_TYPE_MASK) == QCOM_MDT_TYPE_HASH)
-			continue;
-
-		if (!phdr->p_memsz)
-			continue;
-
-		size = readl(qproc->rmb_base + RMB_PMI_CODE_LENGTH_REG);
-		if (!size) {
-			writel(boot_addr, qproc->rmb_base + RMB_PMI_CODE_START_REG);
-			writel(RMB_CMD_LOAD_READY, qproc->rmb_base + RMB_MBA_COMMAND_REG);
-		}
-
-		size += phdr->p_memsz;
-		writel(size, qproc->rmb_base + RMB_PMI_CODE_LENGTH_REG);
-	}
-
-	ret = q6v5_rmb_mba_wait(qproc, RMB_MBA_AUTH_COMPLETE, 10000);
-	if (ret == -ETIMEDOUT)
-		dev_err(qproc->dev, "MPSS authentication timed out\n");
-	else if (ret < 0)
-		dev_err(qproc->dev, "MPSS authentication failed: %d\n", ret);
-
-	return ret < 0 ? ret : 0;
+	return true;
 }
 
 static int q6v5_mpss_load(struct q6v5 *qproc)
 {
+	const struct elf32_phdr *phdrs;
+	const struct elf32_phdr *phdr;
+	const struct firmware *seg_fw;
 	const struct firmware *fw;
-	phys_addr_t fw_addr;
-	bool relocate;
+	struct elf32_hdr *ehdr;
+	phys_addr_t mpss_reloc;
+	phys_addr_t boot_addr;
+	phys_addr_t min_addr = PHYS_ADDR_MAX;
+	phys_addr_t max_addr = 0;
+	bool relocate = false;
+	char seg_name[10];
+	ssize_t offset;
+	size_t size = 0;
+	void *ptr;
 	int ret;
+	int i;
 
-	ret = request_firmware(&fw, MPSS_FIRMWARE_NAME, qproc->dev);
+	ret = request_firmware(&fw, "modem.mdt", qproc->dev);
 	if (ret < 0) {
-		dev_err(qproc->dev, "unable to load " MPSS_FIRMWARE_NAME "\n");
+		dev_err(qproc->dev, "unable to load modem.mdt\n");
 		return ret;
 	}
-
-	ret = qcom_mdt_parse(fw, &fw_addr, NULL, &relocate);
-	if (ret) {
-		dev_err(qproc->dev, "failed to parse mdt header\n");
-		goto release_firmware;
-	}
-
-	if (relocate)
-		qproc->mpss_reloc = fw_addr;
 
 	/* Initialize the RMB validator */
 	writel(0, qproc->rmb_base + RMB_PMI_CODE_LENGTH_REG);
@@ -461,11 +709,82 @@ static int q6v5_mpss_load(struct q6v5 *qproc)
 	if (ret)
 		goto release_firmware;
 
-	ret = qcom_mdt_load(qproc->rproc, fw, MPSS_FIRMWARE_NAME);
-	if (ret)
-		goto release_firmware;
+	ehdr = (struct elf32_hdr *)fw->data;
+	phdrs = (struct elf32_phdr *)(ehdr + 1);
 
-	ret = q6v5_mpss_validate(qproc, fw);
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		phdr = &phdrs[i];
+
+		if (!q6v5_phdr_valid(phdr))
+			continue;
+
+		if (phdr->p_flags & QCOM_MDT_RELOCATABLE)
+			relocate = true;
+
+		if (phdr->p_paddr < min_addr)
+			min_addr = phdr->p_paddr;
+
+		if (phdr->p_paddr + phdr->p_memsz > max_addr)
+			max_addr = ALIGN(phdr->p_paddr + phdr->p_memsz, SZ_4K);
+	}
+
+	mpss_reloc = relocate ? min_addr : qproc->mpss_phys;
+	/* Load firmware segments */
+	for (i = 0; i < ehdr->e_phnum; i++) {
+		phdr = &phdrs[i];
+
+		if (!q6v5_phdr_valid(phdr))
+			continue;
+
+		offset = phdr->p_paddr - mpss_reloc;
+		if (offset < 0 || offset + phdr->p_memsz > qproc->mpss_size) {
+			dev_err(qproc->dev, "segment outside memory range\n");
+			ret = -EINVAL;
+			goto release_firmware;
+		}
+
+		ptr = qproc->mpss_region + offset;
+
+		if (phdr->p_filesz) {
+			snprintf(seg_name, sizeof(seg_name), "modem.b%02d", i);
+			ret = request_firmware(&seg_fw, seg_name, qproc->dev);
+			if (ret) {
+				dev_err(qproc->dev, "failed to load %s\n", seg_name);
+				goto release_firmware;
+			}
+
+			memcpy(ptr, seg_fw->data, seg_fw->size);
+
+			release_firmware(seg_fw);
+		}
+
+		if (phdr->p_memsz > phdr->p_filesz) {
+			memset(ptr + phdr->p_filesz, 0,
+			       phdr->p_memsz - phdr->p_filesz);
+		}
+		size += phdr->p_memsz;
+	}
+
+	/* Transfer ownership of modem ddr region to q6 */
+	ret = q6v5_xfer_mem_ownership(qproc, &qproc->mpss_perm, true,
+				      qproc->mpss_phys, qproc->mpss_size);
+	if (ret) {
+		dev_err(qproc->dev,
+			"assigning Q6 access to mpss memory failed: %d\n", ret);
+		ret = -EAGAIN;
+		goto release_firmware;
+	}
+
+	boot_addr = relocate ? qproc->mpss_phys : min_addr;
+	writel(boot_addr, qproc->rmb_base + RMB_PMI_CODE_START_REG);
+	writel(RMB_CMD_LOAD_READY, qproc->rmb_base + RMB_MBA_COMMAND_REG);
+	writel(size, qproc->rmb_base + RMB_PMI_CODE_LENGTH_REG);
+
+	ret = q6v5_rmb_mba_wait(qproc, RMB_MBA_AUTH_COMPLETE, 10000);
+	if (ret == -ETIMEDOUT)
+		dev_err(qproc->dev, "MPSS authentication timed out\n");
+	else if (ret < 0)
+		dev_err(qproc->dev, "MPSS authentication failed: %d\n", ret);
 
 release_firmware:
 	release_firmware(fw);
@@ -476,37 +795,68 @@ release_firmware:
 static int q6v5_start(struct rproc *rproc)
 {
 	struct q6v5 *qproc = (struct q6v5 *)rproc->priv;
+	int xfermemop_ret;
 	int ret;
 
-	ret = q6v5_regulator_enable(qproc);
+	qproc->proxy_unvoted = false;
+
+	enable_irq(qproc->handover_irq);
+
+	ret = q6v5_regulator_enable(qproc, qproc->proxy_regs,
+				    qproc->proxy_reg_count);
 	if (ret) {
-		dev_err(qproc->dev, "failed to enable supplies\n");
-		return ret;
+		dev_err(qproc->dev, "failed to enable proxy supplies\n");
+		goto disable_irqs;
 	}
 
-	ret = reset_control_deassert(qproc->mss_restart);
+	ret = q6v5_clk_enable(qproc->dev, qproc->proxy_clks,
+			      qproc->proxy_clk_count);
 	if (ret) {
-		dev_err(qproc->dev, "failed to deassert mss restart\n");
+		dev_err(qproc->dev, "failed to enable proxy clocks\n");
+		goto disable_proxy_reg;
+	}
+
+	ret = q6v5_regulator_enable(qproc, qproc->active_regs,
+				    qproc->active_reg_count);
+	if (ret) {
+		dev_err(qproc->dev, "failed to enable supplies\n");
+		goto disable_proxy_clk;
+	}
+
+	ret = q6v5_clk_enable(qproc->dev, qproc->reset_clks,
+			      qproc->reset_clk_count);
+	if (ret) {
+		dev_err(qproc->dev, "failed to enable reset clocks\n");
 		goto disable_vdd;
 	}
 
-	ret = clk_prepare_enable(qproc->ahb_clk);
-	if (ret)
+	ret = q6v5_reset_deassert(qproc);
+	if (ret) {
+		dev_err(qproc->dev, "failed to deassert mss restart\n");
+		goto disable_reset_clks;
+	}
+
+	ret = q6v5_clk_enable(qproc->dev, qproc->active_clks,
+			      qproc->active_clk_count);
+	if (ret) {
+		dev_err(qproc->dev, "failed to enable clocks\n");
 		goto assert_reset;
+	}
 
-	ret = clk_prepare_enable(qproc->axi_clk);
-	if (ret)
-		goto disable_ahb_clk;
-
-	ret = clk_prepare_enable(qproc->rom_clk);
-	if (ret)
-		goto disable_axi_clk;
+	/* Assign MBA image access in DDR to q6 */
+	ret = q6v5_xfer_mem_ownership(qproc, &qproc->mba_perm, true,
+				      qproc->mba_phys, qproc->mba_size);
+	if (ret) {
+		dev_err(qproc->dev,
+			"assigning Q6 access to mba memory failed: %d\n", ret);
+		goto disable_active_clks;
+	}
 
 	writel(qproc->mba_phys, qproc->rmb_base + RMB_MBA_IMAGE_REG);
 
 	ret = q6v5proc_reset(qproc);
 	if (ret)
-		goto halt_axi_ports;
+		goto reclaim_mba;
 
 	ret = q6v5_rmb_mba_wait(qproc, 0, 5000);
 	if (ret == -ETIMEDOUT) {
@@ -523,36 +873,67 @@ static int q6v5_start(struct rproc *rproc)
 
 	ret = q6v5_mpss_load(qproc);
 	if (ret)
-		goto halt_axi_ports;
+		goto reclaim_mpss;
 
 	ret = wait_for_completion_timeout(&qproc->start_done,
 					  msecs_to_jiffies(5000));
 	if (ret == 0) {
 		dev_err(qproc->dev, "start timed out\n");
 		ret = -ETIMEDOUT;
-		goto halt_axi_ports;
+		goto reclaim_mpss;
 	}
 
+	xfermemop_ret = q6v5_xfer_mem_ownership(qproc, &qproc->mba_perm, false,
+						qproc->mba_phys,
+						qproc->mba_size);
+	if (xfermemop_ret)
+		dev_err(qproc->dev,
+			"Failed to reclaim mba buffer system may become unstable\n");
 	qproc->running = true;
 
-	/* TODO: All done, release the handover resources */
-
 	return 0;
+
+reclaim_mpss:
+	xfermemop_ret = q6v5_xfer_mem_ownership(qproc, &qproc->mpss_perm,
+						false, qproc->mpss_phys,
+						qproc->mpss_size);
+	WARN_ON(xfermemop_ret);
 
 halt_axi_ports:
 	q6v5proc_halt_axi_port(qproc, qproc->halt_map, qproc->halt_q6);
 	q6v5proc_halt_axi_port(qproc, qproc->halt_map, qproc->halt_modem);
 	q6v5proc_halt_axi_port(qproc, qproc->halt_map, qproc->halt_nc);
 
-	clk_disable_unprepare(qproc->rom_clk);
-disable_axi_clk:
-	clk_disable_unprepare(qproc->axi_clk);
-disable_ahb_clk:
-	clk_disable_unprepare(qproc->ahb_clk);
+reclaim_mba:
+	xfermemop_ret = q6v5_xfer_mem_ownership(qproc, &qproc->mba_perm, false,
+						qproc->mba_phys,
+						qproc->mba_size);
+	if (xfermemop_ret) {
+		dev_err(qproc->dev,
+			"Failed to reclaim mba buffer, system may become unstable\n");
+	}
+
+disable_active_clks:
+	q6v5_clk_disable(qproc->dev, qproc->active_clks,
+			 qproc->active_clk_count);
+
 assert_reset:
-	reset_control_assert(qproc->mss_restart);
+	q6v5_reset_assert(qproc);
+disable_reset_clks:
+	q6v5_clk_disable(qproc->dev, qproc->reset_clks,
+			 qproc->reset_clk_count);
 disable_vdd:
-	q6v5_regulator_disable(qproc);
+	q6v5_regulator_disable(qproc, qproc->active_regs,
+			       qproc->active_reg_count);
+disable_proxy_clk:
+	q6v5_clk_disable(qproc->dev, qproc->proxy_clks,
+			 qproc->proxy_clk_count);
+disable_proxy_reg:
+	q6v5_regulator_disable(qproc, qproc->proxy_regs,
+			       qproc->proxy_reg_count);
+
+disable_irqs:
+	disable_irq(qproc->handover_irq);
 
 	return ret;
 }
@@ -561,6 +942,7 @@ static int q6v5_stop(struct rproc *rproc)
 {
 	struct q6v5 *qproc = (struct q6v5 *)rproc->priv;
 	int ret;
+	u32 val;
 
 	qproc->running = false;
 
@@ -577,12 +959,38 @@ static int q6v5_stop(struct rproc *rproc)
 	q6v5proc_halt_axi_port(qproc, qproc->halt_map, qproc->halt_q6);
 	q6v5proc_halt_axi_port(qproc, qproc->halt_map, qproc->halt_modem);
 	q6v5proc_halt_axi_port(qproc, qproc->halt_map, qproc->halt_nc);
+	if (qproc->version == MSS_MSM8996) {
+		/*
+		 * To avoid high MX current during LPASS/MSS restart.
+		 */
+		val = readl(qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+		val |= Q6SS_CLAMP_IO | QDSP6v56_CLAMP_WL |
+			QDSP6v56_CLAMP_QMC_MEM;
+		writel(val, qproc->reg_base + QDSP6SS_PWR_CTL_REG);
+	}
 
-	reset_control_assert(qproc->mss_restart);
-	clk_disable_unprepare(qproc->rom_clk);
-	clk_disable_unprepare(qproc->axi_clk);
-	clk_disable_unprepare(qproc->ahb_clk);
-	q6v5_regulator_disable(qproc);
+
+	ret = q6v5_xfer_mem_ownership(qproc, &qproc->mpss_perm, false,
+				      qproc->mpss_phys, qproc->mpss_size);
+	WARN_ON(ret);
+
+	q6v5_reset_assert(qproc);
+
+	disable_irq(qproc->handover_irq);
+
+	if (!qproc->proxy_unvoted) {
+		q6v5_clk_disable(qproc->dev, qproc->proxy_clks,
+				 qproc->proxy_clk_count);
+		q6v5_regulator_disable(qproc, qproc->proxy_regs,
+				       qproc->proxy_reg_count);
+	}
+
+	q6v5_clk_disable(qproc->dev, qproc->reset_clks,
+			 qproc->reset_clk_count);
+	q6v5_clk_disable(qproc->dev, qproc->active_clks,
+			 qproc->active_clk_count);
+	q6v5_regulator_disable(qproc, qproc->active_regs,
+			       qproc->active_reg_count);
 
 	return 0;
 }
@@ -603,6 +1011,7 @@ static const struct rproc_ops q6v5_ops = {
 	.start = q6v5_start,
 	.stop = q6v5_stop,
 	.da_to_va = q6v5_da_to_va,
+	.load = q6v5_load,
 };
 
 static irqreturn_t q6v5_wdog_interrupt(int irq, void *dev)
@@ -625,9 +1034,6 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *dev)
 
 	rproc_report_crash(qproc->rproc, RPROC_WATCHDOG);
 
-	if (!IS_ERR(msg))
-		msg[0] = '\0';
-
 	return IRQ_HANDLED;
 }
 
@@ -645,9 +1051,14 @@ static irqreturn_t q6v5_fatal_interrupt(int irq, void *dev)
 
 	rproc_report_crash(qproc->rproc, RPROC_FATAL_ERROR);
 
-	if (!IS_ERR(msg))
-		msg[0] = '\0';
+	return IRQ_HANDLED;
+}
 
+static irqreturn_t q6v5_ready_interrupt(int irq, void *dev)
+{
+	struct q6v5 *qproc = dev;
+
+	complete(&qproc->start_done);
 	return IRQ_HANDLED;
 }
 
@@ -655,7 +1066,13 @@ static irqreturn_t q6v5_handover_interrupt(int irq, void *dev)
 {
 	struct q6v5 *qproc = dev;
 
-	complete(&qproc->start_done);
+	q6v5_clk_disable(qproc->dev, qproc->proxy_clks,
+			 qproc->proxy_clk_count);
+	q6v5_regulator_disable(qproc, qproc->proxy_regs,
+			       qproc->proxy_reg_count);
+
+	qproc->proxy_unvoted = true;
+
 	return IRQ_HANDLED;
 }
 
@@ -702,32 +1119,33 @@ static int q6v5_init_mem(struct q6v5 *qproc, struct platform_device *pdev)
 	return 0;
 }
 
-static int q6v5_init_clocks(struct q6v5 *qproc)
+static int q6v5_init_clocks(struct device *dev, struct clk **clks,
+		char **clk_names)
 {
-	qproc->ahb_clk = devm_clk_get(qproc->dev, "iface");
-	if (IS_ERR(qproc->ahb_clk)) {
-		dev_err(qproc->dev, "failed to get iface clock\n");
-		return PTR_ERR(qproc->ahb_clk);
+	int i;
+
+	if (!clk_names)
+		return 0;
+
+	for (i = 0; clk_names[i]; i++) {
+		clks[i] = devm_clk_get(dev, clk_names[i]);
+		if (IS_ERR(clks[i])) {
+			int rc = PTR_ERR(clks[i]);
+
+			if (rc != -EPROBE_DEFER)
+				dev_err(dev, "Failed to get %s clock\n",
+					clk_names[i]);
+			return rc;
+		}
 	}
 
-	qproc->axi_clk = devm_clk_get(qproc->dev, "bus");
-	if (IS_ERR(qproc->axi_clk)) {
-		dev_err(qproc->dev, "failed to get bus clock\n");
-		return PTR_ERR(qproc->axi_clk);
-	}
-
-	qproc->rom_clk = devm_clk_get(qproc->dev, "mem");
-	if (IS_ERR(qproc->rom_clk)) {
-		dev_err(qproc->dev, "failed to get mem clock\n");
-		return PTR_ERR(qproc->rom_clk);
-	}
-
-	return 0;
+	return i;
 }
 
 static int q6v5_init_reset(struct q6v5 *qproc)
 {
-	qproc->mss_restart = devm_reset_control_get(qproc->dev, NULL);
+	qproc->mss_restart = devm_reset_control_get_exclusive(qproc->dev,
+							      NULL);
 	if (IS_ERR(qproc->mss_restart)) {
 		dev_err(qproc->dev, "failed to acquire mss restart\n");
 		return PTR_ERR(qproc->mss_restart);
@@ -741,22 +1159,23 @@ static int q6v5_request_irq(struct q6v5 *qproc,
 			     const char *name,
 			     irq_handler_t thread_fn)
 {
+	int irq;
 	int ret;
 
-	ret = platform_get_irq_byname(pdev, name);
-	if (ret < 0) {
+	irq = platform_get_irq_byname(pdev, name);
+	if (irq < 0) {
 		dev_err(&pdev->dev, "no %s IRQ defined\n", name);
-		return ret;
+		return irq;
 	}
 
-	ret = devm_request_threaded_irq(&pdev->dev, ret,
+	ret = devm_request_threaded_irq(&pdev->dev, irq,
 					NULL, thread_fn,
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 					"q6v5", qproc);
 	if (ret)
 		dev_err(&pdev->dev, "request %s IRQ failed\n", name);
 
-	return ret;
+	return ret ? : irq;
 }
 
 static int q6v5_alloc_memory_region(struct q6v5 *qproc)
@@ -773,6 +1192,7 @@ static int q6v5_alloc_memory_region(struct q6v5 *qproc)
 		dev_err(qproc->dev, "unable to resolve mba region\n");
 		return ret;
 	}
+	of_node_put(node);
 
 	qproc->mba_phys = r.start;
 	qproc->mba_size = resource_size(&r);
@@ -790,6 +1210,7 @@ static int q6v5_alloc_memory_region(struct q6v5 *qproc)
 		dev_err(qproc->dev, "unable to resolve mpss region\n");
 		return ret;
 	}
+	of_node_put(node);
 
 	qproc->mpss_phys = qproc->mpss_reloc = r.start;
 	qproc->mpss_size = resource_size(&r);
@@ -805,18 +1226,21 @@ static int q6v5_alloc_memory_region(struct q6v5 *qproc)
 
 static int q6v5_probe(struct platform_device *pdev)
 {
+	const struct rproc_hexagon_res *desc;
 	struct q6v5 *qproc;
 	struct rproc *rproc;
 	int ret;
 
+	desc = of_device_get_match_data(&pdev->dev);
+	if (!desc)
+		return -EINVAL;
+
 	rproc = rproc_alloc(&pdev->dev, pdev->name, &q6v5_ops,
-			    MBA_FIRMWARE_NAME, sizeof(*qproc));
+			    desc->hexagon_mba_image, sizeof(*qproc));
 	if (!rproc) {
 		dev_err(&pdev->dev, "failed to allocate rproc\n");
 		return -ENOMEM;
 	}
-
-	rproc->fw_ops = &q6v5_fw_ops;
 
 	qproc = (struct q6v5 *)rproc->priv;
 	qproc->dev = &pdev->dev;
@@ -834,18 +1258,53 @@ static int q6v5_probe(struct platform_device *pdev)
 	if (ret)
 		goto free_rproc;
 
-	ret = q6v5_init_clocks(qproc);
-	if (ret)
+	ret = q6v5_init_clocks(&pdev->dev, qproc->proxy_clks,
+			       desc->proxy_clk_names);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to get proxy clocks.\n");
 		goto free_rproc;
+	}
+	qproc->proxy_clk_count = ret;
 
-	ret = q6v5_regulator_init(qproc);
-	if (ret)
+	ret = q6v5_init_clocks(&pdev->dev, qproc->reset_clks,
+			       desc->reset_clk_names);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to get reset clocks.\n");
 		goto free_rproc;
+	}
+	qproc->reset_clk_count = ret;
+
+	ret = q6v5_init_clocks(&pdev->dev, qproc->active_clks,
+			       desc->active_clk_names);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to get active clocks.\n");
+		goto free_rproc;
+	}
+	qproc->active_clk_count = ret;
+
+	ret = q6v5_regulator_init(&pdev->dev, qproc->proxy_regs,
+				  desc->proxy_supply);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to get proxy regulators.\n");
+		goto free_rproc;
+	}
+	qproc->proxy_reg_count = ret;
+
+	ret = q6v5_regulator_init(&pdev->dev,  qproc->active_regs,
+				  desc->active_supply);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to get active regulators.\n");
+		goto free_rproc;
+	}
+	qproc->active_reg_count = ret;
 
 	ret = q6v5_init_reset(qproc);
 	if (ret)
 		goto free_rproc;
 
+	qproc->version = desc->version;
+	qproc->has_alt_reset = desc->has_alt_reset;
+	qproc->need_mem_protection = desc->need_mem_protection;
 	ret = q6v5_request_irq(qproc, pdev, "wdog", q6v5_wdog_interrupt);
 	if (ret < 0)
 		goto free_rproc;
@@ -854,9 +1313,15 @@ static int q6v5_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto free_rproc;
 
+	ret = q6v5_request_irq(qproc, pdev, "ready", q6v5_ready_interrupt);
+	if (ret < 0)
+		goto free_rproc;
+
 	ret = q6v5_request_irq(qproc, pdev, "handover", q6v5_handover_interrupt);
 	if (ret < 0)
 		goto free_rproc;
+	qproc->handover_irq = ret;
+	disable_irq(qproc->handover_irq);
 
 	ret = q6v5_request_irq(qproc, pdev, "stop-ack", q6v5_stop_ack_interrupt);
 	if (ret < 0)
@@ -867,6 +1332,12 @@ static int q6v5_probe(struct platform_device *pdev)
 		ret = PTR_ERR(qproc->state);
 		goto free_rproc;
 	}
+	qproc->mpss_perm = BIT(QCOM_SCM_VMID_HLOS);
+	qproc->mba_perm = BIT(QCOM_SCM_VMID_HLOS);
+	qcom_add_glink_subdev(rproc, &qproc->glink_subdev);
+	qcom_add_smd_subdev(rproc, &qproc->smd_subdev);
+	qcom_add_ssr_subdev(rproc, &qproc->ssr_subdev, "mpss");
+	qproc->sysmon = qcom_add_sysmon_subdev(rproc, "modem", 0x12);
 
 	ret = rproc_add(rproc);
 	if (ret)
@@ -885,13 +1356,138 @@ static int q6v5_remove(struct platform_device *pdev)
 	struct q6v5 *qproc = platform_get_drvdata(pdev);
 
 	rproc_del(qproc->rproc);
+
+	qcom_remove_sysmon_subdev(qproc->sysmon);
+	qcom_remove_glink_subdev(qproc->rproc, &qproc->glink_subdev);
+	qcom_remove_smd_subdev(qproc->rproc, &qproc->smd_subdev);
+	qcom_remove_ssr_subdev(qproc->rproc, &qproc->ssr_subdev);
 	rproc_free(qproc->rproc);
 
 	return 0;
 }
 
+static const struct rproc_hexagon_res sdm845_mss = {
+	.hexagon_mba_image = "mba.mbn",
+	.proxy_clk_names = (char*[]){
+			"xo",
+			"axis2",
+			"prng",
+			NULL
+	},
+	.reset_clk_names = (char*[]){
+			"iface",
+			"snoc_axi",
+			NULL
+	},
+	.active_clk_names = (char*[]){
+			"bus",
+			"mem",
+			"gpll0_mss",
+			"mnoc_axi",
+			NULL
+	},
+	.need_mem_protection = true,
+	.has_alt_reset = true,
+	.version = MSS_SDM845,
+};
+
+static const struct rproc_hexagon_res msm8996_mss = {
+	.hexagon_mba_image = "mba.mbn",
+	.proxy_clk_names = (char*[]){
+			"xo",
+			"pnoc",
+			NULL
+	},
+	.active_clk_names = (char*[]){
+			"iface",
+			"bus",
+			"mem",
+			"gpll0_mss_clk",
+			NULL
+	},
+	.need_mem_protection = true,
+	.has_alt_reset = false,
+	.version = MSS_MSM8996,
+};
+
+static const struct rproc_hexagon_res msm8916_mss = {
+	.hexagon_mba_image = "mba.mbn",
+	.proxy_supply = (struct qcom_mss_reg_res[]) {
+		{
+			.supply = "mx",
+			.uV = 1050000,
+		},
+		{
+			.supply = "cx",
+			.uA = 100000,
+		},
+		{
+			.supply = "pll",
+			.uA = 100000,
+		},
+		{}
+	},
+	.proxy_clk_names = (char*[]){
+		"xo",
+		NULL
+	},
+	.active_clk_names = (char*[]){
+		"iface",
+		"bus",
+		"mem",
+		NULL
+	},
+	.need_mem_protection = false,
+	.has_alt_reset = false,
+	.version = MSS_MSM8916,
+};
+
+static const struct rproc_hexagon_res msm8974_mss = {
+	.hexagon_mba_image = "mba.b00",
+	.proxy_supply = (struct qcom_mss_reg_res[]) {
+		{
+			.supply = "mx",
+			.uV = 1050000,
+		},
+		{
+			.supply = "cx",
+			.uA = 100000,
+		},
+		{
+			.supply = "pll",
+			.uA = 100000,
+		},
+		{}
+	},
+	.active_supply = (struct qcom_mss_reg_res[]) {
+		{
+			.supply = "mss",
+			.uV = 1050000,
+			.uA = 100000,
+		},
+		{}
+	},
+	.proxy_clk_names = (char*[]){
+		"xo",
+		NULL
+	},
+	.active_clk_names = (char*[]){
+		"iface",
+		"bus",
+		"mem",
+		NULL
+	},
+	.need_mem_protection = false,
+	.has_alt_reset = false,
+	.version = MSS_MSM8974,
+};
+
 static const struct of_device_id q6v5_of_match[] = {
-	{ .compatible = "qcom,q6v5-pil", },
+	{ .compatible = "qcom,q6v5-pil", .data = &msm8916_mss},
+	{ .compatible = "qcom,msm8916-mss-pil", .data = &msm8916_mss},
+	{ .compatible = "qcom,msm8974-mss-pil", .data = &msm8974_mss},
+	{ .compatible = "qcom,msm8996-mss-pil", .data = &msm8996_mss},
+	{ .compatible = "qcom,sdm845-mss-pil", .data = &sdm845_mss},
 	{ },
 };
 MODULE_DEVICE_TABLE(of, q6v5_of_match);

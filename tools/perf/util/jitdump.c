@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <sys/sysmacros.h>
 #include <sys/types.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,13 +11,13 @@
 #include <byteswap.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <linux/stringify.h>
 
 #include "util.h"
 #include "event.h"
 #include "debug.h"
 #include "evlist.h"
 #include "symbol.h"
-#include "strlist.h"
 #include <elf.h>
 
 #include "tsc.h"
@@ -25,8 +27,10 @@
 #include "genelf.h"
 #include "../builtin.h"
 
+#include "sane_ctype.h"
+
 struct jit_buf_desc {
-	struct perf_data_file *output;
+	struct perf_data *output;
 	struct perf_session *session;
 	struct machine *machine;
 	union jr_entry   *entry;
@@ -57,8 +61,8 @@ struct debug_line_info {
 
 struct jit_tool {
 	struct perf_tool tool;
-	struct perf_data_file	output;
-	struct perf_data_file	input;
+	struct perf_data	output;
+	struct perf_data	input;
 	u64 bytes_written;
 };
 
@@ -181,7 +185,7 @@ jit_open(struct jit_buf_desc *jd, const char *name)
 			jd->use_arch_timestamp);
 
 	if (header.version > JITHEADER_VERSION) {
-		pr_err("wrong jitdump version %u, expected " STR(JITHEADER_VERSION),
+		pr_err("wrong jitdump version %u, expected " __stringify(JITHEADER_VERSION),
 			header.version);
 		goto error;
 	}
@@ -353,7 +357,7 @@ jit_inject_event(struct jit_buf_desc *jd, union perf_event *event)
 {
 	ssize_t size;
 
-	size = perf_data_file__write(jd->output, event, event->header.size);
+	size = perf_data__write(jd->output, event, event->header.size);
 	if (size < 0)
 		return -1;
 
@@ -748,7 +752,7 @@ jit_detect(char *mmap_name, pid_t pid)
 
 int
 jit_process(struct perf_session *session,
-	    struct perf_data_file *output,
+	    struct perf_data *output,
 	    struct machine *machine,
 	    char *filename,
 	    pid_t pid,

@@ -173,8 +173,7 @@ static const struct nf_conntrack_expect_policy sane_exp_policy = {
 	.timeout	= 5 * 60,
 };
 
-/* don't make this __exit, since it's called from __init ! */
-static void nf_conntrack_sane_fini(void)
+static void __exit nf_conntrack_sane_fini(void)
 {
 	nf_conntrack_helpers_unregister(sane, ports_c * 2);
 	kfree(sane_buffer);
@@ -183,6 +182,8 @@ static void nf_conntrack_sane_fini(void)
 static int __init nf_conntrack_sane_init(void)
 {
 	int i, ret = 0;
+
+	NF_CT_HELPER_BUILD_BUG_ON(sizeof(struct nf_ct_sane_master));
 
 	sane_buffer = kmalloc(65536, GFP_KERNEL);
 	if (!sane_buffer)
@@ -196,13 +197,11 @@ static int __init nf_conntrack_sane_init(void)
 	for (i = 0; i < ports_c; i++) {
 		nf_ct_helper_init(&sane[2 * i], AF_INET, IPPROTO_TCP, "sane",
 				  SANE_PORT, ports[i], ports[i],
-				  &sane_exp_policy, 0,
-				  sizeof(struct nf_ct_sane_master), help, NULL,
+				  &sane_exp_policy, 0, help, NULL,
 				  THIS_MODULE);
 		nf_ct_helper_init(&sane[2 * i + 1], AF_INET6, IPPROTO_TCP, "sane",
 				  SANE_PORT, ports[i], ports[i],
-				  &sane_exp_policy, 0,
-				  sizeof(struct nf_ct_sane_master), help, NULL,
+				  &sane_exp_policy, 0, help, NULL,
 				  THIS_MODULE);
 	}
 

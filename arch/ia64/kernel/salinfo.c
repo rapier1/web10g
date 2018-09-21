@@ -54,8 +54,6 @@ MODULE_AUTHOR("Jesse Barnes <jbarnes@sgi.com>");
 MODULE_DESCRIPTION("/proc interface to IA-64 SAL features");
 MODULE_LICENSE("GPL");
 
-static const struct file_operations proc_salinfo_fops;
-
 typedef struct {
 	const char		*name;		/* name of the proc entry */
 	unsigned long           feature;        /* feature bit */
@@ -179,14 +177,14 @@ struct salinfo_platform_oemdata_parms {
 	const u8 *efi_guid;
 	u8 **oemdata;
 	u64 *oemdata_size;
-	int ret;
 };
 
-static void
+static long
 salinfo_platform_oemdata_cpu(void *context)
 {
 	struct salinfo_platform_oemdata_parms *parms = context;
-	parms->ret = salinfo_platform_oemdata(parms->efi_guid, parms->oemdata, parms->oemdata_size);
+
+	return salinfo_platform_oemdata(parms->efi_guid, parms->oemdata, parms->oemdata_size);
 }
 
 static void
@@ -263,7 +261,7 @@ salinfo_timeout_check(struct salinfo_data *data)
 }
 
 static void
-salinfo_timeout (unsigned long arg)
+salinfo_timeout(struct timer_list *unused)
 {
 	ia64_mlogbuf_dump();
 	salinfo_timeout_check(salinfo_data + SAL_INFO_TYPE_MCA);
@@ -380,16 +378,7 @@ salinfo_log_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static void
-call_on_cpu(int cpu, void (*fn)(void *), void *arg)
-{
-	cpumask_t save_cpus_allowed = current->cpus_allowed;
-	set_cpus_allowed_ptr(current, cpumask_of(cpu));
-	(*fn)(arg);
-	set_cpus_allowed_ptr(current, &save_cpus_allowed);
-}
-
-static void
+static long
 salinfo_log_read_cpu(void *context)
 {
 	struct salinfo_data *data = context;
@@ -399,6 +388,7 @@ salinfo_log_read_cpu(void *context)
 	/* Clear corrected errors as they are read from SAL */
 	if (rh->severity == sal_log_severity_corrected)
 		ia64_sal_clear_state_info(data->type);
+	return 0;
 }
 
 static void
@@ -430,7 +420,7 @@ retry:
 	spin_unlock_irqrestore(&data_saved_lock, flags);
 
 	if (!data->saved_num)
-		call_on_cpu(cpu, salinfo_log_read_cpu, data);
+		work_on_cpu_safe(cpu, salinfo_log_read_cpu, data);
 	if (!data->log_size) {
 		data->state = STATE_NO_DATA;
 		cpumask_clear_cpu(cpu, &data->cpu_event);
@@ -459,11 +449,13 @@ salinfo_log_read(struct file *file, char __user *buffer, size_t count, loff_t *p
 	return simple_read_from_buffer(buffer, count, ppos, buf, bufsize);
 }
 
-static void
+static long
 salinfo_log_clear_cpu(void *context)
 {
 	struct salinfo_data *data = context;
+
 	ia64_sal_clear_state_info(data->type);
+	return 0;
 }
 
 static int
@@ -486,7 +478,7 @@ salinfo_log_clear(struct salinfo_data *data, int cpu)
 	rh = (sal_log_record_header_t *)(data->log_buffer);
 	/* Corrected errors have already been cleared from SAL */
 	if (rh->severity != sal_log_severity_corrected)
-		call_on_cpu(cpu, salinfo_log_clear_cpu, data);
+		work_on_cpu_safe(cpu, salinfo_log_clear_cpu, data);
 	/* clearing a record may make a new record visible */
 	salinfo_log_new_read(cpu, data);
 	if (data->state == STATE_LOG_RECORD) {
@@ -531,9 +523,8 @@ salinfo_log_write(struct file *file, const char __user *buffer, size_t count, lo
 				.oemdata = &data->oemdata,
 				.oemdata_size = &data->oemdata_size
 			};
-			call_on_cpu(cpu, salinfo_platform_oemdata_cpu, &parms);
-			if (parms.ret)
-				count = parms.ret;
+			count = work_on_cpu_safe(cpu, salinfo_platform_oemdata_cpu,
+						 &parms);
 		} else
 			data->oemdata_size = 0;
 	} else
@@ -585,6 +576,17 @@ static int salinfo_cpu_pre_down(unsigned int cpu)
 	return 0;
 }
 
+/*
+ * 'data' contains an integer that corresponds to the feature we're
+ * testing
+ */
+static int proc_salinfo_show(struct seq_file *m, void *v)
+{
+	unsigned long data = (unsigned long)v;
+	seq_puts(m, (sal_platform_features & data) ? "1\n" : "0\n");
+	return 0;
+}
+
 static int __init
 salinfo_init(void)
 {
@@ -600,9 +602,9 @@ salinfo_init(void)
 
 	for (i=0; i < NR_SALINFO_ENTRIES; i++) {
 		/* pass the feature bit in question as misc data */
-		*sdir++ = proc_create_data(salinfo_entries[i].name, 0, salinfo_dir,
-					   &proc_salinfo_fops,
-					   (void *)salinfo_entries[i].feature);
+		*sdir++ = proc_create_single_data(salinfo_entries[i].name, 0,
+				salinfo_dir, proc_salinfo_show,
+				(void *)salinfo_entries[i].feature);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(salinfo_log_name); i++) {
@@ -630,9 +632,8 @@ salinfo_init(void)
 
 	*sdir++ = salinfo_dir;
 
-	init_timer(&salinfo_timer);
+	timer_setup(&salinfo_timer, salinfo_timeout, 0);
 	salinfo_timer.expires = jiffies + SALINFO_TIMER_DELAY;
-	salinfo_timer.function = &salinfo_timeout;
 	add_timer(&salinfo_timer);
 
 	i = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "ia64/salinfo:online",
@@ -640,28 +641,5 @@ salinfo_init(void)
 	WARN_ON(i < 0);
 	return 0;
 }
-
-/*
- * 'data' contains an integer that corresponds to the feature we're
- * testing
- */
-static int proc_salinfo_show(struct seq_file *m, void *v)
-{
-	unsigned long data = (unsigned long)v;
-	seq_puts(m, (sal_platform_features & data) ? "1\n" : "0\n");
-	return 0;
-}
-
-static int proc_salinfo_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, proc_salinfo_show, PDE_DATA(inode));
-}
-
-static const struct file_operations proc_salinfo_fops = {
-	.open		= proc_salinfo_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 
 module_init(salinfo_init);

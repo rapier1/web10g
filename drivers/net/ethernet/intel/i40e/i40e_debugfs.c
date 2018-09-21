@@ -1,28 +1,5 @@
-/*******************************************************************************
- *
- * Intel Ethernet Controller XL710 Family Linux Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
- * Contact Information:
- * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- ******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 2013 - 2018 Intel Corporation. */
 
 #ifdef CONFIG_DEBUG_FS
 
@@ -35,8 +12,8 @@ static struct dentry *i40e_dbg_root;
 
 /**
  * i40e_dbg_find_vsi - searches for the vsi with the given seid
- * @pf - the PF structure to search for the vsi
- * @seid - seid of the vsi it is searching for
+ * @pf: the PF structure to search for the vsi
+ * @seid: seid of the vsi it is searching for
  **/
 static struct i40e_vsi *i40e_dbg_find_vsi(struct i40e_pf *pf, int seid)
 {
@@ -54,8 +31,8 @@ static struct i40e_vsi *i40e_dbg_find_vsi(struct i40e_pf *pf, int seid)
 
 /**
  * i40e_dbg_find_veb - searches for the veb with the given seid
- * @pf - the PF structure to search for the veb
- * @seid - seid of the veb it is searching for
+ * @pf: the PF structure to search for the veb
+ * @seid: seid of the veb it is searching for
  **/
 static struct i40e_veb *i40e_dbg_find_veb(struct i40e_pf *pf, int seid)
 {
@@ -155,12 +132,15 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 		dev_info(&pf->pdev->dev, "        vlan_features = 0x%08lx\n",
 			 (unsigned long int)nd->vlan_features);
 	}
+	dev_info(&pf->pdev->dev, "    active_vlans is %s\n",
+		 vsi->active_vlans ? "<valid>" : "<null>");
 	dev_info(&pf->pdev->dev,
-		 "    vlgrp: & = %p\n", vsi->active_vlans);
-	dev_info(&pf->pdev->dev,
-		 "    state = %li flags = 0x%08lx, netdev_registered = %i, current_netdev_flags = 0x%04x\n",
-		 vsi->state, vsi->flags,
-		 vsi->netdev_registered, vsi->current_netdev_flags);
+		 "    flags = 0x%08lx, netdev_registered = %i, current_netdev_flags = 0x%04x\n",
+		 vsi->flags, vsi->netdev_registered, vsi->current_netdev_flags);
+	for (i = 0; i < BITS_TO_LONGS(__I40E_VSI_STATE_SIZE__); i++)
+		dev_info(&pf->pdev->dev,
+			 "    state[%d] = %08lx\n",
+			 i, vsi->state[i]);
 	if (vsi == pf->vsi[pf->lan_vsi])
 		dev_info(&pf->pdev->dev, "    MAC address: %pM SAN MAC: %pM Port MAC: %pM\n",
 			 pf->hw.mac.addr,
@@ -174,7 +154,7 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 	}
 	dev_info(&pf->pdev->dev, "    active_filters %u, promisc_threshold %u, overflow promisc %s\n",
 		 vsi->active_filters, vsi->promisc_threshold,
-		 (test_bit(__I40E_FILTER_OVERFLOW_PROMISC, &vsi->state) ?
+		 (test_bit(__I40E_VSI_OVERFLOW_PROMISC, vsi->state) ?
 		  "ON" : "OFF"));
 	nstat = i40e_get_vsi_stats_struct(vsi);
 	dev_info(&pf->pdev->dev,
@@ -261,22 +241,14 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 		 vsi->rx_buf_failed, vsi->rx_page_failed);
 	rcu_read_lock();
 	for (i = 0; i < vsi->num_queue_pairs; i++) {
-		struct i40e_ring *rx_ring = ACCESS_ONCE(vsi->rx_rings[i]);
+		struct i40e_ring *rx_ring = READ_ONCE(vsi->rx_rings[i]);
 
 		if (!rx_ring)
 			continue;
 
 		dev_info(&pf->pdev->dev,
-			 "    rx_rings[%i]: desc = %p\n",
-			 i, rx_ring->desc);
-		dev_info(&pf->pdev->dev,
-			 "    rx_rings[%i]: dev = %p, netdev = %p, rx_bi = %p\n",
-			 i, rx_ring->dev,
-			 rx_ring->netdev,
-			 rx_ring->rx_bi);
-		dev_info(&pf->pdev->dev,
-			 "    rx_rings[%i]: state = %li, queue_index = %d, reg_idx = %d\n",
-			 i, rx_ring->state,
+			 "    rx_rings[%i]: state = %lu, queue_index = %d, reg_idx = %d\n",
+			 i, *rx_ring->state,
 			 rx_ring->queue_index,
 			 rx_ring->reg_idx);
 		dev_info(&pf->pdev->dev,
@@ -304,35 +276,22 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 			 rx_ring->rx_stats.realloc_count,
 			 rx_ring->rx_stats.page_reuse_count);
 		dev_info(&pf->pdev->dev,
-			 "    rx_rings[%i]: size = %i, dma = 0x%08lx\n",
-			 i, rx_ring->size,
-			 (unsigned long int)rx_ring->dma);
+			 "    rx_rings[%i]: size = %i\n",
+			 i, rx_ring->size);
 		dev_info(&pf->pdev->dev,
-			 "    rx_rings[%i]: vsi = %p, q_vector = %p\n",
-			 i, rx_ring->vsi,
-			 rx_ring->q_vector);
-		dev_info(&pf->pdev->dev,
-			 "    rx_rings[%i]: rx_itr_setting = %d (%s)\n",
-			 i, rx_ring->rx_itr_setting,
-			 ITR_IS_DYNAMIC(rx_ring->rx_itr_setting) ? "dynamic" : "fixed");
+			 "    rx_rings[%i]: itr_setting = %d (%s)\n",
+			 i, rx_ring->itr_setting,
+			 ITR_IS_DYNAMIC(rx_ring->itr_setting) ? "dynamic" : "fixed");
 	}
 	for (i = 0; i < vsi->num_queue_pairs; i++) {
-		struct i40e_ring *tx_ring = ACCESS_ONCE(vsi->tx_rings[i]);
+		struct i40e_ring *tx_ring = READ_ONCE(vsi->tx_rings[i]);
 
 		if (!tx_ring)
 			continue;
 
 		dev_info(&pf->pdev->dev,
-			 "    tx_rings[%i]: desc = %p\n",
-			 i, tx_ring->desc);
-		dev_info(&pf->pdev->dev,
-			 "    tx_rings[%i]: dev = %p, netdev = %p, tx_bi = %p\n",
-			 i, tx_ring->dev,
-			 tx_ring->netdev,
-			 tx_ring->tx_bi);
-		dev_info(&pf->pdev->dev,
-			 "    tx_rings[%i]: state = %li, queue_index = %d, reg_idx = %d\n",
-			 i, tx_ring->state,
+			 "    tx_rings[%i]: state = %lu, queue_index = %d, reg_idx = %d\n",
+			 i, *tx_ring->state,
 			 tx_ring->queue_index,
 			 tx_ring->reg_idx);
 		dev_info(&pf->pdev->dev,
@@ -352,20 +311,15 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 			 tx_ring->tx_stats.tx_busy,
 			 tx_ring->tx_stats.tx_done_old);
 		dev_info(&pf->pdev->dev,
-			 "    tx_rings[%i]: size = %i, dma = 0x%08lx\n",
-			 i, tx_ring->size,
-			 (unsigned long int)tx_ring->dma);
-		dev_info(&pf->pdev->dev,
-			 "    tx_rings[%i]: vsi = %p, q_vector = %p\n",
-			 i, tx_ring->vsi,
-			 tx_ring->q_vector);
+			 "    tx_rings[%i]: size = %i\n",
+			 i, tx_ring->size);
 		dev_info(&pf->pdev->dev,
 			 "    tx_rings[%i]: DCB tc = %d\n",
 			 i, tx_ring->dcb_tc);
 		dev_info(&pf->pdev->dev,
-			 "    tx_rings[%i]: tx_itr_setting = %d (%s)\n",
-			 i, tx_ring->tx_itr_setting,
-			 ITR_IS_DYNAMIC(tx_ring->tx_itr_setting) ? "dynamic" : "fixed");
+			 "    tx_rings[%i]: itr_setting = %d (%s)\n",
+			 i, tx_ring->itr_setting,
+			 ITR_IS_DYNAMIC(tx_ring->itr_setting) ? "dynamic" : "fixed");
 	}
 	rcu_read_unlock();
 	dev_info(&pf->pdev->dev,
@@ -384,6 +338,8 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 		 "    base_queue = %d, num_queue_pairs = %d, num_desc = %d\n",
 		 vsi->base_queue, vsi->num_queue_pairs, vsi->num_desc);
 	dev_info(&pf->pdev->dev, "    type = %i\n", vsi->type);
+	if (vsi->type == I40E_VSI_SRIOV)
+		dev_info(&pf->pdev->dev, "    VF ID = %i\n", vsi->vf_id);
 	dev_info(&pf->pdev->dev,
 		 "    info: valid_sections = 0x%04x, switch_id = 0x%04x\n",
 		 vsi->info.valid_sections, vsi->info.switch_id);
@@ -461,8 +417,6 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 		 vsi->info.resp_reserved[6], vsi->info.resp_reserved[7],
 		 vsi->info.resp_reserved[8], vsi->info.resp_reserved[9],
 		 vsi->info.resp_reserved[10], vsi->info.resp_reserved[11]);
-	if (vsi->back)
-		dev_info(&pf->pdev->dev, "    PF = %p\n", vsi->back);
 	dev_info(&pf->pdev->dev, "    idx = %d\n", vsi->idx);
 	dev_info(&pf->pdev->dev,
 		 "    tc_config: numtc = %d, enabled_tc = 0x%x\n",
@@ -484,25 +438,6 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 			 vsi->bw_ets_limit_credits[i],
 			 vsi->bw_ets_max_quanta[i]);
 	}
-#ifdef I40E_FCOE
-	if (vsi->type == I40E_VSI_FCOE) {
-		dev_info(&pf->pdev->dev,
-			 "    fcoe_stats: rx_packets = %llu, rx_dwords = %llu, rx_dropped = %llu\n",
-			 vsi->fcoe_stats.rx_fcoe_packets,
-			 vsi->fcoe_stats.rx_fcoe_dwords,
-			 vsi->fcoe_stats.rx_fcoe_dropped);
-		dev_info(&pf->pdev->dev,
-			 "    fcoe_stats: tx_packets = %llu, tx_dwords = %llu\n",
-			 vsi->fcoe_stats.tx_fcoe_packets,
-			 vsi->fcoe_stats.tx_fcoe_dwords);
-		dev_info(&pf->pdev->dev,
-			 "    fcoe_stats: bad_crc = %llu, last_error = %llu\n",
-			 vsi->fcoe_stats.fcoe_bad_fccrc,
-			 vsi->fcoe_stats.fcoe_last_error);
-		dev_info(&pf->pdev->dev, "    fcoe_stats: ddp_count = %llu\n",
-			 vsi->fcoe_stats.fcoe_ddp_count);
-	}
-#endif
 }
 
 /**
@@ -713,6 +648,47 @@ static void i40e_dbg_dump_veb_all(struct i40e_pf *pf)
 	}
 }
 
+/**
+ * i40e_dbg_dump_vf - dump VF info
+ * @pf: the i40e_pf created in command write
+ * @vf_id: the vf_id from the user
+ **/
+static void i40e_dbg_dump_vf(struct i40e_pf *pf, int vf_id)
+{
+	struct i40e_vf *vf;
+	struct i40e_vsi *vsi;
+
+	if (!pf->num_alloc_vfs) {
+		dev_info(&pf->pdev->dev, "no VFs allocated\n");
+	} else if ((vf_id >= 0) && (vf_id < pf->num_alloc_vfs)) {
+		vf = &pf->vf[vf_id];
+		vsi = pf->vsi[vf->lan_vsi_idx];
+		dev_info(&pf->pdev->dev, "vf %2d: VSI id=%d, seid=%d, qps=%d\n",
+			 vf_id, vf->lan_vsi_id, vsi->seid, vf->num_queue_pairs);
+		dev_info(&pf->pdev->dev, "       num MDD=%lld, invalid msg=%lld, valid msg=%lld\n",
+			 vf->num_mdd_events,
+			 vf->num_invalid_msgs,
+			 vf->num_valid_msgs);
+	} else {
+		dev_info(&pf->pdev->dev, "invalid VF id %d\n", vf_id);
+	}
+}
+
+/**
+ * i40e_dbg_dump_vf_all - dump VF info for all VFs
+ * @pf: the i40e_pf created in command write
+ **/
+static void i40e_dbg_dump_vf_all(struct i40e_pf *pf)
+{
+	int i;
+
+	if (!pf->num_alloc_vfs)
+		dev_info(&pf->pdev->dev, "no VFs enabled!\n");
+	else
+		for (i = 0; i < pf->num_alloc_vfs; i++)
+			i40e_dbg_dump_vf(pf, i);
+}
+
 #define I40E_MAX_DEBUG_OUT_BUFFER (4096*4)
 /**
  * i40e_dbg_command_write - write into command datum
@@ -731,6 +707,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 	struct i40e_vsi *vsi;
 	int vsi_seid;
 	int veb_seid;
+	int vf_id;
 	int cnt;
 
 	/* don't allow partial writes */
@@ -770,8 +747,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 		 */
 		if (!(pf->flags & I40E_FLAG_VEB_MODE_ENABLED)) {
 			pf->flags |= I40E_FLAG_VEB_MODE_ENABLED;
-			i40e_do_reset_safe(pf,
-					   BIT_ULL(__I40E_PF_RESET_REQUESTED));
+			i40e_do_reset_safe(pf, I40E_PF_RESET_FLAG);
 		}
 
 		vsi = i40e_vsi_setup(pf, I40E_VSI_VMDQ2, vsi_seid, 0);
@@ -933,6 +909,12 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 				i40e_dbg_dump_veb_seid(pf, vsi_seid);
 			else
 				i40e_dbg_dump_veb_all(pf);
+		} else if (strncmp(&cmd_buf[5], "vf", 2) == 0) {
+			cnt = sscanf(&cmd_buf[7], "%i", &vf_id);
+			if (cnt > 0)
+				i40e_dbg_dump_vf(pf, vf_id);
+			else
+				i40e_dbg_dump_vf_all(pf);
 		} else if (strncmp(&cmd_buf[5], "desc", 4) == 0) {
 			int ring_id, desc_n;
 			if (strncmp(&cmd_buf[10], "rx", 2) == 0) {
@@ -974,7 +956,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 			struct i40e_dcbx_config *r_cfg =
 						&pf->hw.remote_dcbx_config;
 			int i, ret;
-			u32 switch_id;
+			u16 switch_id;
 
 			bw_data = kzalloc(sizeof(
 				    struct i40e_aqc_query_port_ets_config_resp),
@@ -986,7 +968,8 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 
 			vsi = pf->vsi[pf->lan_vsi];
 			switch_id =
-				vsi->info.switch_id & I40E_AQ_VSI_SW_ID_MASK;
+				le16_to_cpu(vsi->info.switch_id) &
+					    I40E_AQ_VSI_SW_ID_MASK;
 
 			ret = i40e_aq_query_port_ets_config(&pf->hw,
 							    switch_id,
@@ -1127,6 +1110,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 			dev_info(&pf->pdev->dev, "dump vsi [seid]\n");
 			dev_info(&pf->pdev->dev, "dump reset stats\n");
 			dev_info(&pf->pdev->dev, "dump port\n");
+			dev_info(&pf->pdev->dev, "dump vf [vf_id]\n");
 			dev_info(&pf->pdev->dev,
 				 "dump debug fwdata <cluster_id> <table_id> <index>\n");
 		}
@@ -1673,7 +1657,7 @@ static ssize_t i40e_dbg_netdev_ops_write(struct file *filp,
 		} else if (!vsi->netdev) {
 			dev_info(&pf->pdev->dev, "tx_timeout: no netdev for VSI %d\n",
 				 vsi_seid);
-		} else if (test_bit(__I40E_DOWN, &vsi->state)) {
+		} else if (test_bit(__I40E_VSI_DOWN, vsi->state)) {
 			dev_info(&pf->pdev->dev, "tx_timeout: VSI %d not UP\n",
 				 vsi_seid);
 		} else if (rtnl_trylock()) {

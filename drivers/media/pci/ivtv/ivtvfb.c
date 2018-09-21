@@ -38,24 +38,19 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/fb.h>
-#include <linux/ivtvfb.h>
-#include <linux/slab.h>
-
-#ifdef CONFIG_X86_64
-#include <asm/pat.h>
-#endif
-
 #include "ivtv-driver.h"
 #include "ivtv-cards.h"
 #include "ivtv-i2c.h"
 #include "ivtv-udma.h"
 #include "ivtv-mailbox.h"
 #include "ivtv-firmware.h"
+
+#include <linux/fb.h>
+#include <linux/ivtvfb.h>
+
+#ifdef CONFIG_X86_64
+#include <asm/pat.h>
+#endif
 
 /* card parameters */
 static int ivtvfb_card_id = -1;
@@ -351,8 +346,8 @@ static int ivtvfb_prep_frame(struct ivtv *itv, int cmd, void __user *source,
 
 	/* Not fatal, but will have undesirable results */
 	if ((unsigned long)source & 3)
-		IVTVFB_WARN("ivtvfb_prep_frame: Source address not 32 bit aligned (0x%08lx)\n",
-			(unsigned long)source);
+		IVTVFB_WARN("ivtvfb_prep_frame: Source address not 32 bit aligned (%p)\n",
+			    source);
 
 	if (dest_offset & 3)
 		IVTVFB_WARN("ivtvfb_prep_frame: Dest offset not 32 bit aligned (%ld)\n", dest_offset);
@@ -362,12 +357,10 @@ static int ivtvfb_prep_frame(struct ivtv *itv, int cmd, void __user *source,
 
 	/* Check Source */
 	if (!access_ok(VERIFY_READ, source + dest_offset, count)) {
-		IVTVFB_WARN("Invalid userspace pointer 0x%08lx\n",
-			(unsigned long)source);
+		IVTVFB_WARN("Invalid userspace pointer %p\n", source);
 
-		IVTVFB_DEBUG_WARN("access_ok() failed for offset 0x%08lx source 0x%08lx count %d\n",
-			dest_offset, (unsigned long)source,
-			count);
+		IVTVFB_DEBUG_WARN("access_ok() failed for offset 0x%08lx source %p count %d\n",
+				  dest_offset, source, count);
 		return -EINVAL;
 	}
 
@@ -1084,7 +1077,7 @@ static int ivtvfb_init_vidmode(struct ivtv *itv)
 
 	/* Allocate the pseudo palette */
 	oi->ivtvfb_info.pseudo_palette =
-		kmalloc(sizeof(u32) * 16, GFP_KERNEL|__GFP_NOWARN);
+		kmalloc_array(16, sizeof(u32), GFP_KERNEL|__GFP_NOWARN);
 
 	if (!oi->ivtvfb_info.pseudo_palette) {
 		IVTVFB_ERR("abort, unable to alloc pseudo palette\n");
@@ -1275,7 +1268,7 @@ static int __init ivtvfb_init(void)
 
 
 	if (ivtvfb_card_id < -1 || ivtvfb_card_id >= IVTV_MAX_CARDS) {
-		printk(KERN_ERR "ivtvfb:  ivtvfb_card_id parameter is out of range (valid range: -1 - %d)\n",
+		pr_err("ivtvfb_card_id parameter is out of range (valid range: -1 - %d)\n",
 		     IVTV_MAX_CARDS - 1);
 		return -EINVAL;
 	}
@@ -1284,7 +1277,7 @@ static int __init ivtvfb_init(void)
 	err = driver_for_each_device(drv, NULL, &registered, ivtvfb_callback_init);
 	(void)err;	/* suppress compiler warning */
 	if (!registered) {
-		printk(KERN_ERR "ivtvfb:  no cards found\n");
+		pr_err("no cards found\n");
 		return -ENODEV;
 	}
 	return 0;
@@ -1295,7 +1288,7 @@ static void ivtvfb_cleanup(void)
 	struct device_driver *drv;
 	int err;
 
-	printk(KERN_INFO "ivtvfb:  Unloading framebuffer module\n");
+	pr_info("Unloading framebuffer module\n");
 
 	drv = driver_find("ivtv", &pci_bus_type);
 	err = driver_for_each_device(drv, NULL, NULL, ivtvfb_callback_cleanup);

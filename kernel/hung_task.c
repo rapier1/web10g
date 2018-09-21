@@ -16,6 +16,9 @@
 #include <linux/export.h>
 #include <linux/sysctl.h>
 #include <linux/utsname.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/debug.h>
+
 #include <trace/events/sched.h>
 
 /*
@@ -40,6 +43,8 @@ unsigned long __read_mostly sysctl_hung_task_timeout_secs = CONFIG_DEFAULT_HUNG_
 int __read_mostly sysctl_hung_task_warnings = 10;
 
 static int __read_mostly did_panic;
+static bool hung_task_show_lock;
+static bool hung_task_call_panic;
 
 static struct task_struct *watchdog_task;
 
@@ -117,14 +122,14 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 		pr_err("\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\""
 			" disables this message.\n");
 		sched_show_task(t);
-		debug_show_all_locks();
+		hung_task_show_lock = true;
 	}
 
 	touch_nmi_watchdog();
 
 	if (sysctl_hung_task_panic) {
-		trigger_all_cpu_backtrace();
-		panic("hung_task: blocked tasks");
+		hung_task_show_lock = true;
+		hung_task_call_panic = true;
 	}
 }
 
@@ -169,6 +174,7 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 	if (test_taint(TAINT_DIE) || did_panic)
 		return;
 
+	hung_task_show_lock = false;
 	rcu_read_lock();
 	for_each_process_thread(g, t) {
 		if (!max_count--)
@@ -184,6 +190,12 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 	}
  unlock:
 	rcu_read_unlock();
+	if (hung_task_show_lock)
+		debug_show_all_locks();
+	if (hung_task_call_panic) {
+		trigger_all_cpu_backtrace();
+		panic("hung_task: blocked tasks");
+	}
 }
 
 static long hung_timeout_jiffies(unsigned long last_checked,

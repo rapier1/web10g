@@ -19,7 +19,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/mm.h>
 
 #include <asm/spu.h>
@@ -44,7 +44,7 @@ static void spufs_handle_event(struct spu_context *ctx,
 		return;
 	}
 
-	memset(&info, 0, sizeof(info));
+	clear_siginfo(&info);
 
 	switch (type) {
 	case SPE_EVENT_INVALID_DMA:

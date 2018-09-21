@@ -17,6 +17,7 @@
 #include <linux/vmalloc.h>
 
 #include <asm/pgtable.h>
+#include <asm/set_memory.h>
 #include <asm/tlbflush.h>
 
 struct page_change_data {
@@ -28,7 +29,7 @@ static int change_page_range(pte_t *ptep, pgtable_t token, unsigned long addr,
 			void *data)
 {
 	struct page_change_data *cdata = data;
-	pte_t pte = *ptep;
+	pte_t pte = READ_ONCE(*ptep);
 
 	pte = clear_pte_bit(pte, cdata->clear_mask);
 	pte = set_pte_bit(pte, cdata->set_mask);
@@ -125,19 +126,22 @@ int set_memory_x(unsigned long addr, int numpages)
 }
 EXPORT_SYMBOL_GPL(set_memory_x);
 
-#ifdef CONFIG_DEBUG_PAGEALLOC
-void __kernel_map_pages(struct page *page, int numpages, int enable)
+int set_memory_valid(unsigned long addr, int numpages, int enable)
 {
-	unsigned long addr = (unsigned long) page_address(page);
-
 	if (enable)
-		__change_memory_common(addr, PAGE_SIZE * numpages,
+		return __change_memory_common(addr, PAGE_SIZE * numpages,
 					__pgprot(PTE_VALID),
 					__pgprot(0));
 	else
-		__change_memory_common(addr, PAGE_SIZE * numpages,
+		return __change_memory_common(addr, PAGE_SIZE * numpages,
 					__pgprot(0),
 					__pgprot(PTE_VALID));
+}
+
+#ifdef CONFIG_DEBUG_PAGEALLOC
+void __kernel_map_pages(struct page *page, int numpages, int enable)
+{
+	set_memory_valid((unsigned long)page_address(page), numpages, enable);
 }
 #ifdef CONFIG_HIBERNATION
 /*
@@ -152,30 +156,32 @@ void __kernel_map_pages(struct page *page, int numpages, int enable)
  */
 bool kernel_page_present(struct page *page)
 {
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *pte;
+	pgd_t *pgdp;
+	pud_t *pudp, pud;
+	pmd_t *pmdp, pmd;
+	pte_t *ptep;
 	unsigned long addr = (unsigned long)page_address(page);
 
-	pgd = pgd_offset_k(addr);
-	if (pgd_none(*pgd))
+	pgdp = pgd_offset_k(addr);
+	if (pgd_none(READ_ONCE(*pgdp)))
 		return false;
 
-	pud = pud_offset(pgd, addr);
-	if (pud_none(*pud))
+	pudp = pud_offset(pgdp, addr);
+	pud = READ_ONCE(*pudp);
+	if (pud_none(pud))
 		return false;
-	if (pud_sect(*pud))
+	if (pud_sect(pud))
 		return true;
 
-	pmd = pmd_offset(pud, addr);
-	if (pmd_none(*pmd))
+	pmdp = pmd_offset(pudp, addr);
+	pmd = READ_ONCE(*pmdp);
+	if (pmd_none(pmd))
 		return false;
-	if (pmd_sect(*pmd))
+	if (pmd_sect(pmd))
 		return true;
 
-	pte = pte_offset_kernel(pmd, addr);
-	return pte_valid(*pte);
+	ptep = pte_offset_kernel(pmdp, addr);
+	return pte_valid(READ_ONCE(*ptep));
 }
 #endif /* CONFIG_HIBERNATION */
 #endif /* CONFIG_DEBUG_PAGEALLOC */

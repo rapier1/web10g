@@ -43,20 +43,25 @@
 void rds_inc_init(struct rds_incoming *inc, struct rds_connection *conn,
 		  __be32 saddr)
 {
-	atomic_set(&inc->i_refcount, 1);
+	int i;
+
+	refcount_set(&inc->i_refcount, 1);
 	INIT_LIST_HEAD(&inc->i_item);
 	inc->i_conn = conn;
 	inc->i_saddr = saddr;
 	inc->i_rdma_cookie = 0;
 	inc->i_rx_tstamp.tv_sec = 0;
 	inc->i_rx_tstamp.tv_usec = 0;
+
+	for (i = 0; i < RDS_RX_MAX_TRACES; i++)
+		inc->i_rx_lat_trace[i] = 0;
 }
 EXPORT_SYMBOL_GPL(rds_inc_init);
 
 void rds_inc_path_init(struct rds_incoming *inc, struct rds_conn_path *cp,
 		       __be32 saddr)
 {
-	atomic_set(&inc->i_refcount, 1);
+	refcount_set(&inc->i_refcount, 1);
 	INIT_LIST_HEAD(&inc->i_item);
 	inc->i_conn = cp->cp_conn;
 	inc->i_conn_path = cp;
@@ -69,14 +74,14 @@ EXPORT_SYMBOL_GPL(rds_inc_path_init);
 
 static void rds_inc_addref(struct rds_incoming *inc)
 {
-	rdsdebug("addref inc %p ref %d\n", inc, atomic_read(&inc->i_refcount));
-	atomic_inc(&inc->i_refcount);
+	rdsdebug("addref inc %p ref %d\n", inc, refcount_read(&inc->i_refcount));
+	refcount_inc(&inc->i_refcount);
 }
 
 void rds_inc_put(struct rds_incoming *inc)
 {
-	rdsdebug("put inc %p ref %d\n", inc, atomic_read(&inc->i_refcount));
-	if (atomic_dec_and_test(&inc->i_refcount)) {
+	rdsdebug("put inc %p ref %d\n", inc, refcount_read(&inc->i_refcount));
+	if (refcount_dec_and_test(&inc->i_refcount)) {
 		BUG_ON(!list_empty(&inc->i_item));
 
 		inc->i_conn->c_trans->inc_free(inc);
@@ -94,6 +99,15 @@ static void rds_recv_rcvbuf_delta(struct rds_sock *rs, struct sock *sk,
 		return;
 
 	rs->rs_rcv_bytes += delta;
+	if (delta > 0)
+		rds_stats_add(s_recv_bytes_added_to_socket, delta);
+	else
+		rds_stats_add(s_recv_bytes_removed_from_socket, -delta);
+
+	/* loop transport doesn't send/recv congestion updates */
+	if (rs->rs_transport->t_type == RDS_TRANS_LOOP)
+		return;
+
 	now_congested = rs->rs_rcv_bytes > rds_sk_rcvbuf(rs);
 
 	rdsdebug("rs %p (%pI4:%u) recv bytes %d buf %d "
@@ -206,10 +220,10 @@ static void rds_recv_hs_exthdrs(struct rds_header *hdr,
 		switch (type) {
 		case RDS_EXTHDR_NPATHS:
 			conn->c_npaths = min_t(int, RDS_MPATH_WORKERS,
-					       buffer.rds_npaths);
+					       be16_to_cpu(buffer.rds_npaths));
 			break;
 		case RDS_EXTHDR_GEN_NUM:
-			new_peer_gen_num = buffer.rds_gen_num;
+			new_peer_gen_num = be32_to_cpu(buffer.rds_gen_num);
 			break;
 		default:
 			pr_warn_ratelimited("ignoring unknown exthdr type "
@@ -218,6 +232,7 @@ static void rds_recv_hs_exthdrs(struct rds_header *hdr,
 	}
 	/* if RDS_EXTHDR_NPATHS was not found, default to a single-path */
 	conn->c_npaths = max_t(int, conn->c_npaths, 1);
+	conn->c_ping_triggered = 0;
 	rds_conn_peer_gen_update(conn, new_peer_gen_num);
 }
 
@@ -235,8 +250,7 @@ static void rds_recv_hs_exthdrs(struct rds_header *hdr,
  *    called after reception of the probe-pong on all mprds_paths.
  *    Otherwise (sender of probe-ping is not the smaller ip addr): just call
  *    rds_conn_path_connect_if_down on the hashed path. (see rule 4)
- * 4. when cp_index > 0, rds_connect_worker must only trigger
- *    a connection if laddr < faddr.
+ * 4. rds_connect_worker must only trigger a connection if laddr < faddr.
  * 5. sender may end up queuing the packet on the cp. will get sent out later.
  *    when connection is completed.
  */
@@ -245,8 +259,9 @@ static void rds_start_mprds(struct rds_connection *conn)
 	int i;
 	struct rds_conn_path *cp;
 
-	if (conn->c_npaths > 1 && conn->c_laddr < conn->c_faddr) {
-		for (i = 1; i < conn->c_npaths; i++) {
+	if (conn->c_npaths > 1 &&
+	    IS_CANONICAL(conn->c_laddr, conn->c_faddr)) {
+		for (i = 0; i < conn->c_npaths; i++) {
 			cp = &conn->c_path[i];
 			rds_conn_path_connect_if_down(cp);
 		}
@@ -330,14 +345,15 @@ void rds_recv_incoming(struct rds_connection *conn, __be32 saddr, __be32 daddr,
 		rds_stats_inc(s_recv_ping);
 		rds_send_pong(cp, inc->i_hdr.h_sport);
 		/* if this is a handshake ping, start multipath if necessary */
-		if (RDS_HS_PROBE(inc->i_hdr.h_sport, inc->i_hdr.h_dport)) {
+		if (RDS_HS_PROBE(be16_to_cpu(inc->i_hdr.h_sport),
+				 be16_to_cpu(inc->i_hdr.h_dport))) {
 			rds_recv_hs_exthdrs(&inc->i_hdr, cp->cp_conn);
 			rds_start_mprds(cp->cp_conn);
 		}
 		goto out;
 	}
 
-	if (inc->i_hdr.h_dport ==  RDS_FLAG_PROBE_PORT &&
+	if (be16_to_cpu(inc->i_hdr.h_dport) ==  RDS_FLAG_PROBE_PORT &&
 	    inc->i_hdr.h_sport == 0) {
 		rds_recv_hs_exthdrs(&inc->i_hdr, cp->cp_conn);
 		/* if this is a handshake pong, start multipath if necessary */
@@ -369,6 +385,7 @@ void rds_recv_incoming(struct rds_connection *conn, __be32 saddr, __be32 daddr,
 		if (sock_flag(sk, SOCK_RCVTSTAMP))
 			do_gettimeofday(&inc->i_rx_tstamp);
 		rds_inc_addref(inc);
+		inc->i_rx_lat_trace[RDS_MSG_RX_END] = local_clock();
 		list_add_tail(&inc->i_item, &rs->rs_recv_queue);
 		__rds_wake_sk_sleep(sk);
 	} else {
@@ -530,7 +547,7 @@ static int rds_cmsg_recv(struct rds_incoming *inc, struct msghdr *msg,
 		ret = put_cmsg(msg, SOL_RDS, RDS_CMSG_RDMA_DEST,
 				sizeof(inc->i_rdma_cookie), &inc->i_rdma_cookie);
 		if (ret)
-			return ret;
+			goto out;
 	}
 
 	if ((inc->i_rx_tstamp.tv_sec != 0) &&
@@ -539,10 +556,66 @@ static int rds_cmsg_recv(struct rds_incoming *inc, struct msghdr *msg,
 			       sizeof(struct timeval),
 			       &inc->i_rx_tstamp);
 		if (ret)
-			return ret;
+			goto out;
 	}
 
-	return 0;
+	if (rs->rs_rx_traces) {
+		struct rds_cmsg_rx_trace t;
+		int i, j;
+
+		memset(&t, 0, sizeof(t));
+		inc->i_rx_lat_trace[RDS_MSG_RX_CMSG] = local_clock();
+		t.rx_traces =  rs->rs_rx_traces;
+		for (i = 0; i < rs->rs_rx_traces; i++) {
+			j = rs->rs_rx_trace[i];
+			t.rx_trace_pos[i] = j;
+			t.rx_trace[i] = inc->i_rx_lat_trace[j + 1] -
+					  inc->i_rx_lat_trace[j];
+		}
+
+		ret = put_cmsg(msg, SOL_RDS, RDS_CMSG_RXPATH_LATENCY,
+			       sizeof(t), &t);
+		if (ret)
+			goto out;
+	}
+
+out:
+	return ret;
+}
+
+static bool rds_recvmsg_zcookie(struct rds_sock *rs, struct msghdr *msg)
+{
+	struct rds_msg_zcopy_queue *q = &rs->rs_zcookie_queue;
+	struct rds_msg_zcopy_info *info = NULL;
+	struct rds_zcopy_cookies *done;
+	unsigned long flags;
+
+	if (!msg->msg_control)
+		return false;
+
+	if (!sock_flag(rds_rs_to_sk(rs), SOCK_ZEROCOPY) ||
+	    msg->msg_controllen < CMSG_SPACE(sizeof(*done)))
+		return false;
+
+	spin_lock_irqsave(&q->lock, flags);
+	if (!list_empty(&q->zcookie_head)) {
+		info = list_entry(q->zcookie_head.next,
+				  struct rds_msg_zcopy_info, rs_zcookie_next);
+		list_del(&info->rs_zcookie_next);
+	}
+	spin_unlock_irqrestore(&q->lock, flags);
+	if (!info)
+		return false;
+	done = &info->zcookies;
+	if (put_cmsg(msg, SOL_RDS, RDS_CMSG_ZCOPY_COMPLETION, sizeof(*done),
+		     done)) {
+		spin_lock_irqsave(&q->lock, flags);
+		list_add(&info->rs_zcookie_next, &q->zcookie_head);
+		spin_unlock_irqrestore(&q->lock, flags);
+		return false;
+	}
+	kfree(info);
+	return true;
 }
 
 int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
@@ -562,9 +635,10 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 
 	if (msg_flags & MSG_OOB)
 		goto out;
+	if (msg_flags & MSG_ERRQUEUE)
+		return sock_recv_errqueue(sk, msg, size, SOL_IP, IP_RECVERR);
 
 	while (1) {
-		struct iov_iter save;
 		/* If there are pending notifications, do those - and nothing else */
 		if (!list_empty(&rs->rs_notify_queue)) {
 			ret = rds_notify_queue_get(rs, msg);
@@ -578,7 +652,9 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 
 		if (!rds_next_incoming(rs, &inc)) {
 			if (nonblock) {
-				ret = -EAGAIN;
+				bool reaped = rds_recvmsg_zcookie(rs, msg);
+
+				ret = reaped ?  0 : -EAGAIN;
 				break;
 			}
 
@@ -600,7 +676,6 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		rdsdebug("copying inc %p from %pI4:%u to user\n", inc,
 			 &inc->i_conn->c_faddr,
 			 ntohs(inc->i_hdr.h_sport));
-		save = msg->msg_iter;
 		ret = inc->i_conn->c_trans->inc_copy_to_user(inc, &msg->msg_iter);
 		if (ret < 0)
 			break;
@@ -614,7 +689,7 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 			rds_inc_put(inc);
 			inc = NULL;
 			rds_stats_inc(s_recv_deliver_raced);
-			msg->msg_iter = save;
+			iov_iter_revert(&msg->msg_iter, ret);
 			continue;
 		}
 
@@ -628,6 +703,7 @@ int rds_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 			ret = -EFAULT;
 			goto out;
 		}
+		rds_recvmsg_zcookie(rs, msg);
 
 		rds_stats_inc(s_recv_delivered);
 

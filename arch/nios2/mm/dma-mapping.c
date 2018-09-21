@@ -63,9 +63,6 @@ static void *nios2_dma_alloc(struct device *dev, size_t size,
 {
 	void *ret;
 
-	/* ignore region specifiers */
-	gfp &= ~(__GFP_DMA | __GFP_HIGHMEM);
-
 	/* optimized page clearing */
 	gfp |= __GFP_ZERO;
 
@@ -192,7 +189,7 @@ static void nios2_dma_sync_sg_for_device(struct device *dev,
 
 }
 
-struct dma_map_ops nios2_dma_ops = {
+const struct dma_map_ops nios2_dma_ops = {
 	.alloc			= nios2_dma_alloc,
 	.free			= nios2_dma_free,
 	.map_page		= nios2_dma_map_page,

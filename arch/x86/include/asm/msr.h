@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_MSR_H
 #define _ASM_X86_MSR_H
 
@@ -80,7 +81,14 @@ static inline void do_trace_read_msr(unsigned int msr, u64 val, int failed) {}
 static inline void do_trace_rdpmc(unsigned int msr, u64 val, int failed) {}
 #endif
 
-static inline unsigned long long native_read_msr(unsigned int msr)
+/*
+ * __rdmsr() and __wrmsr() are the two primitives which are the bare minimum MSR
+ * accessors and should not have any tracing or other functionality piggybacking
+ * on them - those are *purely* for accessing MSRs and nothing more. So don't even
+ * think of extending them - you will be slapped with a stinking trout or a frozen
+ * shark will reach you, wherever you are! You've been warned.
+ */
+static inline unsigned long long notrace __rdmsr(unsigned int msr)
 {
 	DECLARE_ARGS(val, low, high);
 
@@ -88,9 +96,42 @@ static inline unsigned long long native_read_msr(unsigned int msr)
 		     "2:\n"
 		     _ASM_EXTABLE_HANDLE(1b, 2b, ex_handler_rdmsr_unsafe)
 		     : EAX_EDX_RET(val, low, high) : "c" (msr));
-	if (msr_tracepoint_active(__tracepoint_read_msr))
-		do_trace_read_msr(msr, EAX_EDX_VAL(val, low, high), 0);
+
 	return EAX_EDX_VAL(val, low, high);
+}
+
+static inline void notrace __wrmsr(unsigned int msr, u32 low, u32 high)
+{
+	asm volatile("1: wrmsr\n"
+		     "2:\n"
+		     _ASM_EXTABLE_HANDLE(1b, 2b, ex_handler_wrmsr_unsafe)
+		     : : "c" (msr), "a"(low), "d" (high) : "memory");
+}
+
+#define native_rdmsr(msr, val1, val2)			\
+do {							\
+	u64 __val = __rdmsr((msr));			\
+	(void)((val1) = (u32)__val);			\
+	(void)((val2) = (u32)(__val >> 32));		\
+} while (0)
+
+#define native_wrmsr(msr, low, high)			\
+	__wrmsr(msr, low, high)
+
+#define native_wrmsrl(msr, val)				\
+	__wrmsr((msr), (u32)((u64)(val)),		\
+		       (u32)((u64)(val) >> 32))
+
+static inline unsigned long long native_read_msr(unsigned int msr)
+{
+	unsigned long long val;
+
+	val = __rdmsr(msr);
+
+	if (msr_tracepoint_active(__tracepoint_read_msr))
+		do_trace_read_msr(msr, val, 0);
+
+	return val;
 }
 
 static inline unsigned long long native_read_msr_safe(unsigned int msr,
@@ -116,27 +157,12 @@ static inline unsigned long long native_read_msr_safe(unsigned int msr,
 
 /* Can be uninlined because referenced by paravirt */
 static inline void notrace
-__native_write_msr_notrace(unsigned int msr, u32 low, u32 high)
-{
-	asm volatile("1: wrmsr\n"
-		     "2:\n"
-		     _ASM_EXTABLE_HANDLE(1b, 2b, ex_handler_wrmsr_unsafe)
-		     : : "c" (msr), "a"(low), "d" (high) : "memory");
-}
-
-/* Can be uninlined because referenced by paravirt */
-static inline void notrace
 native_write_msr(unsigned int msr, u32 low, u32 high)
 {
-	__native_write_msr_notrace(msr, low, high);
+	__wrmsr(msr, low, high);
+
 	if (msr_tracepoint_active(__tracepoint_write_msr))
 		do_trace_write_msr(msr, ((u64)high << 32 | low), 0);
-}
-
-static inline void
-wrmsr_notrace(unsigned int msr, u32 low, u32 high)
-{
-	__native_write_msr_notrace(msr, low, high);
 }
 
 /* Can be uninlined because referenced by paravirt */
@@ -202,13 +228,9 @@ static __always_inline unsigned long long rdtsc_ordered(void)
 	 * that some other imaginary CPU is updating continuously with a
 	 * time stamp.
 	 */
-	alternative_2("", "mfence", X86_FEATURE_MFENCE_RDTSC,
-			  "lfence", X86_FEATURE_LFENCE_RDTSC);
+	barrier_nospec();
 	return rdtsc();
 }
-
-/* Deprecated, keep it for a cycle for easier merging: */
-#define rdtscll(now)	do { (now) = rdtsc_ordered(); } while (0)
 
 static inline unsigned long long native_read_pmc(int counter)
 {

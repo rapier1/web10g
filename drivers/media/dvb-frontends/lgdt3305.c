@@ -15,16 +15,12 @@
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *    GNU General Public License for more details.
  *
- *    You should have received a copy of the GNU General Public License
- *    along with this program; if not, write to the Free Software
- *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #include <asm/div64.h>
 #include <linux/dvb/frontend.h>
 #include <linux/slab.h>
-#include "dvb_math.h"
+#include <media/dvb_math.h>
 #include "lgdt3305.h"
 
 static int debug;

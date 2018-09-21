@@ -307,6 +307,7 @@ struct pseries_hp_errorlog {
 	union {
 		__be32	drc_index;
 		__be32	drc_count;
+		struct { __be32 count, index; } ic;
 		char	drc_name[1];
 	} _drc_u;
 };
@@ -318,10 +319,12 @@ struct pseries_hp_errorlog {
 
 #define PSERIES_HP_ELOG_ACTION_ADD	1
 #define PSERIES_HP_ELOG_ACTION_REMOVE	2
+#define PSERIES_HP_ELOG_ACTION_READD	3
 
 #define PSERIES_HP_ELOG_ID_DRC_NAME	1
 #define PSERIES_HP_ELOG_ID_DRC_INDEX	2
 #define PSERIES_HP_ELOG_ID_DRC_COUNT	3
+#define PSERIES_HP_ELOG_ID_DRC_IC	4
 
 struct pseries_errorlog *get_pseries_errorlog(struct rtas_error_log *log,
 					      uint16_t section_id);
@@ -358,7 +361,7 @@ extern int rtas_offline_cpus_mask(cpumask_var_t cpus);
 extern int rtas_ibm_suspend_me(u64 handle);
 
 struct rtc_time;
-extern unsigned long rtas_get_boot_time(void);
+extern time64_t rtas_get_boot_time(void);
 extern void rtas_get_rtc_time(struct rtc_time *rtc_time);
 extern int rtas_set_rtc_time(struct rtc_time *rtc_time);
 

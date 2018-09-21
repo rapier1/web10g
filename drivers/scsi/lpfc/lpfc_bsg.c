@@ -1,9 +1,11 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2017-2018 Broadcom. All Rights Reserved. The term *
+ * “Broadcom” refers to Broadcom Limited and/or its subsidiaries.  *
  * Copyright (C) 2009-2015 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
- * www.emulex.com                                                  *
+ * www.broadcom.com                                                *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
  * modify it under the terms of version 2 of the GNU General       *
@@ -1704,6 +1706,7 @@ lpfc_bsg_diag_mode_enter(struct lpfc_hba *phba)
 	struct lpfc_vport **vports;
 	struct Scsi_Host *shost;
 	struct lpfc_sli *psli;
+	struct lpfc_queue *qp = NULL;
 	struct lpfc_sli_ring *pring;
 	int i = 0;
 
@@ -1711,9 +1714,6 @@ lpfc_bsg_diag_mode_enter(struct lpfc_hba *phba)
 	if (!psli)
 		return -ENODEV;
 
-	pring = &psli->ring[LPFC_FCP_RING];
-	if (!pring)
-		return -ENODEV;
 
 	if ((phba->link_state == LPFC_HBA_ERROR) ||
 	    (psli->sli_flag & LPFC_BLOCK_MGMT_IO) ||
@@ -1732,10 +1732,18 @@ lpfc_bsg_diag_mode_enter(struct lpfc_hba *phba)
 		scsi_block_requests(shost);
 	}
 
-	while (!list_empty(&pring->txcmplq)) {
-		if (i++ > 500)  /* wait up to 5 seconds */
+	if (phba->sli_rev != LPFC_SLI_REV4) {
+		pring = &psli->sli3_ring[LPFC_FCP_RING];
+		lpfc_emptyq_wait(phba, &pring->txcmplq, &phba->hbalock);
+		return 0;
+	}
+	list_for_each_entry(qp, &phba->sli4_hba.lpfc_wq_list, wq_list) {
+		pring = qp->pring;
+		if (!pring || (pring->ringno != LPFC_FCP_RING))
+			continue;
+		if (!lpfc_emptyq_wait(phba, &pring->txcmplq,
+				      &pring->ring_lock))
 			break;
-		msleep(10);
 	}
 	return 0;
 }
@@ -2376,20 +2384,17 @@ lpfc_sli4_bsg_link_diag_test(struct bsg_job *job)
 		goto job_error;
 
 	pmboxq = mempool_alloc(phba->mbox_mem_pool, GFP_KERNEL);
-	if (!pmboxq) {
-		rc = -ENOMEM;
+	if (!pmboxq)
 		goto link_diag_test_exit;
-	}
 
 	req_len = (sizeof(struct lpfc_mbx_set_link_diag_state) -
 		   sizeof(struct lpfc_sli4_cfg_mhdr));
 	alloc_len = lpfc_sli4_config(phba, pmboxq, LPFC_MBOX_SUBSYSTEM_FCOE,
 				     LPFC_MBOX_OPCODE_FCOE_LINK_DIAG_STATE,
 				     req_len, LPFC_SLI4_MBX_EMBED);
-	if (alloc_len != req_len) {
-		rc = -ENOMEM;
+	if (alloc_len != req_len)
 		goto link_diag_test_exit;
-	}
+
 	run_link_diag_test = &pmboxq->u.mqe.un.link_diag_test;
 	bf_set(lpfc_mbx_run_diag_test_link_num, &run_link_diag_test->u.req,
 	       phba->sli4_hba.lnk_info.lnk_no);
@@ -2478,6 +2483,10 @@ static int lpfcdiag_loop_self_reg(struct lpfc_hba *phba, uint16_t *rpi)
 				mbox, *rpi);
 	else {
 		*rpi = lpfc_sli4_alloc_rpi(phba);
+		if (*rpi == LPFC_RPI_ALLOC_ERROR) {
+			mempool_free(mbox, phba->mbox_mem_pool);
+			return -EBUSY;
+		}
 		status = lpfc_reg_rpi(phba, phba->pport->vpi,
 				phba->pport->fc_myDID,
 				(uint8_t *)&phba->pport->fc_sparam,
@@ -2703,7 +2712,7 @@ err_get_xri_exit:
  * lpfc_bsg_dma_page_alloc - allocate a bsg mbox page sized dma buffers
  * @phba: Pointer to HBA context object
  *
- * This function allocates BSG_MBOX_SIZE (4KB) page size dma buffer and.
+ * This function allocates BSG_MBOX_SIZE (4KB) page size dma buffer and
  * returns the pointer to the buffer.
  **/
 static struct lpfc_dmabuf *
@@ -2875,8 +2884,7 @@ out:
 static int lpfcdiag_loop_post_rxbufs(struct lpfc_hba *phba, uint16_t rxxri,
 			     size_t len)
 {
-	struct lpfc_sli *psli = &phba->sli;
-	struct lpfc_sli_ring *pring = &psli->ring[LPFC_ELS_RING];
+	struct lpfc_sli_ring *pring;
 	struct lpfc_iocbq *cmdiocbq;
 	IOCB_t *cmd = NULL;
 	struct list_head head, *curr, *next;
@@ -2890,6 +2898,8 @@ static int lpfcdiag_loop_post_rxbufs(struct lpfc_hba *phba, uint16_t rxxri,
 	int iocb_stat;
 	int i = 0;
 
+	pring = lpfc_phba_elsring(phba);
+
 	cmdiocbq = lpfc_sli_get_iocbq(phba);
 	rxbmp = kmalloc(sizeof(struct lpfc_dmabuf), GFP_KERNEL);
 	if (rxbmp != NULL) {
@@ -2901,7 +2911,7 @@ static int lpfcdiag_loop_post_rxbufs(struct lpfc_hba *phba, uint16_t rxxri,
 		}
 	}
 
-	if (!cmdiocbq || !rxbmp || !rxbpl || !rxbuffer) {
+	if (!cmdiocbq || !rxbmp || !rxbpl || !rxbuffer || !pring) {
 		ret_val = -ENOMEM;
 		goto err_post_rxbufs_exit;
 	}
@@ -3611,7 +3621,7 @@ lpfc_bsg_issue_mbox_ext_handle_job(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq)
 		bsg_reply->result = 0;
 
 		lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
-				"2937 SLI_CONFIG ext-buffer maibox command "
+				"2937 SLI_CONFIG ext-buffer mailbox command "
 				"(x%x/x%x) complete bsg job done, bsize:%d\n",
 				phba->mbox_ext_buf_ctx.nembType,
 				phba->mbox_ext_buf_ctx.mboxType, size);
@@ -3622,7 +3632,7 @@ lpfc_bsg_issue_mbox_ext_handle_job(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq)
 					phba->mbox_ext_buf_ctx.mbx_dmabuf, 0);
 	} else {
 		lpfc_printf_log(phba, KERN_ERR, LOG_LIBDFC,
-				"2938 SLI_CONFIG ext-buffer maibox "
+				"2938 SLI_CONFIG ext-buffer mailbox "
 				"command (x%x/x%x) failure, rc:x%x\n",
 				phba->mbox_ext_buf_ctx.nembType,
 				phba->mbox_ext_buf_ctx.mboxType, rc);
@@ -3656,7 +3666,7 @@ lpfc_bsg_issue_read_mbox_ext_cmpl(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq)
 		pmboxq->u.mb.mbxStatus = MBXERR_ERROR;
 
 	lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
-			"2939 SLI_CONFIG ext-buffer rd maibox command "
+			"2939 SLI_CONFIG ext-buffer rd mailbox command "
 			"complete, ctxState:x%x, mbxStatus:x%x\n",
 			phba->mbox_ext_buf_ctx.state, pmboxq->u.mb.mbxStatus);
 
@@ -3696,7 +3706,7 @@ lpfc_bsg_issue_write_mbox_ext_cmpl(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmboxq)
 		pmboxq->u.mb.mbxStatus = MBXERR_ERROR;
 
 	lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
-			"2940 SLI_CONFIG ext-buffer wr maibox command "
+			"2940 SLI_CONFIG ext-buffer wr mailbox command "
 			"complete, ctxState:x%x, mbxStatus:x%x\n",
 			phba->mbox_ext_buf_ctx.state, pmboxq->u.mb.mbxStatus);
 
@@ -3857,7 +3867,7 @@ lpfc_bsg_sli_cfg_read_cmd_ext(struct lpfc_hba *phba, struct bsg_job *job,
 				"ext_buf_cnt:%d\n", ext_buf_cnt);
 	} else {
 		/* sanity check on interface type for support */
-		if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) !=
+		if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) <
 		    LPFC_SLI_INTF_IF_TYPE_2) {
 			rc = -ENODEV;
 			goto job_error;
@@ -3978,12 +3988,12 @@ lpfc_bsg_sli_cfg_read_cmd_ext(struct lpfc_hba *phba, struct bsg_job *job,
 	if ((rc == MBX_SUCCESS) || (rc == MBX_BUSY)) {
 		lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
 				"2947 Issued SLI_CONFIG ext-buffer "
-				"maibox command, rc:x%x\n", rc);
+				"mailbox command, rc:x%x\n", rc);
 		return SLI_CONFIG_HANDLED;
 	}
 	lpfc_printf_log(phba, KERN_ERR, LOG_LIBDFC,
 			"2948 Failed to issue SLI_CONFIG ext-buffer "
-			"maibox command, rc:x%x\n", rc);
+			"mailbox command, rc:x%x\n", rc);
 	rc = -EPIPE;
 
 job_error:
@@ -4043,7 +4053,7 @@ lpfc_bsg_sli_cfg_write_cmd_ext(struct lpfc_hba *phba, struct bsg_job *job,
 				"ext_buf_cnt:%d\n", ext_buf_cnt);
 	} else {
 		/* sanity check on interface type for support */
-		if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) !=
+		if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) <
 		    LPFC_SLI_INTF_IF_TYPE_2)
 			return -ENODEV;
 		/* nemb_tp == nemb_hbd */
@@ -4137,12 +4147,12 @@ lpfc_bsg_sli_cfg_write_cmd_ext(struct lpfc_hba *phba, struct bsg_job *job,
 		if ((rc == MBX_SUCCESS) || (rc == MBX_BUSY)) {
 			lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
 					"2955 Issued SLI_CONFIG ext-buffer "
-					"maibox command, rc:x%x\n", rc);
+					"mailbox command, rc:x%x\n", rc);
 			return SLI_CONFIG_HANDLED;
 		}
 		lpfc_printf_log(phba, KERN_ERR, LOG_LIBDFC,
 				"2956 Failed to issue SLI_CONFIG ext-buffer "
-				"maibox command, rc:x%x\n", rc);
+				"mailbox command, rc:x%x\n", rc);
 		rc = -EPIPE;
 		goto job_error;
 	}
@@ -4482,12 +4492,12 @@ lpfc_bsg_write_ebuf_set(struct lpfc_hba *phba, struct bsg_job *job,
 		if ((rc == MBX_SUCCESS) || (rc == MBX_BUSY)) {
 			lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
 					"2969 Issued SLI_CONFIG ext-buffer "
-					"maibox command, rc:x%x\n", rc);
+					"mailbox command, rc:x%x\n", rc);
 			return SLI_CONFIG_HANDLED;
 		}
 		lpfc_printf_log(phba, KERN_ERR, LOG_LIBDFC,
 				"2970 Failed to issue SLI_CONFIG ext-buffer "
-				"maibox command, rc:x%x\n", rc);
+				"mailbox command, rc:x%x\n", rc);
 		rc = -EPIPE;
 		goto job_error;
 	}
@@ -5403,12 +5413,16 @@ lpfc_bsg_timeout(struct bsg_job *job)
 	struct lpfc_vport *vport = shost_priv(fc_bsg_to_shost(job));
 	struct lpfc_hba *phba = vport->phba;
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_sli_ring *pring = &phba->sli.ring[LPFC_ELS_RING];
+	struct lpfc_sli_ring *pring;
 	struct bsg_job_data *dd_data;
 	unsigned long flags;
 	int rc = 0;
 	LIST_HEAD(completions);
 	struct lpfc_iocbq *check_iocb, *next_iocb;
+
+	pring = lpfc_phba_elsring(phba);
+	if (unlikely(!pring))
+		return -EIO;
 
 	/* if job's driver data is NULL, the command completed or is in the
 	 * the process of completing.  In this case, return status to request

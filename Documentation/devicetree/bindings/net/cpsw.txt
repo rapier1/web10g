@@ -23,7 +23,6 @@ Required properties:
 
 Optional properties:
 - ti,hwmods		: Must be "cpgmac0"
-- no_bd_ram		: Must be 0 or 1
 - dual_emac		: Specifies Switch to act as Dual EMAC
 - syscon		: Phandle to the system control device node, which is
 			  the control module device of the am33x
@@ -62,7 +61,7 @@ file.
 
 Examples:
 
-	mac: ethernet@4A100000 {
+	mac: ethernet@4a100000 {
 		compatible = "ti,cpsw";
 		reg = <0x4A100000 0x1000>;
 		interrupts = <55 0x4>;
@@ -70,7 +69,6 @@ Examples:
 		cpdma_channels = <8>;
 		ale_entries = <1024>;
 		bd_ram_size = <0x2000>;
-		no_bd_ram = <0>;
 		rx_descs = <64>;
 		mac_control = <0x20>;
 		slaves = <2>;
@@ -93,13 +91,12 @@ Examples:
 	};
 
 (or)
-	mac: ethernet@4A100000 {
+	mac: ethernet@4a100000 {
 		compatible = "ti,cpsw";
 		ti,hwmods = "cpgmac0";
 		cpdma_channels = <8>;
 		ale_entries = <1024>;
 		bd_ram_size = <0x2000>;
-		no_bd_ram = <0>;
 		rx_descs = <64>;
 		mac_control = <0x20>;
 		slaves = <2>;

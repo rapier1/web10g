@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_ARM_XEN_HYPERVISOR_H
 #define _ASM_ARM_XEN_HYPERVISOR_H
 
@@ -18,7 +19,7 @@ static inline enum paravirt_lazy_mode paravirt_get_lazy_mode(void)
 	return PARAVIRT_LAZY_NONE;
 }
 
-extern struct dma_map_ops *xen_dma_ops;
+extern const struct dma_map_ops *xen_dma_ops;
 
 #ifdef CONFIG_XEN
 void __init xen_early_init(void);

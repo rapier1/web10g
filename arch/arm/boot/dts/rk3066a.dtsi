@@ -610,6 +610,30 @@
 	};
 };
 
+&gpu {
+	compatible = "rockchip,rk3066-mali", "arm,mali-400";
+	interrupts = <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "gp",
+			  "gpmmu",
+			  "pp0",
+			  "ppmmu0",
+			  "pp1",
+			  "ppmmu1",
+			  "pp2",
+			  "ppmmu2",
+			  "pp3",
+			  "ppmmu3";
+};
+
 &i2c0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c0_xfer>;
@@ -687,6 +711,7 @@
 };
 
 &uart0 {
+	compatible = "rockchip,rk3066-uart", "snps,dw-apb-uart";
 	dmas = <&dmac1_s 0>, <&dmac1_s 1>;
 	dma-names = "tx", "rx";
 	pinctrl-names = "default";
@@ -694,6 +719,7 @@
 };
 
 &uart1 {
+	compatible = "rockchip,rk3066-uart", "snps,dw-apb-uart";
 	dmas = <&dmac1_s 2>, <&dmac1_s 3>;
 	dma-names = "tx", "rx";
 	pinctrl-names = "default";
@@ -701,6 +727,7 @@
 };
 
 &uart2 {
+	compatible = "rockchip,rk3066-uart", "snps,dw-apb-uart";
 	dmas = <&dmac2 6>, <&dmac2 7>;
 	dma-names = "tx", "rx";
 	pinctrl-names = "default";
@@ -708,6 +735,7 @@
 };
 
 &uart3 {
+	compatible = "rockchip,rk3066-uart", "snps,dw-apb-uart";
 	dmas = <&dmac2 8>, <&dmac2 9>;
 	dma-names = "tx", "rx";
 	pinctrl-names = "default";

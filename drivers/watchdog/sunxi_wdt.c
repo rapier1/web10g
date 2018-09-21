@@ -39,7 +39,7 @@
 #define DRV_VERSION		"1.0"
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
-static unsigned int timeout = WDT_MAX_TIMEOUT;
+static unsigned int timeout;
 
 /*
  * This structure stores the register offsets for different variants
@@ -234,7 +234,6 @@ MODULE_DEVICE_TABLE(of, sunxi_wdt_dt_ids);
 static int sunxi_wdt_probe(struct platform_device *pdev)
 {
 	struct sunxi_wdt_dev *sunxi_wdt;
-	const struct of_device_id *device;
 	struct resource *res;
 	int err;
 
@@ -242,13 +241,9 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 	if (!sunxi_wdt)
 		return -EINVAL;
 
-	platform_set_drvdata(pdev, sunxi_wdt);
-
-	device = of_match_device(sunxi_wdt_dt_ids, &pdev->dev);
-	if (!device)
+	sunxi_wdt->wdt_regs = of_device_get_match_data(&pdev->dev);
+	if (!sunxi_wdt->wdt_regs)
 		return -ENODEV;
-
-	sunxi_wdt->wdt_regs = device->data;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	sunxi_wdt->wdt_base = devm_ioremap_resource(&pdev->dev, res);
@@ -270,7 +265,8 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 
 	sunxi_wdt_stop(&sunxi_wdt->wdt_dev);
 
-	err = watchdog_register_device(&sunxi_wdt->wdt_dev);
+	watchdog_stop_on_reboot(&sunxi_wdt->wdt_dev);
+	err = devm_watchdog_register_device(&pdev->dev, &sunxi_wdt->wdt_dev);
 	if (unlikely(err))
 		return err;
 
@@ -280,27 +276,8 @@ static int sunxi_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int sunxi_wdt_remove(struct platform_device *pdev)
-{
-	struct sunxi_wdt_dev *sunxi_wdt = platform_get_drvdata(pdev);
-
-	watchdog_unregister_device(&sunxi_wdt->wdt_dev);
-	watchdog_set_drvdata(&sunxi_wdt->wdt_dev, NULL);
-
-	return 0;
-}
-
-static void sunxi_wdt_shutdown(struct platform_device *pdev)
-{
-	struct sunxi_wdt_dev *sunxi_wdt = platform_get_drvdata(pdev);
-
-	sunxi_wdt_stop(&sunxi_wdt->wdt_dev);
-}
-
 static struct platform_driver sunxi_wdt_driver = {
 	.probe		= sunxi_wdt_probe,
-	.remove		= sunxi_wdt_remove,
-	.shutdown	= sunxi_wdt_shutdown,
 	.driver		= {
 		.name		= DRV_NAME,
 		.of_match_table	= sunxi_wdt_dt_ids,

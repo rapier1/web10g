@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
 /*
  * Media Controller ancillary functions
  *
@@ -5,16 +7,6 @@
  * Copyright (C) 2016 Shuah Khan <shuahkh@osg.samsung.com>
  * Copyright (C) 2006-2010 Nokia Corporation
  * Copyright (c) 2016 Intel Corporation.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -25,8 +17,6 @@
 #include <media/v4l2-fh.h>
 #include <media/v4l2-mc.h>
 #include <media/v4l2-subdev.h>
-#include <media/media-device.h>
-#include <media/v4l2-mc.h>
 #include <media/videobuf2-core.h>
 
 int v4l2_mc_create_media_graph(struct media_device *mdev)
@@ -198,14 +188,20 @@ EXPORT_SYMBOL_GPL(v4l2_mc_create_media_graph);
 int v4l_enable_media_source(struct video_device *vdev)
 {
 	struct media_device *mdev = vdev->entity.graph_obj.mdev;
-	int ret;
+	int ret = 0, err;
 
-	if (!mdev || !mdev->enable_source)
+	if (!mdev)
 		return 0;
-	ret = mdev->enable_source(&vdev->entity, &vdev->pipe);
-	if (ret)
-		return -EBUSY;
-	return 0;
+
+	mutex_lock(&mdev->graph_mutex);
+	if (!mdev->enable_source)
+		goto end;
+	err = mdev->enable_source(&vdev->entity, &vdev->pipe);
+	if (err)
+		ret = -EBUSY;
+end:
+	mutex_unlock(&mdev->graph_mutex);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(v4l_enable_media_source);
 
@@ -213,8 +209,12 @@ void v4l_disable_media_source(struct video_device *vdev)
 {
 	struct media_device *mdev = vdev->entity.graph_obj.mdev;
 
-	if (mdev && mdev->disable_source)
-		mdev->disable_source(&vdev->entity);
+	if (mdev) {
+		mutex_lock(&mdev->graph_mutex);
+		if (mdev->disable_source)
+			mdev->disable_source(&vdev->entity);
+		mutex_unlock(&mdev->graph_mutex);
+	}
 }
 EXPORT_SYMBOL_GPL(v4l_disable_media_source);
 
@@ -256,13 +256,13 @@ EXPORT_SYMBOL_GPL(v4l_vb2q_enable_media_source);
  * Return the total number of users of all video device nodes in the pipeline.
  */
 static int pipeline_pm_use_count(struct media_entity *entity,
-	struct media_entity_graph *graph)
+	struct media_graph *graph)
 {
 	int use = 0;
 
-	media_entity_graph_walk_start(graph, entity);
+	media_graph_walk_start(graph, entity);
 
-	while ((entity = media_entity_graph_walk_next(graph))) {
+	while ((entity = media_graph_walk_next(graph))) {
 		if (is_media_entity_v4l2_video_device(entity))
 			use += entity->use_count;
 	}
@@ -315,7 +315,7 @@ static int pipeline_pm_power_one(struct media_entity *entity, int change)
  * Return 0 on success or a negative error code on failure.
  */
 static int pipeline_pm_power(struct media_entity *entity, int change,
-	struct media_entity_graph *graph)
+	struct media_graph *graph)
 {
 	struct media_entity *first = entity;
 	int ret = 0;
@@ -323,18 +323,18 @@ static int pipeline_pm_power(struct media_entity *entity, int change,
 	if (!change)
 		return 0;
 
-	media_entity_graph_walk_start(graph, entity);
+	media_graph_walk_start(graph, entity);
 
-	while (!ret && (entity = media_entity_graph_walk_next(graph)))
+	while (!ret && (entity = media_graph_walk_next(graph)))
 		if (is_media_entity_v4l2_subdev(entity))
 			ret = pipeline_pm_power_one(entity, change);
 
 	if (!ret)
 		return ret;
 
-	media_entity_graph_walk_start(graph, first);
+	media_graph_walk_start(graph, first);
 
-	while ((first = media_entity_graph_walk_next(graph))
+	while ((first = media_graph_walk_next(graph))
 	       && first != entity)
 		if (is_media_entity_v4l2_subdev(first))
 			pipeline_pm_power_one(first, -change);
@@ -368,7 +368,7 @@ EXPORT_SYMBOL_GPL(v4l2_pipeline_pm_use);
 int v4l2_pipeline_link_notify(struct media_link *link, u32 flags,
 			      unsigned int notification)
 {
-	struct media_entity_graph *graph = &link->graph_obj.mdev->pm_count_walk;
+	struct media_graph *graph = &link->graph_obj.mdev->pm_count_walk;
 	struct media_entity *source = link->source->entity;
 	struct media_entity *sink = link->sink->entity;
 	int source_use;

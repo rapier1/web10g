@@ -18,6 +18,7 @@
 #include <linux/cred.h>
 #include <linux/key-type.h>
 #include <linux/digsig.h>
+#include <linux/vmalloc.h>
 #include <crypto/public_key.h>
 #include <keys/system_keyring.h>
 
@@ -81,10 +82,17 @@ int integrity_digsig_verify(const unsigned int id, const char *sig, int siglen,
 int __init integrity_init_keyring(const unsigned int id)
 {
 	const struct cred *cred = current_cred();
+	struct key_restriction *restriction;
 	int err = 0;
 
 	if (!init_keyring)
 		return 0;
+
+	restriction = kzalloc(sizeof(struct key_restriction), GFP_KERNEL);
+	if (!restriction)
+		return -ENOMEM;
+
+	restriction->check = restrict_link_to_ima;
 
 	keyring[id] = keyring_alloc(keyring_name[id], KUIDT_INIT(0),
 				    KGIDT_INIT(0), cred,
@@ -92,7 +100,7 @@ int __init integrity_init_keyring(const unsigned int id)
 				     KEY_USR_VIEW | KEY_USR_READ |
 				     KEY_USR_WRITE | KEY_USR_SEARCH),
 				    KEY_ALLOC_NOT_IN_QUOTA,
-				    restrict_link_to_ima, NULL);
+				    restriction, NULL);
 	if (IS_ERR(keyring[id])) {
 		err = PTR_ERR(keyring[id]);
 		pr_info("Can't allocate %s keyring (%d)\n",
@@ -105,21 +113,25 @@ int __init integrity_init_keyring(const unsigned int id)
 int __init integrity_load_x509(const unsigned int id, const char *path)
 {
 	key_ref_t key;
-	char *data;
+	void *data;
+	loff_t size;
 	int rc;
 
 	if (!keyring[id])
 		return -EINVAL;
 
-	rc = integrity_read_file(path, &data);
-	if (rc < 0)
+	rc = kernel_read_file_from_path(path, &data, &size, 0,
+					READING_X509_CERTIFICATE);
+	if (rc < 0) {
+		pr_err("Unable to open file: %s (%d)", path, rc);
 		return rc;
+	}
 
 	key = key_create_or_update(make_key_ref(keyring[id], 1),
 				   "asymmetric",
 				   NULL,
 				   data,
-				   rc,
+				   size,
 				   ((KEY_POS_ALL & ~KEY_POS_SETATTR) |
 				    KEY_USR_VIEW | KEY_USR_READ),
 				   KEY_ALLOC_NOT_IN_QUOTA);
@@ -132,6 +144,6 @@ int __init integrity_load_x509(const unsigned int id, const char *path)
 			  key_ref_to_ptr(key)->description, path);
 		key_ref_put(key);
 	}
-	kfree(data);
+	vfree(data);
 	return 0;
 }

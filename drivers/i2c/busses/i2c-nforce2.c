@@ -296,7 +296,7 @@ static u32 nforce2_func(struct i2c_adapter *adapter)
 		I2C_FUNC_SMBUS_BLOCK_DATA : 0);
 }
 
-static struct i2c_algorithm smbus_algorithm = {
+static const struct i2c_algorithm smbus_algorithm = {
 	.smbus_xfer	= nforce2_access,
 	.functionality	= nforce2_func,
 };
@@ -381,7 +381,7 @@ static int nforce2_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	int res1, res2;
 
 	/* we support 2 SMBus adapters */
-	smbuses = kzalloc(2 * sizeof(struct nforce2_smbus), GFP_KERNEL);
+	smbuses = kcalloc(2, sizeof(struct nforce2_smbus), GFP_KERNEL);
 	if (!smbuses)
 		return -ENOMEM;
 	pci_set_drvdata(dev, smbuses);

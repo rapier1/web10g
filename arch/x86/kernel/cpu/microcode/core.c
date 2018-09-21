@@ -1,7 +1,7 @@
 /*
  * CPU Microcode Update Driver for Linux
  *
- * Copyright (C) 2000-2006 Tigran Aivazian <tigran@aivazian.fsnet.co.uk>
+ * Copyright (C) 2000-2006 Tigran Aivazian <aivazian.tigran@gmail.com>
  *	      2006	Shaohua Li <shaohua.li@intel.com>
  *	      2013-2016	Borislav Petkov <bp@alien8.de>
  *
@@ -22,13 +22,16 @@
 #define pr_fmt(fmt) "microcode: " fmt
 
 #include <linux/platform_device.h>
+#include <linux/stop_machine.h>
 #include <linux/syscore_ops.h>
 #include <linux/miscdevice.h>
 #include <linux/capability.h>
 #include <linux/firmware.h>
 #include <linux/kernel.h>
+#include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/cpu.h>
+#include <linux/nmi.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
 
@@ -64,21 +67,57 @@ LIST_HEAD(microcode_cache);
  */
 static DEFINE_MUTEX(microcode_mutex);
 
-struct ucode_cpu_info		ucode_cpu_info[NR_CPUS];
-
 /*
- * Operations that are run on a target cpu:
+ * Serialize late loading so that CPUs get updated one-by-one.
  */
+static DEFINE_RAW_SPINLOCK(update_lock);
+
+struct ucode_cpu_info		ucode_cpu_info[NR_CPUS];
 
 struct cpu_info_ctx {
 	struct cpu_signature	*cpu_sig;
 	int			err;
 };
 
+/*
+ * Those patch levels cannot be updated to newer ones and thus should be final.
+ */
+static u32 final_levels[] = {
+	0x01000098,
+	0x0100009f,
+	0x010000af,
+	0, /* T-101 terminator */
+};
+
+/*
+ * Check the current patch level on this CPU.
+ *
+ * Returns:
+ *  - true: if update should stop
+ *  - false: otherwise
+ */
+static bool amd_check_current_patch_level(void)
+{
+	u32 lvl, dummy, i;
+	u32 *levels;
+
+	native_rdmsr(MSR_AMD64_PATCH_LEVEL, lvl, dummy);
+
+	if (IS_ENABLED(CONFIG_X86_32))
+		levels = (u32 *)__pa_nodebug(&final_levels);
+	else
+		levels = final_levels;
+
+	for (i = 0; levels[i]; i++) {
+		if (lvl == levels[i])
+			return true;
+	}
+	return false;
+}
+
 static bool __init check_loader_disabled_bsp(void)
 {
 	static const char *__dis_opt_str = "dis_ucode_ldr";
-	u32 a, b, c, d;
 
 #ifdef CONFIG_X86_32
 	const char *cmdline = (const char *)__pa_nodebug(boot_command_line);
@@ -91,20 +130,18 @@ static bool __init check_loader_disabled_bsp(void)
 	bool *res = &dis_ucode_ldr;
 #endif
 
-	if (!have_cpuid_p())
-		return *res;
-
-	a = 1;
-	c = 0;
-	native_cpuid(&a, &b, &c, &d);
-
 	/*
 	 * CPUID(1).ECX[31]: reserved for hypervisor use. This is still not
 	 * completely accurate as xen pv guests don't see that CPUID bit set but
 	 * that's good enough as they don't land on the BSP path anyway.
 	 */
-	if (c & BIT(31))
+	if (native_cpuid_ecx(1) & BIT(31))
 		return *res;
+
+	if (x86_cpuid_vendor() == X86_VENDOR_AMD) {
+		if (amd_check_current_patch_level())
+			return *res;
+	}
 
 	if (cmdline_find_option_bool(cmdline, option) <= 0)
 		*res = false;
@@ -133,27 +170,37 @@ bool get_builtin_firmware(struct cpio_data *cd, const char *name)
 
 void __init load_ucode_bsp(void)
 {
-	int vendor;
-	unsigned int family;
+	unsigned int cpuid_1_eax;
+	bool intel = true;
+
+	if (!have_cpuid_p())
+		return;
+
+	cpuid_1_eax = native_cpuid_eax(1);
+
+	switch (x86_cpuid_vendor()) {
+	case X86_VENDOR_INTEL:
+		if (x86_family(cpuid_1_eax) < 6)
+			return;
+		break;
+
+	case X86_VENDOR_AMD:
+		if (x86_family(cpuid_1_eax) < 0x10)
+			return;
+		intel = false;
+		break;
+
+	default:
+		return;
+	}
 
 	if (check_loader_disabled_bsp())
 		return;
 
-	vendor = x86_cpuid_vendor();
-	family = x86_cpuid_family();
-
-	switch (vendor) {
-	case X86_VENDOR_INTEL:
-		if (family >= 6)
-			load_ucode_intel_bsp();
-		break;
-	case X86_VENDOR_AMD:
-		if (family >= 0x10)
-			load_ucode_amd_bsp(family);
-		break;
-	default:
-		break;
-	}
+	if (intel)
+		load_ucode_intel_bsp();
+	else
+		load_ucode_amd_bsp(cpuid_1_eax);
 }
 
 static bool check_loader_disabled_ap(void)
@@ -167,22 +214,21 @@ static bool check_loader_disabled_ap(void)
 
 void load_ucode_ap(void)
 {
-	int vendor, family;
+	unsigned int cpuid_1_eax;
 
 	if (check_loader_disabled_ap())
 		return;
 
-	vendor = x86_cpuid_vendor();
-	family = x86_cpuid_family();
+	cpuid_1_eax = native_cpuid_eax(1);
 
-	switch (vendor) {
+	switch (x86_cpuid_vendor()) {
 	case X86_VENDOR_INTEL:
-		if (family >= 6)
+		if (x86_family(cpuid_1_eax) >= 6)
 			load_ucode_intel_ap();
 		break;
 	case X86_VENDOR_AMD:
-		if (family >= 0x10)
-			load_ucode_amd_ap(family);
+		if (x86_family(cpuid_1_eax) >= 0x10)
+			load_ucode_amd_ap(cpuid_1_eax);
 		break;
 	default:
 		break;
@@ -201,7 +247,7 @@ static int __init save_microcode_in_initrd(void)
 		break;
 	case X86_VENDOR_AMD:
 		if (c->x86 >= 0x10)
-			ret = save_microcode_in_initrd_amd(c->x86);
+			ret = save_microcode_in_initrd_amd(cpuid_eax(1));
 		break;
 	default:
 		break;
@@ -261,6 +307,17 @@ struct cpio_data find_microcode_in_initrd(const char *path, bool use_pa)
 			return (struct cpio_data){ NULL, 0, "" };
 		if (initrd_start)
 			start = initrd_start;
+	} else {
+		/*
+		 * The picture with physical addresses is a bit different: we
+		 * need to get the *physical* address to which the ramdisk was
+		 * relocated, i.e., relocated_ramdisk (not initrd_start) and
+		 * since we're running from physical addresses, we need to access
+		 * relocated_ramdisk through its *physical* address too.
+		 */
+		u64 *rr = (u64 *)__pa_nodebug(&relocated_ramdisk);
+		if (*rr)
+			start = *rr;
 	}
 
 	return find_cpio_data(path, (void *)start, size, NULL);
@@ -324,26 +381,23 @@ static int collect_cpu_info(int cpu)
 	return ret;
 }
 
-struct apply_microcode_ctx {
-	int err;
-};
-
 static void apply_microcode_local(void *arg)
 {
-	struct apply_microcode_ctx *ctx = arg;
+	enum ucode_state *err = arg;
 
-	ctx->err = microcode_ops->apply_microcode(smp_processor_id());
+	*err = microcode_ops->apply_microcode(smp_processor_id());
 }
 
 static int apply_microcode_on_target(int cpu)
 {
-	struct apply_microcode_ctx ctx = { .err = 0 };
+	enum ucode_state err;
 	int ret;
 
-	ret = smp_call_function_single(cpu, apply_microcode_local, &ctx, 1);
-	if (!ret)
-		ret = ctx.err;
-
+	ret = smp_call_function_single(cpu, apply_microcode_local, &err, 1);
+	if (!ret) {
+		if (err == UCODE_ERROR)
+			ret = 1;
+	}
 	return ret;
 }
 
@@ -440,31 +494,122 @@ static void __exit microcode_dev_exit(void)
 /* fake device for request_firmware */
 static struct platform_device	*microcode_pdev;
 
-static int reload_for_cpu(int cpu)
+/*
+ * Late loading dance. Why the heavy-handed stomp_machine effort?
+ *
+ * - HT siblings must be idle and not execute other code while the other sibling
+ *   is loading microcode in order to avoid any negative interactions caused by
+ *   the loading.
+ *
+ * - In addition, microcode update on the cores must be serialized until this
+ *   requirement can be relaxed in the future. Right now, this is conservative
+ *   and good.
+ */
+#define SPINUNIT 100 /* 100 nsec */
+
+static int check_online_cpus(void)
 {
-	struct ucode_cpu_info *uci = ucode_cpu_info + cpu;
-	enum ucode_state ustate;
-	int err = 0;
+	if (num_online_cpus() == num_present_cpus())
+		return 0;
 
-	if (!uci->valid)
-		return err;
+	pr_err("Not all CPUs online, aborting microcode update.\n");
 
-	ustate = microcode_ops->request_microcode_fw(cpu, &microcode_pdev->dev, true);
-	if (ustate == UCODE_OK)
-		apply_microcode_on_target(cpu);
-	else
-		if (ustate == UCODE_ERROR)
-			err = -EINVAL;
-	return err;
+	return -EINVAL;
+}
+
+static atomic_t late_cpus_in;
+static atomic_t late_cpus_out;
+
+static int __wait_for_cpus(atomic_t *t, long long timeout)
+{
+	int all_cpus = num_online_cpus();
+
+	atomic_inc(t);
+
+	while (atomic_read(t) < all_cpus) {
+		if (timeout < SPINUNIT) {
+			pr_err("Timeout while waiting for CPUs rendezvous, remaining: %d\n",
+				all_cpus - atomic_read(t));
+			return 1;
+		}
+
+		ndelay(SPINUNIT);
+		timeout -= SPINUNIT;
+
+		touch_nmi_watchdog();
+	}
+	return 0;
+}
+
+/*
+ * Returns:
+ * < 0 - on error
+ *   0 - no update done
+ *   1 - microcode was updated
+ */
+static int __reload_late(void *info)
+{
+	int cpu = smp_processor_id();
+	enum ucode_state err;
+	int ret = 0;
+
+	/*
+	 * Wait for all CPUs to arrive. A load will not be attempted unless all
+	 * CPUs show up.
+	 * */
+	if (__wait_for_cpus(&late_cpus_in, NSEC_PER_SEC))
+		return -1;
+
+	raw_spin_lock(&update_lock);
+	apply_microcode_local(&err);
+	raw_spin_unlock(&update_lock);
+
+	/* siblings return UCODE_OK because their engine got updated already */
+	if (err > UCODE_NFOUND) {
+		pr_warn("Error reloading microcode on CPU %d\n", cpu);
+		ret = -1;
+	} else if (err == UCODE_UPDATED || err == UCODE_OK) {
+		ret = 1;
+	}
+
+	/*
+	 * Increase the wait timeout to a safe value here since we're
+	 * serializing the microcode update and that could take a while on a
+	 * large number of CPUs. And that is fine as the *actual* timeout will
+	 * be determined by the last CPU finished updating and thus cut short.
+	 */
+	if (__wait_for_cpus(&late_cpus_out, NSEC_PER_SEC * num_online_cpus()))
+		panic("Timeout during microcode update!\n");
+
+	return ret;
+}
+
+/*
+ * Reload microcode late on all CPUs. Wait for a sec until they
+ * all gather together.
+ */
+static int microcode_reload_late(void)
+{
+	int ret;
+
+	atomic_set(&late_cpus_in,  0);
+	atomic_set(&late_cpus_out, 0);
+
+	ret = stop_machine_cpuslocked(__reload_late, NULL, cpu_online_mask);
+	if (ret > 0)
+		microcode_check();
+
+	return ret;
 }
 
 static ssize_t reload_store(struct device *dev,
 			    struct device_attribute *attr,
 			    const char *buf, size_t size)
 {
+	enum ucode_state tmp_ret = UCODE_OK;
+	int bsp = boot_cpu_data.cpu_index;
 	unsigned long val;
-	int cpu;
-	ssize_t ret = 0, tmp_ret;
+	ssize_t ret = 0;
 
 	ret = kstrtoul(buf, 0, &val);
 	if (ret)
@@ -473,23 +618,24 @@ static ssize_t reload_store(struct device *dev,
 	if (val != 1)
 		return size;
 
-	get_online_cpus();
-	mutex_lock(&microcode_mutex);
-	for_each_online_cpu(cpu) {
-		tmp_ret = reload_for_cpu(cpu);
-		if (tmp_ret != 0)
-			pr_warn("Error reloading microcode on CPU %d\n", cpu);
+	tmp_ret = microcode_ops->request_microcode_fw(bsp, &microcode_pdev->dev, true);
+	if (tmp_ret != UCODE_NEW)
+		return size;
 
-		/* save retval of the first encountered reload error */
-		if (!ret)
-			ret = tmp_ret;
-	}
-	if (!ret)
-		perf_check_microcode();
+	get_online_cpus();
+
+	ret = check_online_cpus();
+	if (ret)
+		goto put;
+
+	mutex_lock(&microcode_mutex);
+	ret = microcode_reload_late();
 	mutex_unlock(&microcode_mutex);
+
+put:
 	put_online_cpus();
 
-	if (!ret)
+	if (ret >= 0)
 		ret = size;
 
 	return ret;
@@ -511,7 +657,7 @@ static ssize_t pf_show(struct device *dev,
 	return sprintf(buf, "0x%x\n", uci->cpu_sig.pf);
 }
 
-static DEVICE_ATTR(reload, 0200, NULL, reload_store);
+static DEVICE_ATTR_WO(reload);
 static DEVICE_ATTR(version, 0400, version_show, NULL);
 static DEVICE_ATTR(processor_flags, 0400, pf_show, NULL);
 
@@ -521,7 +667,7 @@ static struct attribute *mc_default_attrs[] = {
 	NULL
 };
 
-static struct attribute_group mc_attr_group = {
+static const struct attribute_group mc_attr_group = {
 	.attrs			= mc_default_attrs,
 	.name			= "microcode",
 };
@@ -557,10 +703,8 @@ static enum ucode_state microcode_init_cpu(int cpu, bool refresh_fw)
 	if (system_state != SYSTEM_RUNNING)
 		return UCODE_NFOUND;
 
-	ustate = microcode_ops->request_microcode_fw(cpu, &microcode_pdev->dev,
-						     refresh_fw);
-
-	if (ustate == UCODE_OK) {
+	ustate = microcode_ops->request_microcode_fw(cpu, &microcode_pdev->dev, refresh_fw);
+	if (ustate == UCODE_NEW) {
 		pr_debug("CPU%d updated upon init\n", cpu);
 		apply_microcode_on_target(cpu);
 	}
@@ -667,7 +811,7 @@ static struct attribute *cpu_root_microcode_attrs[] = {
 	NULL
 };
 
-static struct attribute_group cpu_root_microcode_group = {
+static const struct attribute_group cpu_root_microcode_group = {
 	.name  = "microcode",
 	.attrs = cpu_root_microcode_attrs,
 };

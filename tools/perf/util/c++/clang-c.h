@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef PERF_UTIL_CLANG_C_H
 #define PERF_UTIL_CLANG_C_H
 
@@ -20,6 +21,7 @@ extern int perf_clang__compile_bpf(const char *filename,
 				   size_t *p_obj_buf_sz);
 #else
 
+#include <errno.h>
 
 static inline void perf_clang__init(void) { }
 static inline void perf_clang__cleanup(void) { }

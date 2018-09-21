@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1) */
 /* p80211conv.h
  *
  * Ether/802.11 conversions and packet buffer routines
@@ -62,16 +63,6 @@
 
 #define	P80211_FRMMETA_MAGIC	0x802110
 
-#define P80211SKB_FRMMETA(s) \
-	(((((struct p80211_frmmeta *)((s)->cb))->magic) == \
-		P80211_FRMMETA_MAGIC) ? \
-		((struct p80211_frmmeta *)((s)->cb)) : \
-		(NULL))
-
-#define P80211SKB_RXMETA(s) \
-	(P80211SKB_FRMMETA((s)) ?  P80211SKB_FRMMETA((s))->rx : \
-		((struct p80211_rxmeta *)(NULL)))
-
 struct p80211_rxmeta {
 	struct wlandevice *wlandev;
 
@@ -97,24 +88,38 @@ void p80211skb_free(struct wlandevice *wlandev, struct sk_buff *skb);
 int p80211skb_rxmeta_attach(struct wlandevice *wlandev, struct sk_buff *skb);
 void p80211skb_rxmeta_detach(struct sk_buff *skb);
 
+static inline struct p80211_frmmeta *p80211skb_frmmeta(struct sk_buff *skb)
+{
+	struct p80211_frmmeta *frmmeta = (struct p80211_frmmeta *)skb->cb;
+
+	return frmmeta->magic == P80211_FRMMETA_MAGIC ? frmmeta : NULL;
+}
+
+static inline struct p80211_rxmeta *p80211skb_rxmeta(struct sk_buff *skb)
+{
+	struct p80211_frmmeta *frmmeta = p80211skb_frmmeta(skb);
+
+	return frmmeta ? frmmeta->rx : NULL;
+}
+
 /*
  * Frame capture header.  (See doc/capturefrm.txt)
  */
 struct p80211_caphdr {
-	u32 version;
-	u32 length;
-	u64 mactime;
-	u64 hosttime;
-	u32 phytype;
-	u32 channel;
-	u32 datarate;
-	u32 antenna;
-	u32 priority;
-	u32 ssi_type;
-	s32 ssi_signal;
-	s32 ssi_noise;
-	u32 preamble;
-	u32 encoding;
+	__be32 version;
+	__be32 length;
+	__be64 mactime;
+	__be64 hosttime;
+	__be32 phytype;
+	__be32 channel;
+	__be32 datarate;
+	__be32 antenna;
+	__be32 priority;
+	__be32 ssi_type;
+	__be32 ssi_signal;
+	__be32 ssi_noise;
+	__be32 preamble;
+	__be32 encoding;
 };
 
 /* buffer free method pointer type */
@@ -130,7 +135,7 @@ struct p80211_metawep {
 struct wlan_ethhdr {
 	u8 daddr[ETH_ALEN];
 	u8 saddr[ETH_ALEN];
-	u16 type;
+	__be16 type;
 } __packed;
 
 /* local llc header type */
@@ -143,7 +148,7 @@ struct wlan_llc {
 /* local snap header type */
 struct wlan_snap {
 	u8 oui[WLAN_IEEE_OUI_LEN];
-	u16 type;
+	__be16 type;
 } __packed;
 
 /* Circular include trick */

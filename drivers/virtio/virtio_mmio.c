@@ -70,7 +70,7 @@
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
-#include <linux/virtio_mmio.h>
+#include <uapi/linux/virtio_mmio.h>
 #include <linux/virtio_ring.h>
 
 
@@ -351,7 +351,7 @@ static void vm_del_vqs(struct virtio_device *vdev)
 
 static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 				  void (*callback)(struct virtqueue *vq),
-				  const char *name)
+				  const char *name, bool ctx)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	struct virtio_mmio_vq_info *info;
@@ -388,7 +388,7 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 
 	/* Create the vring */
 	vq = vring_create_virtqueue(index, num, VIRTIO_MMIO_VRING_ALIGN, vdev,
-				 true, true, vm_notify, callback, name);
+				 true, true, ctx, vm_notify, callback, name);
 	if (!vq) {
 		err = -ENOMEM;
 		goto error_new_virtqueue;
@@ -446,7 +446,9 @@ error_available:
 static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		       struct virtqueue *vqs[],
 		       vq_callback_t *callbacks[],
-		       const char * const names[])
+		       const char * const names[],
+		       const bool *ctx,
+		       struct irq_affinity *desc)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
 	unsigned int irq = platform_get_irq(vm_dev->pdev, 0);
@@ -458,7 +460,8 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		return err;
 
 	for (i = 0; i < nvqs; ++i) {
-		vqs[i] = vm_setup_vq(vdev, i, callbacks[i], names[i]);
+		vqs[i] = vm_setup_vq(vdev, i, callbacks[i], names[i],
+				     ctx ? ctx[i] : false);
 		if (IS_ERR(vqs[i])) {
 			vm_del_vqs(vdev);
 			return PTR_ERR(vqs[i]);
@@ -490,7 +493,16 @@ static const struct virtio_config_ops virtio_mmio_config_ops = {
 };
 
 
-static void virtio_mmio_release_dev_empty(struct device *_d) {}
+static void virtio_mmio_release_dev(struct device *_d)
+{
+	struct virtio_device *vdev =
+			container_of(_d, struct virtio_device, dev);
+	struct virtio_mmio_device *vm_dev =
+			container_of(vdev, struct virtio_mmio_device, vdev);
+	struct platform_device *pdev = vm_dev->pdev;
+
+	devm_kfree(&pdev->dev, vm_dev);
+}
 
 /* Platform device */
 
@@ -511,10 +523,10 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 
 	vm_dev = devm_kzalloc(&pdev->dev, sizeof(*vm_dev), GFP_KERNEL);
 	if (!vm_dev)
-		return  -ENOMEM;
+		return -ENOMEM;
 
 	vm_dev->vdev.dev.parent = &pdev->dev;
-	vm_dev->vdev.dev.release = virtio_mmio_release_dev_empty;
+	vm_dev->vdev.dev.release = virtio_mmio_release_dev;
 	vm_dev->vdev.config = &virtio_mmio_config_ops;
 	vm_dev->pdev = pdev;
 	INIT_LIST_HEAD(&vm_dev->virtqueues);
@@ -570,13 +582,16 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, vm_dev);
 
-	return register_virtio_device(&vm_dev->vdev);
+	rc = register_virtio_device(&vm_dev->vdev);
+	if (rc)
+		put_device(&vm_dev->vdev.dev);
+
+	return rc;
 }
 
 static int virtio_mmio_remove(struct platform_device *pdev)
 {
 	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
-
 	unregister_virtio_device(&vm_dev->vdev);
 
 	return 0;
@@ -647,10 +662,8 @@ static int vm_cmdline_set(const char *device,
 	pdev = platform_device_register_resndata(&vm_cmdline_parent,
 			"virtio-mmio", vm_cmdline_id++,
 			resources, ARRAY_SIZE(resources), NULL, 0);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
 
-	return 0;
+	return PTR_ERR_OR_ZERO(pdev);
 }
 
 static int vm_cmdline_get_device(struct device *dev, void *data)
@@ -710,7 +723,7 @@ static void vm_unregister_cmdline_devices(void)
 
 /* Platform driver */
 
-static struct of_device_id virtio_mmio_match[] = {
+static const struct of_device_id virtio_mmio_match[] = {
 	{ .compatible = "virtio,mmio", },
 	{},
 };

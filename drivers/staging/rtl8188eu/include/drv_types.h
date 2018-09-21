@@ -65,8 +65,6 @@ struct registry_priv {
 	u8	ips_mode;
 	u8	smart_ps;
 	u8	mp_mode;
-	u8	software_encrypt;
-	u8	software_decrypt;
 	u8	acm_method;
 	  /* UAPSD */
 	u8	wmm_enable;
@@ -130,7 +128,8 @@ struct dvobj_priv {
 static inline struct device *dvobj_to_dev(struct dvobj_priv *dvobj)
 {
 	/* todo: get interface type from dvobj and the return
-	 * the dev accordingly */
+	 * the dev accordingly
+	 */
 	return &dvobj->pusbintf->dev;
 };
 
@@ -168,7 +167,6 @@ struct adapter {
 	u8 bFWReady;
 	u8 bReadPortCancel;
 	u8 bWritePortCancel;
-	u8 bRxRSSIDisplay;
 
 	struct mutex hw_init_mutex;
 };

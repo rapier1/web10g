@@ -221,7 +221,7 @@ static void hi6220_mbox_shutdown(struct mbox_chan *chan)
 	mbox->irq_map_chan[mchan->ack_irq] = NULL;
 }
 
-static struct mbox_chan_ops hi6220_mbox_ops = {
+static const struct mbox_chan_ops hi6220_mbox_ops = {
 	.send_data    = hi6220_mbox_send_data,
 	.startup      = hi6220_mbox_startup,
 	.shutdown     = hi6220_mbox_shutdown,
@@ -282,13 +282,13 @@ static int hi6220_mbox_probe(struct platform_device *pdev)
 
 	mbox->dev = dev;
 	mbox->chan_num = MBOX_CHAN_MAX;
-	mbox->mchan = devm_kzalloc(dev,
-		mbox->chan_num * sizeof(*mbox->mchan), GFP_KERNEL);
+	mbox->mchan = devm_kcalloc(dev,
+		mbox->chan_num, sizeof(*mbox->mchan), GFP_KERNEL);
 	if (!mbox->mchan)
 		return -ENOMEM;
 
-	mbox->chan = devm_kzalloc(dev,
-		mbox->chan_num * sizeof(*mbox->chan), GFP_KERNEL);
+	mbox->chan = devm_kcalloc(dev,
+		mbox->chan_num, sizeof(*mbox->chan), GFP_KERNEL);
 	if (!mbox->chan)
 		return -ENOMEM;
 

@@ -55,7 +55,8 @@
 						 * single-tone
 						 */
 #define	WIFI_MP_CTX_BACKGROUND_PENDING	0x00080000 /* pending in cont, tx
-						    * background due to out of skb
+						    * background due
+						    * to out of skb
 						    */
 #define	WIFI_MP_CTX_CCK_HW	0x00100000	/* in continuous tx*/
 #define	WIFI_MP_CTX_CCK_CS	0x00200000	/* in cont, tx with carrier
@@ -68,14 +69,14 @@
 #define _FW_UNDER_SURVEY	WIFI_SITE_MONITOR
 
 /*
-there are several "locks" in mlme_priv,
-since mlme_priv is a shared resource between many threads,
-like ISR/Call-Back functions, the OID handlers, and even timer functions.
-Each _queue has its own locks, already.
-Other items are protected by mlme_priv.lock.
-To avoid possible dead lock, any thread trying to modify mlme_priv
-SHALL not lock up more than one lock at a time!
-*/
+ * there are several "locks" in mlme_priv,
+ * since mlme_priv is a shared resource between many threads,
+ * like ISR/Call-Back functions, the OID handlers, and even timer functions.
+ * Each _queue has its own locks, already.
+ * Other items are protected by mlme_priv.lock.
+ * To avoid possible dead lock, any thread trying to modify mlme_priv
+ * SHALL not lock up more than one lock at a time!
+ */
 
 #define traffic_threshold	10
 #define	traffic_scan_period	500

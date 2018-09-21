@@ -1,29 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "comm.h"
 #include "util.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <linux/atomic.h>
+#include <string.h>
+#include <linux/refcount.h>
+#include "rwsem.h"
 
 struct comm_str {
 	char *str;
 	struct rb_node rb_node;
-	atomic_t refcnt;
+	refcount_t refcnt;
 };
 
 /* Should perhaps be moved to struct machine */
 static struct rb_root comm_str_root;
+static struct rw_semaphore comm_str_lock = {.lock = PTHREAD_RWLOCK_INITIALIZER,};
 
 static struct comm_str *comm_str__get(struct comm_str *cs)
 {
 	if (cs)
-		atomic_inc(&cs->refcnt);
+		refcount_inc(&cs->refcnt);
 	return cs;
 }
 
 static void comm_str__put(struct comm_str *cs)
 {
-	if (cs && atomic_dec_and_test(&cs->refcnt)) {
+	if (cs && refcount_dec_and_test(&cs->refcnt)) {
+		down_write(&comm_str_lock);
 		rb_erase(&cs->rb_node, &comm_str_root);
+		up_write(&comm_str_lock);
 		zfree(&cs->str);
 		free(cs);
 	}
@@ -43,12 +50,13 @@ static struct comm_str *comm_str__alloc(const char *str)
 		return NULL;
 	}
 
-	atomic_set(&cs->refcnt, 0);
+	refcount_set(&cs->refcnt, 1);
 
 	return cs;
 }
 
-static struct comm_str *comm_str__findnew(const char *str, struct rb_root *root)
+static
+struct comm_str *__comm_str__findnew(const char *str, struct rb_root *root)
 {
 	struct rb_node **p = &root->rb_node;
 	struct rb_node *parent = NULL;
@@ -61,7 +69,7 @@ static struct comm_str *comm_str__findnew(const char *str, struct rb_root *root)
 
 		cmp = strcmp(str, iter->str);
 		if (!cmp)
-			return iter;
+			return comm_str__get(iter);
 
 		if (cmp < 0)
 			p = &(*p)->rb_left;
@@ -77,6 +85,17 @@ static struct comm_str *comm_str__findnew(const char *str, struct rb_root *root)
 	rb_insert_color(&new->rb_node, root);
 
 	return new;
+}
+
+static struct comm_str *comm_str__findnew(const char *str, struct rb_root *root)
+{
+	struct comm_str *cs;
+
+	down_write(&comm_str_lock);
+	cs = __comm_str__findnew(str, root);
+	up_write(&comm_str_lock);
+
+	return cs;
 }
 
 struct comm *comm__new(const char *str, u64 timestamp, bool exec)
@@ -95,8 +114,6 @@ struct comm *comm__new(const char *str, u64 timestamp, bool exec)
 		return NULL;
 	}
 
-	comm_str__get(comm->comm_str);
-
 	return comm;
 }
 
@@ -108,7 +125,6 @@ int comm__override(struct comm *comm, const char *str, u64 timestamp, bool exec)
 	if (!new)
 		return -ENOMEM;
 
-	comm_str__get(new);
 	comm_str__put(old);
 	comm->comm_str = new;
 	comm->start = timestamp;

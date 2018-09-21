@@ -39,6 +39,7 @@
 
 #ifndef __ASSEMBLY__
 #ifdef CONFIG_HUGETLB_PAGE
+extern bool hugetlb_disabled;
 extern unsigned int HPAGE_SHIFT;
 #else
 #define HPAGE_SHIFT PAGE_SHIFT
@@ -126,13 +127,33 @@ extern long long virt_phys_offset;
 
 #ifdef CONFIG_FLATMEM
 #define ARCH_PFN_OFFSET		((unsigned long)(MEMORY_START >> PAGE_SHIFT))
-#define pfn_valid(pfn)		((pfn) >= ARCH_PFN_OFFSET && (pfn) < max_mapnr)
+#ifndef __ASSEMBLY__
+extern unsigned long max_mapnr;
+static inline bool pfn_valid(unsigned long pfn)
+{
+	unsigned long min_pfn = ARCH_PFN_OFFSET;
+
+	return pfn >= min_pfn && pfn < max_mapnr;
+}
+#endif
 #endif
 
 #define virt_to_pfn(kaddr)	(__pa(kaddr) >> PAGE_SHIFT)
 #define virt_to_page(kaddr)	pfn_to_page(virt_to_pfn(kaddr))
 #define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
+
+#ifdef CONFIG_PPC_BOOK3S_64
+/*
+ * On hash the vmalloc and other regions alias to the kernel region when passed
+ * through __pa(), which virt_to_pfn() uses. That means virt_addr_valid() can
+ * return true for some vmalloc addresses, which is incorrect. So explicitly
+ * check that the address is in the kernel region.
+ */
+#define virt_addr_valid(kaddr) (REGION_ID(kaddr) == KERNEL_REGION_ID && \
+				pfn_valid(virt_to_pfn(kaddr)))
+#else
 #define virt_addr_valid(kaddr)	pfn_valid(virt_to_pfn(kaddr))
+#endif
 
 /*
  * On Book-E parts we need __va to parse the device tree and we can't
@@ -230,7 +251,9 @@ extern long long virt_phys_offset;
  * and needs to be executable.  This means the whole heap ends
  * up being executable.
  */
-#define VM_DATA_DEFAULT_FLAGS32	(VM_READ | VM_WRITE | VM_EXEC | \
+#define VM_DATA_DEFAULT_FLAGS32 \
+	(((current->personality & READ_IMPLIES_EXEC) ? VM_EXEC : 0) | \
+				 VM_READ | VM_WRITE | \
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
 #define VM_DATA_DEFAULT_FLAGS64	(VM_READ | VM_WRITE | \
@@ -330,5 +353,6 @@ typedef struct page *pgtable_t;
 
 #include <asm-generic/memory_model.h>
 #endif /* __ASSEMBLY__ */
+#include <asm/slice.h>
 
 #endif /* _ASM_POWERPC_PAGE_H */

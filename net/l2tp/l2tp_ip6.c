@@ -57,8 +57,8 @@ static inline struct l2tp_ip6_sock *l2tp_ip6_sk(const struct sock *sk)
 	return (struct l2tp_ip6_sock *)sk;
 }
 
-static struct sock *__l2tp_ip6_bind_lookup(struct net *net,
-					   struct in6_addr *laddr,
+static struct sock *__l2tp_ip6_bind_lookup(const struct net *net,
+					   const struct in6_addr *laddr,
 					   const struct in6_addr *raddr,
 					   int dif, u32 tunnel_id)
 {
@@ -67,18 +67,26 @@ static struct sock *__l2tp_ip6_bind_lookup(struct net *net,
 	sk_for_each_bound(sk, &l2tp_ip6_bind_table) {
 		const struct in6_addr *sk_laddr = inet6_rcv_saddr(sk);
 		const struct in6_addr *sk_raddr = &sk->sk_v6_daddr;
-		struct l2tp_ip6_sock *l2tp = l2tp_ip6_sk(sk);
+		const struct l2tp_ip6_sock *l2tp = l2tp_ip6_sk(sk);
 
-		if (l2tp == NULL)
+		if (!net_eq(sock_net(sk), net))
 			continue;
 
-		if ((l2tp->conn_id == tunnel_id) &&
-		    net_eq(sock_net(sk), net) &&
-		    (!sk_laddr || ipv6_addr_any(sk_laddr) || ipv6_addr_equal(sk_laddr, laddr)) &&
-		    (!raddr || ipv6_addr_any(sk_raddr) || ipv6_addr_equal(sk_raddr, raddr)) &&
-		    (!sk->sk_bound_dev_if || !dif ||
-		     sk->sk_bound_dev_if == dif))
-			goto found;
+		if (sk->sk_bound_dev_if && dif && sk->sk_bound_dev_if != dif)
+			continue;
+
+		if (sk_laddr && !ipv6_addr_any(sk_laddr) &&
+		    !ipv6_addr_any(laddr) && !ipv6_addr_equal(sk_laddr, laddr))
+			continue;
+
+		if (!ipv6_addr_any(sk_raddr) && raddr &&
+		    !ipv6_addr_any(raddr) && !ipv6_addr_equal(sk_raddr, raddr))
+			continue;
+
+		if (l2tp->conn_id != tunnel_id)
+			continue;
+
+		goto found;
 	}
 
 	sk = NULL;
@@ -128,6 +136,7 @@ static int l2tp_ip6_recv(struct sk_buff *skb)
 	unsigned char *ptr, *optr;
 	struct l2tp_session *session;
 	struct l2tp_tunnel *tunnel = NULL;
+	struct ipv6hdr *iph;
 	int length;
 
 	if (!pskb_may_pull(skb, 4))
@@ -148,19 +157,19 @@ static int l2tp_ip6_recv(struct sk_buff *skb)
 	}
 
 	/* Ok, this is a data packet. Lookup the session. */
-	session = l2tp_session_find(net, NULL, session_id);
-	if (session == NULL)
+	session = l2tp_session_get(net, NULL, session_id);
+	if (!session)
 		goto discard;
 
 	tunnel = session->tunnel;
-	if (tunnel == NULL)
-		goto discard;
+	if (!tunnel)
+		goto discard_sess;
 
 	/* Trace packet contents, if enabled */
 	if (tunnel->debug & L2TP_MSG_DATA) {
 		length = min(32u, skb->len);
 		if (!pskb_may_pull(skb, length))
-			goto discard;
+			goto discard_sess;
 
 		/* Point to L2TP header */
 		optr = ptr = skb->data;
@@ -171,6 +180,8 @@ static int l2tp_ip6_recv(struct sk_buff *skb)
 
 	l2tp_recv_common(session, skb, ptr, optr, 0, skb->len,
 			 tunnel->recv_payload_hook);
+	l2tp_session_dec_refcount(session);
+
 	return 0;
 
 pass_up:
@@ -182,23 +193,17 @@ pass_up:
 		goto discard;
 
 	tunnel_id = ntohl(*(__be32 *) &skb->data[4]);
-	tunnel = l2tp_tunnel_find(net, tunnel_id);
-	if (tunnel != NULL)
-		sk = tunnel->sock;
-	else {
-		struct ipv6hdr *iph = ipv6_hdr(skb);
+	iph = ipv6_hdr(skb);
 
-		read_lock_bh(&l2tp_ip6_lock);
-		sk = __l2tp_ip6_bind_lookup(net, &iph->daddr, &iph->saddr,
-					    inet6_iif(skb), tunnel_id);
-		if (!sk) {
-			read_unlock_bh(&l2tp_ip6_lock);
-			goto discard;
-		}
-
-		sock_hold(sk);
+	read_lock_bh(&l2tp_ip6_lock);
+	sk = __l2tp_ip6_bind_lookup(net, &iph->daddr, &iph->saddr,
+				    inet6_iif(skb), tunnel_id);
+	if (!sk) {
 		read_unlock_bh(&l2tp_ip6_lock);
+		goto discard;
 	}
+	sock_hold(sk);
+	read_unlock_bh(&l2tp_ip6_lock);
 
 	if (!xfrm6_policy_check(sk, XFRM_POLICY_IN, skb))
 		goto discard_put;
@@ -206,6 +211,10 @@ pass_up:
 	nf_reset(skb);
 
 	return sk_receive_skb(sk, skb, 1);
+
+discard_sess:
+	l2tp_session_dec_refcount(session);
+	goto discard;
 
 discard_put:
 	sock_put(sk);
@@ -239,16 +248,14 @@ static void l2tp_ip6_close(struct sock *sk, long timeout)
 
 static void l2tp_ip6_destroy_sock(struct sock *sk)
 {
-	struct l2tp_tunnel *tunnel = l2tp_sock_to_tunnel(sk);
+	struct l2tp_tunnel *tunnel = sk->sk_user_data;
 
 	lock_sock(sk);
 	ip6_flush_pending_frames(sk);
 	release_sock(sk);
 
-	if (tunnel) {
-		l2tp_tunnel_closeall(tunnel);
-		sock_put(sk);
-	}
+	if (tunnel)
+		l2tp_tunnel_delete(tunnel);
 
 	inet6_destroy_sock(sk);
 }
@@ -412,7 +419,7 @@ static int l2tp_ip6_disconnect(struct sock *sk, int flags)
 }
 
 static int l2tp_ip6_getname(struct socket *sock, struct sockaddr *uaddr,
-			    int *uaddr_len, int peer)
+			    int peer)
 {
 	struct sockaddr_l2tpip6 *lsa = (struct sockaddr_l2tpip6 *)uaddr;
 	struct sock *sk = sock->sk;
@@ -440,8 +447,7 @@ static int l2tp_ip6_getname(struct socket *sock, struct sockaddr *uaddr,
 	}
 	if (ipv6_addr_type(&lsa->l2tp_addr) & IPV6_ADDR_LINKLOCAL)
 		lsa->l2tp_scope_id = sk->sk_bound_dev_if;
-	*uaddr_len = sizeof(*lsa);
-	return 0;
+	return sizeof(*lsa);
 }
 
 static int l2tp_ip6_backlog_recv(struct sock *sk, struct sk_buff *skb)
@@ -650,7 +656,8 @@ out:
 	return err < 0 ? err : len;
 
 do_confirm:
-	dst_confirm(dst);
+	if (msg->msg_flags & MSG_PROBE)
+		dst_confirm_neigh(dst, &fl6.daddr);
 	if (!(msg->msg_flags & MSG_PROBE) || len)
 		goto back_from_confirm;
 	err = 0;

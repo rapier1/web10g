@@ -13,10 +13,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /*
@@ -54,11 +50,11 @@
 
 #include <media/tuner.h>
 #include <media/tveeprom.h>
-#include <dvb_demux.h>
-#include <dvb_frontend.h>
-#include <dvb_net.h>
-#include <dvbdev.h>
-#include <dmxdev.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
+#include <media/dvb_net.h>
+#include <media/dvbdev.h>
+#include <media/dmxdev.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-device.h>

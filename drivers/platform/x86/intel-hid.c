@@ -1,5 +1,5 @@
 /*
- *  Intel HID event driver for Windows 8
+ *  Intel HID event & 5 button array driver
  *
  *  Copyright (C) 2015 Alex Hung <alex.hung@canonical.com>
  *  Copyright (C) 2015 Andrew Lutomirski <luto@kernel.org>
@@ -16,14 +16,14 @@
  *
  */
 
+#include <linux/acpi.h>
+#include <linux/dmi.h>
+#include <linux/input.h>
+#include <linux/input/sparse-keymap.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
-#include <linux/input.h>
 #include <linux/platform_device.h>
-#include <linux/input/sparse-keymap.h>
-#include <linux/acpi.h>
-#include <acpi/acpi_bus.h>
+#include <linux/suspend.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Alex Hung");
@@ -57,18 +57,51 @@ static const struct key_entry intel_hid_keymap[] = {
 	{ KE_END },
 };
 
-struct intel_hid_priv {
-	struct input_dev *input_dev;
+/* 5 button array notification value. */
+static const struct key_entry intel_array_keymap[] = {
+	{ KE_KEY,    0xC2, { KEY_LEFTMETA } },                /* Press */
+	{ KE_IGNORE, 0xC3, { KEY_LEFTMETA } },                /* Release */
+	{ KE_KEY,    0xC4, { KEY_VOLUMEUP } },                /* Press */
+	{ KE_IGNORE, 0xC5, { KEY_VOLUMEUP } },                /* Release */
+	{ KE_KEY,    0xC6, { KEY_VOLUMEDOWN } },              /* Press */
+	{ KE_IGNORE, 0xC7, { KEY_VOLUMEDOWN } },              /* Release */
+	{ KE_KEY,    0xC8, { KEY_ROTATE_LOCK_TOGGLE } },      /* Press */
+	{ KE_IGNORE, 0xC9, { KEY_ROTATE_LOCK_TOGGLE } },      /* Release */
+	{ KE_KEY,    0xCE, { KEY_POWER } },                   /* Press */
+	{ KE_IGNORE, 0xCF, { KEY_POWER } },                   /* Release */
+	{ KE_END },
 };
 
-static int intel_hid_set_enable(struct device *device, int enable)
+static const struct dmi_system_id button_array_table[] = {
+	{
+		.ident = "Wacom MobileStudio Pro 13",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Wacom Co.,Ltd"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Wacom MobileStudio Pro 13"),
+		},
+	},
+	{
+		.ident = "Wacom MobileStudio Pro 16",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Wacom Co.,Ltd"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Wacom MobileStudio Pro 16"),
+		},
+	},
+	{ }
+};
+
+struct intel_hid_priv {
+	struct input_dev *input_dev;
+	struct input_dev *array;
+	bool wakeup_mode;
+};
+
+static int intel_hid_set_enable(struct device *device, bool enable)
 {
-	union acpi_object arg0 = { ACPI_TYPE_INTEGER };
-	struct acpi_object_list args = { 1, &arg0 };
 	acpi_status status;
 
-	arg0.integer.value = enable;
-	status = acpi_evaluate_object(ACPI_HANDLE(device), "HDSM", &args, NULL);
+	status = acpi_execute_simple_method(ACPI_HANDLE(device), "HDSM",
+					    enable);
 	if (ACPI_FAILURE(status)) {
 		dev_warn(device, "failed to %sable hotkeys\n",
 			 enable ? "en" : "dis");
@@ -78,20 +111,63 @@ static int intel_hid_set_enable(struct device *device, int enable)
 	return 0;
 }
 
+static void intel_button_array_enable(struct device *device, bool enable)
+{
+	struct intel_hid_priv *priv = dev_get_drvdata(device);
+	acpi_handle handle = ACPI_HANDLE(device);
+	unsigned long long button_cap;
+	acpi_status status;
+
+	if (!priv->array)
+		return;
+
+	/* Query supported platform features */
+	status = acpi_evaluate_integer(handle, "BTNC", NULL, &button_cap);
+	if (ACPI_FAILURE(status)) {
+		dev_warn(device, "failed to get button capability\n");
+		return;
+	}
+
+	/* Enable|disable features - power button is always enabled */
+	status = acpi_execute_simple_method(handle, "BTNE",
+					    enable ? button_cap : 1);
+	if (ACPI_FAILURE(status))
+		dev_warn(device, "failed to set button capability\n");
+}
+
+static int intel_hid_pm_prepare(struct device *device)
+{
+	struct intel_hid_priv *priv = dev_get_drvdata(device);
+
+	priv->wakeup_mode = true;
+	return 0;
+}
+
 static int intel_hid_pl_suspend_handler(struct device *device)
 {
-	intel_hid_set_enable(device, 0);
+	if (pm_suspend_via_firmware()) {
+		intel_hid_set_enable(device, false);
+		intel_button_array_enable(device, false);
+	}
 	return 0;
 }
 
 static int intel_hid_pl_resume_handler(struct device *device)
 {
-	intel_hid_set_enable(device, 1);
+	struct intel_hid_priv *priv = dev_get_drvdata(device);
+
+	priv->wakeup_mode = false;
+	if (pm_resume_via_firmware()) {
+		intel_hid_set_enable(device, true);
+		intel_button_array_enable(device, true);
+	}
 	return 0;
 }
 
 static const struct dev_pm_ops intel_hid_pl_pm_ops = {
+	.prepare = intel_hid_pm_prepare,
 	.freeze  = intel_hid_pl_suspend_handler,
+	.thaw  = intel_hid_pl_resume_handler,
 	.restore  = intel_hid_pl_resume_handler,
 	.suspend  = intel_hid_pl_suspend_handler,
 	.resume  = intel_hid_pl_resume_handler,
@@ -102,35 +178,38 @@ static int intel_hid_input_setup(struct platform_device *device)
 	struct intel_hid_priv *priv = dev_get_drvdata(&device->dev);
 	int ret;
 
-	priv->input_dev = input_allocate_device();
+	priv->input_dev = devm_input_allocate_device(&device->dev);
 	if (!priv->input_dev)
 		return -ENOMEM;
 
 	ret = sparse_keymap_setup(priv->input_dev, intel_hid_keymap, NULL);
 	if (ret)
-		goto err_free_device;
+		return ret;
 
-	priv->input_dev->dev.parent = &device->dev;
 	priv->input_dev->name = "Intel HID events";
 	priv->input_dev->id.bustype = BUS_HOST;
-	set_bit(KEY_RFKILL, priv->input_dev->keybit);
 
-	ret = input_register_device(priv->input_dev);
-	if (ret)
-		goto err_free_device;
-
-	return 0;
-
-err_free_device:
-	input_free_device(priv->input_dev);
-	return ret;
+	return input_register_device(priv->input_dev);
 }
 
-static void intel_hid_input_destroy(struct platform_device *device)
+static int intel_button_array_input_setup(struct platform_device *device)
 {
 	struct intel_hid_priv *priv = dev_get_drvdata(&device->dev);
+	int ret;
 
-	input_unregister_device(priv->input_dev);
+	/* Setup input device for 5 button array */
+	priv->array = devm_input_allocate_device(&device->dev);
+	if (!priv->array)
+		return -ENOMEM;
+
+	ret = sparse_keymap_setup(priv->array, intel_array_keymap, NULL);
+	if (ret)
+		return ret;
+
+	priv->array->name = "Intel HID 5 button array";
+	priv->array->id.bustype = BUS_HOST;
+
+	return input_register_device(priv->array);
 }
 
 static void notify_handler(acpi_handle handle, u32 event, void *context)
@@ -140,10 +219,53 @@ static void notify_handler(acpi_handle handle, u32 event, void *context)
 	unsigned long long ev_index;
 	acpi_status status;
 
-	/* The platform spec only defines one event code: 0xC0. */
+	if (priv->wakeup_mode) {
+		/*
+		 * Needed for wakeup from suspend-to-idle to work on some
+		 * platforms that don't expose the 5-button array, but still
+		 * send notifies with the power button event code to this
+		 * device object on power button actions while suspended.
+		 */
+		if (event == 0xce)
+			goto wakeup;
+
+		/* Wake up on 5-button array events only. */
+		if (event == 0xc0 || !priv->array)
+			return;
+
+		if (!sparse_keymap_entry_from_scancode(priv->array, event)) {
+			dev_info(&device->dev, "unknown event 0x%x\n", event);
+			return;
+		}
+
+wakeup:
+		pm_wakeup_hard_event(&device->dev);
+		return;
+	}
+
+	/*
+	 * Needed for suspend to work on some platforms that don't expose
+	 * the 5-button array, but still send notifies with power button
+	 * event code to this device object on power button actions.
+	 *
+	 * Report the power button press; catch and ignore the button release.
+	 */
+	if (!priv->array) {
+		if (event == 0xce) {
+			input_report_key(priv->input_dev, KEY_POWER, 1);
+			input_sync(priv->input_dev);
+			return;
+		}
+
+		if (event == 0xcf)
+			return;
+	}
+
+	/* 0xC0 is for HID events, other values are for 5 button array */
 	if (event != 0xc0) {
-		dev_warn(&device->dev, "received unknown event (0x%x)\n",
-			 event);
+		if (!priv->array ||
+		    !sparse_keymap_report_event(priv->array, event, 1, true))
+			dev_dbg(&device->dev, "unknown event 0x%x\n", event);
 		return;
 	}
 
@@ -154,15 +276,32 @@ static void notify_handler(acpi_handle handle, u32 event, void *context)
 	}
 
 	if (!sparse_keymap_report_event(priv->input_dev, ev_index, 1, true))
-		dev_info(&device->dev, "unknown event index 0x%llx\n",
+		dev_dbg(&device->dev, "unknown event index 0x%llx\n",
 			 ev_index);
+}
+
+static bool button_array_present(struct platform_device *device)
+{
+	acpi_handle handle = ACPI_HANDLE(&device->dev);
+	unsigned long long event_cap;
+	acpi_status status;
+	bool supported = false;
+
+	status = acpi_evaluate_integer(handle, "HEBC", NULL, &event_cap);
+	if (ACPI_SUCCESS(status) && (event_cap & 0x20000))
+		supported = true;
+
+	if (dmi_check_system(button_array_table))
+		supported = true;
+
+	return supported;
 }
 
 static int intel_hid_probe(struct platform_device *device)
 {
 	acpi_handle handle = ACPI_HANDLE(&device->dev);
-	struct intel_hid_priv *priv;
 	unsigned long long mode;
+	struct intel_hid_priv *priv;
 	acpi_status status;
 	int err;
 
@@ -193,26 +332,40 @@ static int intel_hid_probe(struct platform_device *device)
 		return err;
 	}
 
+	/* Setup 5 button array */
+	if (button_array_present(device)) {
+		dev_info(&device->dev, "platform supports 5 button array\n");
+		err = intel_button_array_input_setup(device);
+		if (err)
+			pr_err("Failed to setup Intel 5 button array hotkeys\n");
+	}
+
 	status = acpi_install_notify_handler(handle,
 					     ACPI_DEVICE_NOTIFY,
 					     notify_handler,
 					     device);
-	if (ACPI_FAILURE(status)) {
-		err = -EBUSY;
-		goto err_remove_input;
-	}
+	if (ACPI_FAILURE(status))
+		return -EBUSY;
 
-	err = intel_hid_set_enable(&device->dev, 1);
+	err = intel_hid_set_enable(&device->dev, true);
 	if (err)
 		goto err_remove_notify;
 
+	if (priv->array) {
+		intel_button_array_enable(&device->dev, true);
+
+		/* Call button load method to enable HID power button */
+		status = acpi_evaluate_object(handle, "BTNL", NULL, NULL);
+		if (ACPI_FAILURE(status))
+			dev_warn(&device->dev,
+				 "failed to enable HID power button\n");
+	}
+
+	device_init_wakeup(&device->dev, true);
 	return 0;
 
 err_remove_notify:
 	acpi_remove_notify_handler(handle, ACPI_DEVICE_NOTIFY, notify_handler);
-
-err_remove_input:
-	intel_hid_input_destroy(device);
 
 	return err;
 }
@@ -221,9 +374,10 @@ static int intel_hid_remove(struct platform_device *device)
 {
 	acpi_handle handle = ACPI_HANDLE(&device->dev);
 
+	device_init_wakeup(&device->dev, false);
 	acpi_remove_notify_handler(handle, ACPI_DEVICE_NOTIFY, notify_handler);
-	intel_hid_input_destroy(device);
-	intel_hid_set_enable(&device->dev, 0);
+	intel_hid_set_enable(&device->dev, false);
+	intel_button_array_enable(&device->dev, false);
 
 	/*
 	 * Even if we failed to shut off the event stream, we can still

@@ -18,6 +18,7 @@
 #include <linux/compat.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
 #include <linux/ptrace.h>
@@ -32,6 +33,7 @@
 #include <asm/pgtable.h>
 #include <asm/page.h>
 #include <asm/reg.h>
+#include <asm/syscall.h>
 #include <linux/uaccess.h>
 #include <asm/bootinfo.h>
 
@@ -97,17 +99,17 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 				break;
 			}
 			fregs = get_fpu_regs(child);
-			if (test_thread_flag(TIF_32BIT_FPREGS)) {
+			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
-				 * registers - unless we're using r2k_switch.S.
+				 * registers.
 				 */
 				tmp = get_fpr32(&fregs[(addr & ~1) - FPR_BASE],
 						addr & 1);
 				break;
 			}
-			tmp = get_fpr32(&fregs[addr - FPR_BASE], 0);
+			tmp = get_fpr64(&fregs[addr - FPR_BASE], 0);
 			break;
 		case PC:
 			tmp = regs->cp0_epc;
@@ -194,6 +196,12 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		switch (addr) {
 		case 0 ... 31:
 			regs->regs[addr] = data;
+			/* System call number may have been changed */
+			if (addr == 2)
+				mips_syscall_update_nr(child, regs);
+			else if (addr == 4 &&
+				 mips_syscall_is_indirect(child, regs))
+				mips_syscall_update_nr(child, regs);
 			break;
 		case FPR_BASE ... FPR_BASE + 31: {
 			union fpureg *fregs = get_fpu_regs(child);
@@ -204,11 +212,11 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 				       sizeof(child->thread.fpu));
 				child->thread.fpu.fcr31 = 0;
 			}
-			if (test_thread_flag(TIF_32BIT_FPREGS)) {
+			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
-				 * registers - unless we're using r2k_switch.S.
+				 * registers.
 				 */
 				set_fpr32(&fregs[(addr & ~1) - FPR_BASE],
 					  addr & 1, data);

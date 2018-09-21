@@ -15,6 +15,7 @@
 #include <linux/mount.h>
 #include <linux/namei.h>
 #include <linux/sched.h>
+#include <linux/cred.h>
 
 #define dprintk(fmt, args...) do{}while(0)
 
@@ -299,7 +300,8 @@ static int get_name(const struct path *path, char *name, struct dentry *child)
 	 * filesystem supports 64-bit inode numbers.  So we need to
 	 * actually call ->getattr, not just read i_ino:
 	 */
-	error = vfs_getattr_nosec(&child_path, &stat);
+	error = vfs_getattr_nosec(&child_path, &stat,
+				  STATX_INO, AT_STATX_SYNC_AS_STAT);
 	if (error)
 		return error;
 	buffer.ino = stat.ino;
@@ -432,6 +434,15 @@ struct dentry *exportfs_decode_fh(struct vfsmount *mnt, struct fid *fid,
 		return ERR_CAST(result);
 	if (IS_ERR_OR_NULL(result))
 		return ERR_PTR(-ESTALE);
+
+	/*
+	 * If no acceptance criteria was specified by caller, a disconnected
+	 * dentry is also accepatable. Callers may use this mode to query if
+	 * file handle is stale or to get a reference to an inode without
+	 * risking the high overhead caused by directory reconnect.
+	 */
+	if (!acceptable)
+		return result;
 
 	if (d_is_dir(result)) {
 		/*

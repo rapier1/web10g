@@ -43,7 +43,7 @@ static void nft_nat_eval(const struct nft_expr *expr,
 	const struct nft_nat *priv = nft_expr_priv(expr);
 	enum ip_conntrack_info ctinfo;
 	struct nf_conn *ct = nf_ct_get(pkt->skb, &ctinfo);
-	struct nf_nat_range range;
+	struct nf_nat_range2 range;
 
 	memset(&range, 0, sizeof(range));
 	if (priv->sreg_addr_min) {
@@ -65,10 +65,10 @@ static void nft_nat_eval(const struct nft_expr *expr,
 	}
 
 	if (priv->sreg_proto_min) {
-		range.min_proto.all =
-			*(__be16 *)&regs->data[priv->sreg_proto_min];
-		range.max_proto.all =
-			*(__be16 *)&regs->data[priv->sreg_proto_max];
+		range.min_proto.all = (__force __be16)nft_reg_load16(
+			&regs->data[priv->sreg_proto_min]);
+		range.max_proto.all = (__force __be16)nft_reg_load16(
+			&regs->data[priv->sreg_proto_max]);
 		range.flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
 	}
 
@@ -138,15 +138,11 @@ static int nft_nat_init(const struct nft_ctx *ctx, const struct nft_expr *expr,
 		return -EINVAL;
 	}
 
-	err = nft_nat_validate(ctx, expr, NULL);
-	if (err < 0)
-		return err;
-
 	if (tb[NFTA_NAT_FAMILY] == NULL)
 		return -EINVAL;
 
 	family = ntohl(nla_get_be32(tb[NFTA_NAT_FAMILY]));
-	if (family != ctx->afi->family)
+	if (family != ctx->family)
 		return -EOPNOTSUPP;
 
 	switch (family) {

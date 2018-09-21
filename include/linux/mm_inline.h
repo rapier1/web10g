@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef LINUX_MM_INLINE_H
 #define LINUX_MM_INLINE_H
 
@@ -48,6 +49,13 @@ static __always_inline void add_page_to_lru_list(struct page *page,
 {
 	update_lru_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
 	list_add(&page->lru, &lruvec->lists[lru]);
+}
+
+static __always_inline void add_page_to_lru_list_tail(struct page *page,
+				struct lruvec *lruvec, enum lru_list lru)
+{
+	update_lru_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page));
+	list_add_tail(&page->lru, &lruvec->lists[lru]);
 }
 
 static __always_inline void del_page_from_lru_list(struct page *page,

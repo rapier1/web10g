@@ -83,6 +83,11 @@ int pvrdma_query_device(struct ib_device *ibdev,
 	props->max_qp_wr = dev->dsr->caps.max_qp_wr;
 	props->device_cap_flags = dev->dsr->caps.device_cap_flags;
 	props->max_sge = dev->dsr->caps.max_sge;
+	props->max_sge_rd = PVRDMA_GET_CAP(dev, dev->dsr->caps.max_sge,
+					   dev->dsr->caps.max_sge_rd);
+	props->max_srq = dev->dsr->caps.max_srq;
+	props->max_srq_wr = dev->dsr->caps.max_srq_wr;
+	props->max_srq_sge = dev->dsr->caps.max_srq_sge;
 	props->max_cq = dev->dsr->caps.max_cq;
 	props->max_cqe = dev->dsr->caps.max_cqe;
 	props->max_mr = dev->dsr->caps.max_mr;
@@ -101,7 +106,13 @@ int pvrdma_query_device(struct ib_device *ibdev,
 	    (dev->dsr->caps.bmme_flags & PVRDMA_BMME_FLAG_REMOTE_INV) &&
 	    (dev->dsr->caps.bmme_flags & PVRDMA_BMME_FLAG_FAST_REG_WR)) {
 		props->device_cap_flags |= IB_DEVICE_MEM_MGT_EXTENSIONS;
+		props->max_fast_reg_page_list_len = PVRDMA_GET_CAP(dev,
+				PVRDMA_MAX_FAST_REG_PAGES,
+				dev->dsr->caps.max_fast_reg_page_list_len);
 	}
+
+	props->device_cap_flags |= IB_DEVICE_PORT_ACTIVE_EVENT |
+				   IB_DEVICE_RC_RNR_NAK_GEN;
 
 	return 0;
 }
@@ -135,7 +146,7 @@ int pvrdma_query_port(struct ib_device *ibdev, u8 port,
 		return err;
 	}
 
-	memset(props, 0, sizeof(*props));
+	/* props being zeroed by the caller, avoid zeroing it here */
 
 	props->state = pvrdma_port_state_to_ib(resp->attrs.state);
 	props->max_mtu = pvrdma_mtu_to_ib(resp->attrs.max_mtu);
@@ -143,6 +154,7 @@ int pvrdma_query_port(struct ib_device *ibdev, u8 port,
 	props->gid_tbl_len = resp->attrs.gid_tbl_len;
 	props->port_cap_flags =
 		pvrdma_port_cap_flags_to_ib(resp->attrs.port_cap_flags);
+	props->port_cap_flags |= IB_PORT_CM_SUP | IB_PORT_IP_BASED_GIDS;
 	props->max_msg_sz = resp->attrs.max_msg_sz;
 	props->bad_pkey_cntr = resp->attrs.bad_pkey_cntr;
 	props->qkey_viol_cntr = resp->attrs.qkey_viol_cntr;
@@ -275,7 +287,7 @@ int pvrdma_modify_port(struct ib_device *ibdev, u8 port, int mask,
 	}
 
 	mutex_lock(&vdev->port_mutex);
-	ret = pvrdma_query_port(ibdev, port, &attr);
+	ret = ib_query_port(ibdev, port, &attr);
 	if (ret)
 		goto out;
 
@@ -435,6 +447,7 @@ struct ib_pd *pvrdma_alloc_pd(struct ib_device *ibdev,
 	union pvrdma_cmd_resp rsp;
 	struct pvrdma_cmd_create_pd *cmd = &req.create_pd;
 	struct pvrdma_cmd_create_pd_resp *resp = &rsp.create_pd_resp;
+	struct pvrdma_alloc_pd_resp pd_resp = {0};
 	int ret;
 	void *ptr;
 
@@ -463,9 +476,10 @@ struct ib_pd *pvrdma_alloc_pd(struct ib_device *ibdev,
 	pd->privileged = !context;
 	pd->pd_handle = resp->pd_handle;
 	pd->pdn = resp->pd_handle;
+	pd_resp.pdn = resp->pd_handle;
 
 	if (context) {
-		if (ib_copy_to_udata(udata, &pd->pdn, sizeof(__u32))) {
+		if (ib_copy_to_udata(udata, &pd_resp, sizeof(pd_resp))) {
 			dev_warn(&dev->pdev->dev,
 				 "failed to copy back protection domain\n");
 			pvrdma_dealloc_pd(&pd->ibpd);
@@ -520,20 +534,20 @@ int pvrdma_dealloc_pd(struct ib_pd *pd)
  *
  * @return: the ib_ah pointer on success, otherwise errno.
  */
-struct ib_ah *pvrdma_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr,
+struct ib_ah *pvrdma_create_ah(struct ib_pd *pd, struct rdma_ah_attr *ah_attr,
 			       struct ib_udata *udata)
 {
 	struct pvrdma_dev *dev = to_vdev(pd->device);
 	struct pvrdma_ah *ah;
-	enum rdma_link_layer ll;
+	const struct ib_global_route *grh;
+	u8 port_num = rdma_ah_get_port_num(ah_attr);
 
-	if (!(ah_attr->ah_flags & IB_AH_GRH))
+	if (!(rdma_ah_get_ah_flags(ah_attr) & IB_AH_GRH))
 		return ERR_PTR(-EINVAL);
 
-	ll = rdma_port_get_link_layer(pd->device, ah_attr->port_num);
-
-	if (ll != IB_LINK_LAYER_ETHERNET ||
-	    rdma_is_multicast_addr((struct in6_addr *)ah_attr->grh.dgid.raw))
+	grh = rdma_ah_read_grh(ah_attr);
+	if ((ah_attr->type != RDMA_AH_ATTR_TYPE_ROCE)  ||
+	    rdma_is_multicast_addr((struct in6_addr *)grh->dgid.raw))
 		return ERR_PTR(-EINVAL);
 
 	if (!atomic_add_unless(&dev->num_ahs, 1, dev->dsr->caps.max_ah))
@@ -545,15 +559,15 @@ struct ib_ah *pvrdma_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	ah->av.port_pd = to_vpd(pd)->pd_handle | (ah_attr->port_num << 24);
-	ah->av.src_path_bits = ah_attr->src_path_bits;
+	ah->av.port_pd = to_vpd(pd)->pd_handle | (port_num << 24);
+	ah->av.src_path_bits = rdma_ah_get_path_bits(ah_attr);
 	ah->av.src_path_bits |= 0x80;
-	ah->av.gid_index = ah_attr->grh.sgid_index;
-	ah->av.hop_limit = ah_attr->grh.hop_limit;
-	ah->av.sl_tclass_flowlabel = (ah_attr->grh.traffic_class << 20) |
-				      ah_attr->grh.flow_label;
-	memcpy(ah->av.dgid, ah_attr->grh.dgid.raw, 16);
-	memcpy(ah->av.dmac, ah_attr->dmac, 6);
+	ah->av.gid_index = grh->sgid_index;
+	ah->av.hop_limit = grh->hop_limit;
+	ah->av.sl_tclass_flowlabel = (grh->traffic_class << 20) |
+				      grh->flow_label;
+	memcpy(ah->av.dgid, grh->dgid.raw, 16);
+	memcpy(ah->av.dmac, ah_attr->roce.dmac, ETH_ALEN);
 
 	ah->ibah.device = pd->device;
 	ah->ibah.pd = pd;

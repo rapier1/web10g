@@ -29,6 +29,7 @@
 #include <drm/drm_rect.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_encoder.h>
 #include <drm/drm_atomic_helper.h>
 
 #define SUBPIXEL_MASK 0xffff
@@ -38,9 +39,9 @@
  *
  * This helper library has two parts. The first part has support to implement
  * primary plane support on top of the normal CRTC configuration interface.
- * Since the legacy ->set_config interface ties the primary plane together with
- * the CRTC state this does not allow userspace to disable the primary plane
- * itself.  To avoid too much duplicated code use
+ * Since the legacy &drm_mode_config_funcs.set_config interface ties the primary
+ * plane together with the CRTC state this does not allow userspace to disable
+ * the primary plane itself.  To avoid too much duplicated code use
  * drm_plane_helper_check_update() which can be used to enforce the same
  * restrictions as primary planes had thus. The default primary plane only
  * expose XRBG8888 and ARGB8888 as valid pixel formats for the attached
@@ -59,7 +60,7 @@
  * Again drivers are strongly urged to switch to the new interfaces.
  *
  * The plane helpers share the function table structures with other helpers,
- * specifically also the atomic helpers. See struct &drm_plane_helper_funcs for
+ * specifically also the atomic helpers. See &struct drm_plane_helper_funcs for
  * the details.
  */
 
@@ -74,6 +75,7 @@ static int get_connectors_for_crtc(struct drm_crtc *crtc,
 {
 	struct drm_device *dev = crtc->dev;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	int count = 0;
 
 	/*
@@ -83,7 +85,8 @@ static int get_connectors_for_crtc(struct drm_crtc *crtc,
 	 */
 	WARN_ON(!drm_modeset_is_locked(&dev->mode_config.connection_mutex));
 
-	drm_for_each_connector(connector, dev) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->encoder && connector->encoder->crtc == crtc) {
 			if (connector_list != NULL && count < num_connectors)
 				*(connector_list++) = connector;
@@ -91,100 +94,10 @@ static int get_connectors_for_crtc(struct drm_crtc *crtc,
 			count++;
 		}
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	return count;
 }
-
-/**
- * drm_plane_helper_check_state() - Check plane state for validity
- * @state: plane state to check
- * @clip: integer clipping coordinates
- * @min_scale: minimum @src:@dest scaling factor in 16.16 fixed point
- * @max_scale: maximum @src:@dest scaling factor in 16.16 fixed point
- * @can_position: is it legal to position the plane such that it
- *                doesn't cover the entire crtc?  This will generally
- *                only be false for primary planes.
- * @can_update_disabled: can the plane be updated while the crtc
- *                       is disabled?
- *
- * Checks that a desired plane update is valid, and updates various
- * bits of derived state (clipped coordinates etc.). Drivers that provide
- * their own plane handling rather than helper-provided implementations may
- * still wish to call this function to avoid duplication of error checking
- * code.
- *
- * RETURNS:
- * Zero if update appears valid, error code on failure
- */
-int drm_plane_helper_check_state(struct drm_plane_state *state,
-				 const struct drm_rect *clip,
-				 int min_scale,
-				 int max_scale,
-				 bool can_position,
-				 bool can_update_disabled)
-{
-	struct drm_crtc *crtc = state->crtc;
-	struct drm_framebuffer *fb = state->fb;
-	struct drm_rect *src = &state->src;
-	struct drm_rect *dst = &state->dst;
-	unsigned int rotation = state->rotation;
-	int hscale, vscale;
-
-	*src = drm_plane_state_src(state);
-	*dst = drm_plane_state_dest(state);
-
-	if (!fb) {
-		state->visible = false;
-		return 0;
-	}
-
-	/* crtc should only be NULL when disabling (i.e., !fb) */
-	if (WARN_ON(!crtc)) {
-		state->visible = false;
-		return 0;
-	}
-
-	if (!crtc->enabled && !can_update_disabled) {
-		DRM_DEBUG_KMS("Cannot update plane of a disabled CRTC.\n");
-		return -EINVAL;
-	}
-
-	drm_rect_rotate(src, fb->width << 16, fb->height << 16, rotation);
-
-	/* Check scaling */
-	hscale = drm_rect_calc_hscale(src, dst, min_scale, max_scale);
-	vscale = drm_rect_calc_vscale(src, dst, min_scale, max_scale);
-	if (hscale < 0 || vscale < 0) {
-		DRM_DEBUG_KMS("Invalid scaling of plane\n");
-		drm_rect_debug_print("src: ", &state->src, true);
-		drm_rect_debug_print("dst: ", &state->dst, false);
-		return -ERANGE;
-	}
-
-	state->visible = drm_rect_clip_scaled(src, dst, clip, hscale, vscale);
-
-	drm_rect_rotate_inv(src, fb->width << 16, fb->height << 16, rotation);
-
-	if (!state->visible)
-		/*
-		 * Plane isn't visible; some drivers can handle this
-		 * so we just return success here.  Drivers that can't
-		 * (including those that use the primary plane helper's
-		 * update function) will return an error from their
-		 * update_plane handler.
-		 */
-		return 0;
-
-	if (!can_position && !drm_rect_equals(dst, clip)) {
-		DRM_DEBUG_KMS("Plane must cover entire CRTC\n");
-		drm_rect_debug_print("dst: ", dst, false);
-		drm_rect_debug_print("clip: ", clip, false);
-		return -EINVAL;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(drm_plane_helper_check_state);
 
 /**
  * drm_plane_helper_check_update() - Check plane update for validity
@@ -193,7 +106,6 @@ EXPORT_SYMBOL(drm_plane_helper_check_state);
  * @fb: framebuffer to flip onto plane
  * @src: source coordinates in 16.16 fixed point
  * @dst: integer destination coordinates
- * @clip: integer clipping coordinates
  * @rotation: plane rotation
  * @min_scale: minimum @src:@dest scaling factor in 16.16 fixed point
  * @max_scale: maximum @src:@dest scaling factor in 16.16 fixed point
@@ -218,7 +130,6 @@ int drm_plane_helper_check_update(struct drm_plane *plane,
 				  struct drm_framebuffer *fb,
 				  struct drm_rect *src,
 				  struct drm_rect *dst,
-				  const struct drm_rect *clip,
 				  unsigned int rotation,
 				  int min_scale,
 				  int max_scale,
@@ -226,7 +137,7 @@ int drm_plane_helper_check_update(struct drm_plane *plane,
 				  bool can_update_disabled,
 				  bool *visible)
 {
-	struct drm_plane_state state = {
+	struct drm_plane_state plane_state = {
 		.plane = plane,
 		.crtc = crtc,
 		.fb = fb,
@@ -241,18 +152,23 @@ int drm_plane_helper_check_update(struct drm_plane *plane,
 		.rotation = rotation,
 		.visible = *visible,
 	};
+	struct drm_crtc_state crtc_state = {
+		.crtc = crtc,
+		.enable = crtc->enabled,
+		.mode = crtc->mode,
+	};
 	int ret;
 
-	ret = drm_plane_helper_check_state(&state, clip,
-					   min_scale, max_scale,
-					   can_position,
-					   can_update_disabled);
+	ret = drm_atomic_helper_check_plane_state(&plane_state, &crtc_state,
+						  min_scale, max_scale,
+						  can_position,
+						  can_update_disabled);
 	if (ret)
 		return ret;
 
-	*src = state.src;
-	*dst = state.dst;
-	*visible = state.visible;
+	*src = plane_state.src;
+	*dst = plane_state.dst;
+	*visible = plane_state.visible;
 
 	return 0;
 }
@@ -271,6 +187,7 @@ EXPORT_SYMBOL(drm_plane_helper_check_update);
  * @src_y: y offset of @fb for panning
  * @src_w: width of source rectangle in @fb
  * @src_h: height of source rectangle in @fb
+ * @ctx: lock acquire context, not used here
  *
  * Provides a default plane update handler for primary planes.  This is handler
  * is called in response to a userspace SetPlane operation on the plane with a
@@ -299,7 +216,8 @@ int drm_primary_helper_update(struct drm_plane *plane, struct drm_crtc *crtc,
 			      int crtc_x, int crtc_y,
 			      unsigned int crtc_w, unsigned int crtc_h,
 			      uint32_t src_x, uint32_t src_y,
-			      uint32_t src_w, uint32_t src_h)
+			      uint32_t src_w, uint32_t src_h,
+			      struct drm_modeset_acquire_ctx *ctx)
 {
 	struct drm_mode_set set = {
 		.crtc = crtc,
@@ -320,17 +238,13 @@ int drm_primary_helper_update(struct drm_plane *plane, struct drm_crtc *crtc,
 		.x2 = crtc_x + crtc_w,
 		.y2 = crtc_y + crtc_h,
 	};
-	const struct drm_rect clip = {
-		.x2 = crtc->mode.hdisplay,
-		.y2 = crtc->mode.vdisplay,
-	};
 	struct drm_connector **connector_list;
 	int num_connectors, ret;
 	bool visible;
 
 	ret = drm_plane_helper_check_update(plane, crtc, fb,
-					    &src, &dest, &clip,
-					    DRM_ROTATE_0,
+					    &src, &dest,
+					    DRM_MODE_ROTATE_0,
 					    DRM_PLANE_HELPER_NO_SCALING,
 					    DRM_PLANE_HELPER_NO_SCALING,
 					    false, false, &visible);
@@ -343,12 +257,12 @@ int drm_primary_helper_update(struct drm_plane *plane, struct drm_crtc *crtc,
 		 * provides their own disable function, this will just
 		 * wind up returning -EINVAL to userspace.
 		 */
-		return plane->funcs->disable_plane(plane);
+		return plane->funcs->disable_plane(plane, ctx);
 
 	/* Find current connectors for CRTC */
 	num_connectors = get_connectors_for_crtc(crtc, NULL, 0);
 	BUG_ON(num_connectors == 0);
-	connector_list = kzalloc(num_connectors * sizeof(*connector_list),
+	connector_list = kcalloc(num_connectors, sizeof(*connector_list),
 				 GFP_KERNEL);
 	if (!connector_list)
 		return -ENOMEM;
@@ -365,7 +279,7 @@ int drm_primary_helper_update(struct drm_plane *plane, struct drm_crtc *crtc,
 	 * drm_mode_setplane() already handles the basic refcounting for the
 	 * framebuffers involved in this operation.
 	 */
-	ret = crtc->funcs->set_config(&set);
+	ret = crtc->funcs->set_config(&set, ctx);
 
 	kfree(connector_list);
 	return ret;
@@ -375,12 +289,14 @@ EXPORT_SYMBOL(drm_primary_helper_update);
 /**
  * drm_primary_helper_disable() - Helper for primary plane disable
  * @plane: plane to disable
+ * @ctx: lock acquire context, not used here
  *
  * Provides a default plane disable handler for primary planes.  This is handler
  * is called in response to a userspace SetPlane operation on the plane with a
  * NULL framebuffer parameter.  It unconditionally fails the disable call with
  * -EINVAL the only way to disable the primary plane without driver support is
- * to disable the entier CRTC. Which does not match the plane ->disable hook.
+ * to disable the entire CRTC. Which does not match the plane
+ * &drm_plane_funcs.disable_plane hook.
  *
  * Note that some hardware may be able to disable the primary plane without
  * disabling the whole CRTC.  Drivers for such hardware should provide their
@@ -391,7 +307,8 @@ EXPORT_SYMBOL(drm_primary_helper_update);
  * RETURNS:
  * Unconditionally returns -EINVAL.
  */
-int drm_primary_helper_disable(struct drm_plane *plane)
+int drm_primary_helper_disable(struct drm_plane *plane,
+			       struct drm_modeset_acquire_ctx *ctx)
 {
 	return -EINVAL;
 }
@@ -445,8 +362,7 @@ int drm_plane_helper_commit(struct drm_plane *plane,
 			goto out;
 	}
 
-	if (plane_funcs->prepare_fb && plane_state->fb &&
-	    plane_state->fb != old_fb) {
+	if (plane_funcs->prepare_fb && plane_state->fb != old_fb) {
 		ret = plane_funcs->prepare_fb(plane,
 					      plane_state);
 		if (ret)
@@ -465,7 +381,7 @@ int drm_plane_helper_commit(struct drm_plane *plane,
 	 * Drivers may optionally implement the ->atomic_disable callback, so
 	 * special-case that here.
 	 */
-	if (drm_atomic_plane_disabling(plane, plane_state) &&
+	if (drm_atomic_plane_disabling(plane_state, plane->state) &&
 	    plane_funcs->atomic_disable)
 		plane_funcs->atomic_disable(plane, plane_state);
 	else
@@ -503,12 +419,10 @@ int drm_plane_helper_commit(struct drm_plane *plane,
 	if (plane_funcs->cleanup_fb)
 		plane_funcs->cleanup_fb(plane, plane_state);
 out:
-	if (plane_state) {
-		if (plane->funcs->atomic_destroy_state)
-			plane->funcs->atomic_destroy_state(plane, plane_state);
-		else
-			drm_atomic_helper_plane_destroy_state(plane, plane_state);
-	}
+	if (plane->funcs->atomic_destroy_state)
+		plane->funcs->atomic_destroy_state(plane, plane_state);
+	else
+		drm_atomic_helper_plane_destroy_state(plane, plane_state);
 
 	return ret;
 }

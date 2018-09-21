@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __MACH_IMX_CLK_H
 #define __MACH_IMX_CLK_H
 
@@ -34,6 +35,8 @@ enum imx_pllv3_type {
 	IMX_PLLV3_AV,
 	IMX_PLLV3_ENET,
 	IMX_PLLV3_ENET_IMX7,
+	IMX_PLLV3_SYS_VF610,
+	IMX_PLLV3_DDR_IMX7,
 };
 
 struct clk *imx_clk_pllv3(enum imx_pllv3_type type, const char *name,
@@ -120,6 +123,13 @@ static inline struct clk *imx_clk_gate(const char *name, const char *parent,
 			shift, 0, &imx_ccm_lock);
 }
 
+static inline struct clk *imx_clk_gate_flags(const char *name, const char *parent,
+		void __iomem *reg, u8 shift, unsigned long flags)
+{
+	return clk_register_gate(NULL, name, parent, flags | CLK_SET_RATE_PARENT, reg,
+			shift, 0, &imx_ccm_lock);
+}
+
 static inline struct clk *imx_clk_gate_dis(const char *name, const char *parent,
 		void __iomem *reg, u8 shift)
 {
@@ -131,6 +141,13 @@ static inline struct clk *imx_clk_gate2(const char *name, const char *parent,
 		void __iomem *reg, u8 shift)
 {
 	return clk_register_gate2(NULL, name, parent, CLK_SET_RATE_PARENT, reg,
+			shift, 0x3, 0, &imx_ccm_lock, NULL);
+}
+
+static inline struct clk *imx_clk_gate2_flags(const char *name, const char *parent,
+		void __iomem *reg, u8 shift, unsigned long flags)
+{
+	return clk_register_gate2(NULL, name, parent, flags | CLK_SET_RATE_PARENT, reg,
 			shift, 0x3, 0, &imx_ccm_lock, NULL);
 }
 

@@ -2,10 +2,15 @@ Web10G Preliminary Documentation
 
 What is Web10G? 
 Web10g is a set of TCP stack kernel instruments as described by IETF 
-RFC 4898 (https://www.ietf.org/rfc/rfc4898.txt) . These instruments 
+RFC 4898 (https://www.ietf.org/rfc/rfc4898.txt). These instruments 
 provide fine grained measurements of the internal actions of the TCP 
 stack. This information can be used for diagnostics, TCP flow 
-evolution research, statistics, logging, and so forth.  
+evolution research, statistics, logging, and so forth.  Note: As of version 
+0.13 (Linux kernel 4.18) two new non-rfc4898 instruments have been added. 
+These instruments track lost restransmits (LostRetransmitSegs in the perf
+table) and RACK timeouts (RackTimeout in the stack table). Adding new
+intruments to the kernel (as the stack changes) is one of the advanatges
+of using Web10g. 
 
 Where do I get Web10G? 
 Kernel: https://github.com/rapier1/web10g
@@ -95,7 +100,7 @@ For example, if you have build kernel 4.16 you'd check out the
 tag 'kernel-4.13'. If you have build a 3.10 kernel you'd 
 checkout out the tag 'pre-4.9-kernel'
 9) Issue a 'make' command.
-10) Copy the 'tecp_estats_nl.ko' file to the appropriate kernel 
+10) Copy the 'tcp_estats_nl.ko' file to the appropriate kernel 
 modules directory with 'sudo cp tcp_estats_nl.ko 
 /usr/lib/modules/`uname -r`/kernel/net/ipv4' and run 'depmod' 
 to rebuild the modules list. 

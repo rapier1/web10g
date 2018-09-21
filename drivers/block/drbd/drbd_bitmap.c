@@ -409,7 +409,7 @@ static struct page **bm_realloc_pages(struct drbd_bitmap *b, unsigned long want)
 	new_pages = kzalloc(bytes, GFP_NOIO | __GFP_NOWARN);
 	if (!new_pages) {
 		new_pages = __vmalloc(bytes,
-				GFP_NOIO | __GFP_HIGHMEM | __GFP_ZERO,
+				GFP_NOIO | __GFP_ZERO,
 				PAGE_KERNEL);
 		if (!new_pages)
 			return NULL;
@@ -953,22 +953,22 @@ static void drbd_bm_endio(struct bio *bio)
 	struct drbd_bm_aio_ctx *ctx = bio->bi_private;
 	struct drbd_device *device = ctx->device;
 	struct drbd_bitmap *b = device->bitmap;
-	unsigned int idx = bm_page_to_idx(bio->bi_io_vec[0].bv_page);
+	unsigned int idx = bm_page_to_idx(bio_first_page_all(bio));
 
 	if ((ctx->flags & BM_AIO_COPY_PAGES) == 0 &&
 	    !bm_test_page_unchanged(b->bm_pages[idx]))
 		drbd_warn(device, "bitmap page idx %u changed during IO!\n", idx);
 
-	if (bio->bi_error) {
+	if (bio->bi_status) {
 		/* ctx error will hold the completed-last non-zero error code,
 		 * in case error codes differ. */
-		ctx->error = bio->bi_error;
+		ctx->error = blk_status_to_errno(bio->bi_status);
 		bm_set_page_io_err(b->bm_pages[idx]);
 		/* Not identical to on disk version of it.
 		 * Is BM_PAGE_IO_ERROR enough? */
 		if (__ratelimit(&drbd_ratelimit_state))
 			drbd_err(device, "IO ERROR %d on bitmap page idx %u\n",
-					bio->bi_error, idx);
+					bio->bi_status, idx);
 	} else {
 		bm_clear_page_io_err(b->bm_pages[idx]);
 		dynamic_drbd_dbg(device, "bitmap page idx %u completed\n", idx);
@@ -977,7 +977,7 @@ static void drbd_bm_endio(struct bio *bio)
 	bm_page_unlock_io(device, idx);
 
 	if (ctx->flags & BM_AIO_COPY_PAGES)
-		mempool_free(bio->bi_io_vec[0].bv_page, drbd_md_io_page_pool);
+		mempool_free(bio->bi_io_vec[0].bv_page, &drbd_md_io_page_pool);
 
 	bio_put(bio);
 
@@ -1014,12 +1014,13 @@ static void bm_page_io_async(struct drbd_bm_aio_ctx *ctx, int page_nr) __must_ho
 	bm_set_page_unchanged(b->bm_pages[page_nr]);
 
 	if (ctx->flags & BM_AIO_COPY_PAGES) {
-		page = mempool_alloc(drbd_md_io_page_pool, __GFP_HIGHMEM|__GFP_RECLAIM);
+		page = mempool_alloc(&drbd_md_io_page_pool,
+				GFP_NOIO | __GFP_HIGHMEM);
 		copy_highpage(page, b->bm_pages[page_nr]);
 		bm_store_page_idx(page, page_nr);
 	} else
 		page = b->bm_pages[page_nr];
-	bio->bi_bdev = device->ldev->md_bdev;
+	bio_set_dev(bio, device->ldev->md_bdev);
 	bio->bi_iter.bi_sector = on_disk_sector;
 	/* bio_add_page of a single page to an empty bio will always succeed,
 	 * according to api.  Do we want to assert that? */
@@ -1070,7 +1071,7 @@ static int bm_rw(struct drbd_device *device, const unsigned int flags, unsigned 
 		.done = 0,
 		.flags = flags,
 		.error = 0,
-		.kref = { ATOMIC_INIT(2) },
+		.kref = KREF_INIT(2),
 	};
 
 	if (!get_ldev_if_state(device, D_ATTACHING)) {  /* put is in drbd_bm_aio_ctx_destroy() */

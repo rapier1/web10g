@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
@@ -187,17 +188,12 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 	struct scsi_device *SDev;
 	struct scsi_sense_hdr sshdr;
 	int result, err = 0, retries = 0;
-	struct request_sense *sense = cgc->sense;
+	unsigned char sense_buffer[SCSI_SENSE_BUFFERSIZE], *senseptr = NULL;
 
 	SDev = cd->device;
 
-	if (!sense) {
-		sense = kmalloc(SCSI_SENSE_BUFFERSIZE, GFP_KERNEL);
-		if (!sense) {
-			err = -ENOMEM;
-			goto out;
-		}
-	}
+	if (cgc->sense)
+		senseptr = sense_buffer;
 
       retry:
 	if (!scsi_block_when_processing_errors(SDev)) {
@@ -205,12 +201,12 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 		goto out;
 	}
 
-	memset(sense, 0, sizeof(*sense));
 	result = scsi_execute(SDev, cgc->cmd, cgc->data_direction,
-			      cgc->buffer, cgc->buflen, (char *)sense,
-			      cgc->timeout, IOCTL_RETRIES, 0, NULL);
+			      cgc->buffer, cgc->buflen, senseptr, &sshdr,
+			      cgc->timeout, IOCTL_RETRIES, 0, 0, NULL);
 
-	scsi_normalize_sense((char *)sense, sizeof(*sense), &sshdr);
+	if (cgc->sense)
+		memcpy(cgc->sense, sense_buffer, sizeof(*cgc->sense));
 
 	/* Minimal error checking.  Ignore cases we know about, and report the rest. */
 	if (driver_byte(result) != 0) {
@@ -261,8 +257,6 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 
 	/* Wake up a process waiting for device */
       out:
-	if (!cgc->sense)
-		kfree(sense);
 	cgc->stat = err;
 	return err;
 }

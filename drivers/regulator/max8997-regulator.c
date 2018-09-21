@@ -428,12 +428,9 @@ static int max8997_set_voltage_charger_cv(struct regulator_dev *rdev,
 	if (max_uV < 4000000 || min_uV > 4350000)
 		return -EINVAL;
 
-	if (min_uV <= 4000000) {
-		if (max_uV >= 4000000)
-			return -EINVAL;
-		else
-			val = 0x1;
-	} else if (min_uV <= 4200000 && max_uV >= 4200000)
+	if (min_uV <= 4000000)
+		val = 0x1;
+	else if (min_uV <= 4200000 && max_uV >= 4200000)
 		val = 0x0;
 	else {
 		lb = (min_uV - 4000001) / 20000 + 2;
@@ -932,8 +929,9 @@ static int max8997_pmic_dt_parse_pdata(struct platform_device *pdev,
 	/* count the number of regulators to be supported in pmic */
 	pdata->num_regulators = of_get_child_count(regulators_np);
 
-	rdata = devm_kzalloc(&pdev->dev, sizeof(*rdata) *
-				pdata->num_regulators, GFP_KERNEL);
+	rdata = devm_kcalloc(&pdev->dev,
+			     pdata->num_regulators, sizeof(*rdata),
+			     GFP_KERNEL);
 	if (!rdata) {
 		of_node_put(regulators_np);
 		return -ENOMEM;

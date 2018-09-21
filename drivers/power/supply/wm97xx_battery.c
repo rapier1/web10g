@@ -175,11 +175,6 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	if (dev->id != -1)
 		return -EINVAL;
 
-	if (!pdata) {
-		dev_err(&dev->dev, "No platform_data supplied\n");
-		return -EINVAL;
-	}
-
 	if (gpio_is_valid(pdata->charge_gpio)) {
 		ret = gpio_request(pdata->charge_gpio, "BATT CHRG");
 		if (ret)
@@ -206,7 +201,7 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	if (pdata->min_voltage >= 0)
 		props++;	/* POWER_SUPPLY_PROP_VOLTAGE_MIN */
 
-	prop = kzalloc(props * sizeof(*prop), GFP_KERNEL);
+	prop = kcalloc(props, sizeof(*prop), GFP_KERNEL);
 	if (!prop) {
 		ret = -ENOMEM;
 		goto err3;

@@ -1,4 +1,4 @@
-/**
+/*
  * Driver for Zarlink zl10036 DVB-S silicon tuner
  *
  * Copyright (C) 2006 Tino Reichardt
@@ -12,10 +12,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  **
  * The data sheet for this tuner can be found at:
@@ -161,7 +157,7 @@ static int zl10036_sleep(struct dvb_frontend *fe)
 	return ret;
 }
 
-/**
+/*
  * register map of the ZL10036/ZL10038
  *
  * reg[default] content
@@ -223,7 +219,7 @@ static int zl10036_set_bandwidth(struct zl10036_state *state, u32 fbw)
 	if (fbw <= 28820) {
 		br = _BR_MAXIMUM;
 	} else {
-		/**
+		/*
 		 *  f(bw)=34,6MHz f(xtal)=10.111MHz
 		 *  br = (10111/34600) * 63 * 1/K = 14;
 		 */
@@ -319,7 +315,7 @@ static int zl10036_set_params(struct dvb_frontend *fe)
 	||  (frequency > fe->ops.info.frequency_max))
 		return -EINVAL;
 
-	/**
+	/*
 	 * alpha = 1.35 for dvb-s
 	 * fBW = (alpha*symbolrate)/(2*0.8)
 	 * 1.35 / (2*0.8) = 27 / 32

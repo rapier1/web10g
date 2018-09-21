@@ -19,6 +19,7 @@
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/regulator/consumer.h>
+#include <linux/of_device.h>
 #include <linux/of.h>
 
 #include <linux/iio/iio.h>
@@ -199,7 +200,7 @@ static ssize_t mcp4725_write_powerdown(struct iio_dev *indio_dev,
 	return len;
 }
 
-enum {
+enum chip_id {
 	MCP4725,
 	MCP4726,
 };
@@ -362,7 +363,6 @@ static const struct iio_info mcp4725_info = {
 	.read_raw = mcp4725_read_raw,
 	.write_raw = mcp4725_write_raw,
 	.attrs = &mcp4725_attribute_group,
-	.driver_module = THIS_MODULE,
 };
 
 #ifdef CONFIG_OF
@@ -406,7 +406,10 @@ static int mcp4725_probe(struct i2c_client *client,
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
-	data->id = id->driver_data;
+	if (client->dev.of_node)
+		data->id = (enum chip_id)of_device_get_match_data(&client->dev);
+	else
+		data->id = id->driver_data;
 	pdata = dev_get_platdata(&client->dev);
 
 	if (!pdata) {
@@ -473,7 +476,7 @@ static int mcp4725_probe(struct i2c_client *client,
 		goto err_disable_vref_reg;
 	}
 	pd = (inbuf[0] >> 1) & 0x3;
-	data->powerdown = pd > 0 ? true : false;
+	data->powerdown = pd > 0;
 	data->powerdown_mode = pd ? pd - 1 : 2; /* largest resistor to gnd */
 	data->dac_value = (inbuf[1] << 4) | (inbuf[2] >> 4);
 	if (data->id == MCP4726)
@@ -525,9 +528,25 @@ static const struct i2c_device_id mcp4725_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, mcp4725_id);
 
+#ifdef CONFIG_OF
+static const struct of_device_id mcp4725_of_match[] = {
+	{
+		.compatible = "microchip,mcp4725",
+		.data = (void *)MCP4725
+	},
+	{
+		.compatible = "microchip,mcp4726",
+		.data = (void *)MCP4726
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(of, mcp4725_of_match);
+#endif
+
 static struct i2c_driver mcp4725_driver = {
 	.driver = {
 		.name	= MCP4725_DRV_NAME,
+		.of_match_table = of_match_ptr(mcp4725_of_match),
 		.pm	= MCP4725_PM_OPS,
 	},
 	.probe		= mcp4725_probe,

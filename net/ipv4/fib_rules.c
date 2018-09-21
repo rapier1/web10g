@@ -47,6 +47,37 @@ struct fib4_rule {
 #endif
 };
 
+static bool fib4_rule_matchall(const struct fib_rule *rule)
+{
+	struct fib4_rule *r = container_of(rule, struct fib4_rule, common);
+
+	if (r->dst_len || r->src_len || r->tos)
+		return false;
+	return fib_rule_matchall(rule);
+}
+
+bool fib4_rule_default(const struct fib_rule *rule)
+{
+	if (!fib4_rule_matchall(rule) || rule->action != FR_ACT_TO_TBL ||
+	    rule->l3mdev)
+		return false;
+	if (rule->table != RT_TABLE_LOCAL && rule->table != RT_TABLE_MAIN &&
+	    rule->table != RT_TABLE_DEFAULT)
+		return false;
+	return true;
+}
+EXPORT_SYMBOL_GPL(fib4_rule_default);
+
+int fib4_rules_dump(struct net *net, struct notifier_block *nb)
+{
+	return fib_rules_dump(net, nb, AF_INET);
+}
+
+unsigned int fib4_rules_seq_read(struct net *net)
+{
+	return fib_rules_seq_read(net, AF_INET);
+}
+
 int __fib_lookup(struct net *net, struct flowi4 *flp,
 		 struct fib_result *res, unsigned int flags)
 {
@@ -151,6 +182,17 @@ static int fib4_rule_match(struct fib_rule *rule, struct flowi *fl, int flags)
 	if (r->tos && (r->tos != fl4->flowi4_tos))
 		return 0;
 
+	if (rule->ip_proto && (rule->ip_proto != fl4->flowi4_proto))
+		return 0;
+
+	if (fib_rule_port_range_set(&rule->sport_range) &&
+	    !fib_rule_port_inrange(&rule->sport_range, fl4->fl4_sport))
+		return 0;
+
+	if (fib_rule_port_range_set(&rule->dport_range) &&
+	    !fib_rule_port_inrange(&rule->dport_range, fl4->fl4_dport))
+		return 0;
+
 	return 1;
 }
 
@@ -164,14 +206,6 @@ static struct fib_table *fib_empty_table(struct net *net)
 	return NULL;
 }
 
-static int call_fib_rule_notifiers(struct net *net,
-				   enum fib_event_type event_type)
-{
-	struct fib_notifier_info info;
-
-	return call_fib_notifiers(net, event_type, &info);
-}
-
 static const struct nla_policy fib4_rule_policy[FRA_MAX+1] = {
 	FRA_GENERIC_POLICY,
 	[FRA_FLOW]	= { .type = NLA_U32 },
@@ -179,14 +213,17 @@ static const struct nla_policy fib4_rule_policy[FRA_MAX+1] = {
 
 static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 			       struct fib_rule_hdr *frh,
-			       struct nlattr **tb)
+			       struct nlattr **tb,
+			       struct netlink_ext_ack *extack)
 {
 	struct net *net = sock_net(skb->sk);
 	int err = -EINVAL;
 	struct fib4_rule *rule4 = (struct fib4_rule *) rule;
 
-	if (frh->tos & ~IPTOS_TOS_MASK)
+	if (frh->tos & ~IPTOS_TOS_MASK) {
+		NL_SET_ERR_MSG(extack, "Invalid tos");
 		goto errout;
+	}
 
 	/* split local/main if they are not already split */
 	err = fib_unmerge(net);
@@ -221,6 +258,9 @@ static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 	}
 #endif
 
+	if (fib_rule_requires_fldissect(rule))
+		net->ipv4.fib_rules_require_fldissect++;
+
 	rule4->src_len = frh->src_len;
 	rule4->srcmask = inet_make_mask(rule4->src_len);
 	rule4->dst_len = frh->dst_len;
@@ -228,7 +268,6 @@ static int fib4_rule_configure(struct fib_rule *rule, struct sk_buff *skb,
 	rule4->tos = frh->tos;
 
 	net->ipv4.fib_has_custom_rules = true;
-	call_fib_rule_notifiers(net, FIB_EVENT_RULE_ADD);
 
 	err = 0;
 errout:
@@ -250,7 +289,10 @@ static int fib4_rule_delete(struct fib_rule *rule)
 		net->ipv4.fib_num_tclassid_users--;
 #endif
 	net->ipv4.fib_has_custom_rules = true;
-	call_fib_rule_notifiers(net, FIB_EVENT_RULE_DEL);
+
+	if (net->ipv4.fib_rules_require_fldissect &&
+	    fib_rule_requires_fldissect(rule))
+		net->ipv4.fib_rules_require_fldissect--;
 errout:
 	return err;
 }
@@ -368,6 +410,7 @@ int __net_init fib4_rules_init(struct net *net)
 		goto fail;
 	net->ipv4.rules_ops = ops;
 	net->ipv4.fib_has_custom_rules = false;
+	net->ipv4.fib_rules_require_fldissect = 0;
 	return 0;
 
 fail:

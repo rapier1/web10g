@@ -24,6 +24,9 @@
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/clk/ti.h>
+
+#include "clock.h"
 
 #define DRA7_ATL_INSTANCES	4
 
@@ -171,6 +174,7 @@ static void __init of_dra7_atl_clock_setup(struct device_node *node)
 	struct clk_init_data init = { NULL };
 	const char **parent_names = NULL;
 	struct clk *clk;
+	int ret;
 
 	clk_hw = kzalloc(sizeof(*clk_hw), GFP_KERNEL);
 	if (!clk_hw) {
@@ -200,9 +204,14 @@ static void __init of_dra7_atl_clock_setup(struct device_node *node)
 
 	init.parent_names = parent_names;
 
-	clk = clk_register(NULL, &clk_hw->hw);
+	clk = ti_clk_register(NULL, &clk_hw->hw, node->name);
 
 	if (!IS_ERR(clk)) {
+		ret = ti_clk_add_alias(NULL, clk, node->name);
+		if (ret) {
+			clk_unregister(clk);
+			goto cleanup;
+		}
 		of_clk_add_provider(node, of_clk_src_simple_get, clk);
 		kfree(parent_names);
 		return;
@@ -265,8 +274,7 @@ static int of_dra7_atl_clk_probe(struct platform_device *pdev)
 
 		/* Get configuration for the ATL instances */
 		snprintf(prop, sizeof(prop), "atl%u", i);
-		of_node_get(node);
-		cfg_node = of_find_node_by_name(node, prop);
+		cfg_node = of_get_child_by_name(node, prop);
 		if (cfg_node) {
 			ret = of_property_read_u32(cfg_node, "bws",
 						   &cdesc->bws);

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* include/asm/processor.h
  *
  * Copyright (C) 1994 David S. Miller (davem@caip.rutgers.edu)
@@ -17,12 +18,6 @@
 #include <asm/head.h>
 #include <asm/signal.h>
 #include <asm/page.h>
-
-/*
- * The sparc has no problems with write protection
- */
-#define wp_works_ok 1
-#define wp_works_ok__is_a_macro /* for versions in ksyms.c */
 
 /* Whee, this is STACK_TOP + PAGE_SIZE and the lowest kernel address too...
  * That one page is used to protect kernel from intruders, so that
@@ -72,9 +67,6 @@ struct thread_struct {
 	.flags = SPARC_FLAG_KTHREAD, \
 	.current_ds = KERNEL_DS, \
 }
-
-/* Return saved PC of a blocked thread. */
-unsigned long thread_saved_pc(struct task_struct *t);
 
 /* Do necessary setup to start up a newly executed thread. */
 static inline void start_thread(struct pt_regs * regs, unsigned long pc,

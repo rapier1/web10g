@@ -15,10 +15,13 @@
 #ifndef __LINUX_REGULATOR_DRIVER_H_
 #define __LINUX_REGULATOR_DRIVER_H_
 
+#define MAX_COUPLED		4
+
 #include <linux/device.h>
 #include <linux/notifier.h>
 #include <linux/regulator/consumer.h>
 
+struct gpio_desc;
 struct regmap;
 struct regulator_dev;
 struct regulator_config;
@@ -80,9 +83,12 @@ struct regulator_linear_range {
  * @set_voltage_sel: Set the voltage for the regulator using the specified
  *                   selector.
  * @map_voltage: Convert a voltage into a selector
- * @get_voltage: Return the currently configured voltage for the regulator.
+ * @get_voltage: Return the currently configured voltage for the regulator;
+ *                   return -ENOTRECOVERABLE if regulator can't be read at
+ *                   bootup and hasn't been set yet.
  * @get_voltage_sel: Return the currently configured voltage selector for the
- *                   regulator.
+ *                   regulator; return -ENOTRECOVERABLE if regulator can't
+ *                   be read at bootup and hasn't been set yet.
  * @list_voltage: Return one of the supported voltages, in microvolts; zero
  *	if the selector indicates a voltage that is unusable on this system;
  *	or negative errno.  Selectors range from zero to one less than
@@ -214,6 +220,8 @@ struct regulator_ops {
 	/* set regulator suspend operating mode (defined in consumer.h) */
 	int (*set_suspend_mode) (struct regulator_dev *, unsigned int mode);
 
+	int (*resume_early)(struct regulator_dev *rdev);
+
 	int (*set_pull_down) (struct regulator_dev *);
 };
 
@@ -292,6 +300,14 @@ enum regulator_type {
  *			   set_active_discharge
  * @active_discharge_reg: Register for control when using regmap
  *			  set_active_discharge
+ * @soft_start_reg: Register for control when using regmap set_soft_start
+ * @soft_start_mask: Mask for control when using regmap set_soft_start
+ * @soft_start_val_on: Enabling value for control when using regmap
+ *                     set_soft_start
+ * @pull_down_reg: Register for control when using regmap set_pull_down
+ * @pull_down_mask: Mask for control when using regmap set_pull_down
+ * @pull_down_val_on: Enabling value for control when using regmap
+ *                     set_pull_down
  *
  * @enable_time: Time taken for initial enable of regulator (in uS).
  * @off_on_delay: guard time (in uS), before re-enabling a regulator
@@ -345,6 +361,12 @@ struct regulator_desc {
 	unsigned int active_discharge_off;
 	unsigned int active_discharge_mask;
 	unsigned int active_discharge_reg;
+	unsigned int soft_start_reg;
+	unsigned int soft_start_mask;
+	unsigned int soft_start_val_on;
+	unsigned int pull_down_reg;
+	unsigned int pull_down_mask;
+	unsigned int pull_down_val_on;
 
 	unsigned int enable_time;
 
@@ -371,6 +393,7 @@ struct regulator_desc {
  *                        initialized, meaning that >= 0 is a valid gpio
  *                        identifier and < 0 is a non existent gpio.
  * @ena_gpio: GPIO controlling regulator enable.
+ * @ena_gpiod: GPIO descriptor controlling regulator enable.
  * @ena_gpio_invert: Sense for GPIO enable control.
  * @ena_gpio_flags: Flags to use when calling gpio_request_one()
  */
@@ -383,8 +406,23 @@ struct regulator_config {
 
 	bool ena_gpio_initialized;
 	int ena_gpio;
+	struct gpio_desc *ena_gpiod;
 	unsigned int ena_gpio_invert:1;
 	unsigned int ena_gpio_flags;
+};
+
+/*
+ * struct coupling_desc
+ *
+ * Describes coupling of regulators. Each regulator should have
+ * at least a pointer to itself in coupled_rdevs array.
+ * When a new coupled regulator is resolved, n_resolved is
+ * incremented.
+ */
+struct coupling_desc {
+	struct regulator_dev *coupled_rdevs[MAX_COUPLED];
+	int n_resolved;
+	int n_coupled;
 };
 
 /*
@@ -410,8 +448,12 @@ struct regulator_dev {
 	/* lists we own */
 	struct list_head consumer_list; /* consumers we supply */
 
+	struct coupling_desc coupling_desc;
+
 	struct blocking_notifier_head notifier;
 	struct mutex mutex; /* consumer lock */
+	struct task_struct *mutex_owner;
+	int ref_cnt;
 	struct module *owner;
 	struct device dev;
 	struct regulation_constraints *constraints;
@@ -428,6 +470,8 @@ struct regulator_dev {
 
 	struct regulator_enable_gpio *ena_pin;
 	unsigned int ena_gpio_state:1;
+
+	unsigned int is_switch:1;
 
 	/* time when this regulator was disabled last time */
 	unsigned long last_off_jiffy;
@@ -476,6 +520,8 @@ int regulator_set_voltage_time_sel(struct regulator_dev *rdev,
 				   unsigned int new_selector);
 int regulator_set_bypass_regmap(struct regulator_dev *rdev, bool enable);
 int regulator_get_bypass_regmap(struct regulator_dev *rdev, bool *enable);
+int regulator_set_soft_start_regmap(struct regulator_dev *rdev);
+int regulator_set_pull_down_regmap(struct regulator_dev *rdev);
 
 int regulator_set_active_discharge_regmap(struct regulator_dev *rdev,
 					  bool enable);

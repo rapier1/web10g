@@ -165,9 +165,9 @@ done:
  *  This function handles the timeout of command sending.
  *  It will re-send the same command again.
  */
-static void command_timer_fn(unsigned long data)
+static void command_timer_fn(struct timer_list *t)
 {
-	struct lbtf_private *priv = (struct lbtf_private *)data;
+	struct lbtf_private *priv = from_timer(priv, t, command_timer);
 	unsigned long flags;
 	lbtf_deb_enter(LBTF_DEB_CMD);
 
@@ -196,8 +196,7 @@ static int lbtf_init_adapter(struct lbtf_private *priv)
 	mutex_init(&priv->lock);
 
 	priv->vif = NULL;
-	setup_timer(&priv->command_timer, command_timer_fn,
-		(unsigned long)priv);
+	timer_setup(&priv->command_timer, command_timer_fn, 0);
 
 	INIT_LIST_HEAD(&priv->cmdfreeq);
 	INIT_LIST_HEAD(&priv->cmdpendingq);
@@ -260,7 +259,7 @@ static void lbtf_tx_work(struct work_struct *work)
 
 	len = skb->len;
 	info  = IEEE80211_SKB_CB(skb);
-	txpd = (struct txpd *)  skb_push(skb, sizeof(struct txpd));
+	txpd = skb_push(skb, sizeof(struct txpd));
 
 	if (priv->surpriseremoved) {
 		dev_kfree_skb_any(skb);
@@ -640,6 +639,8 @@ struct lbtf_private *lbtf_add_card(void *card, struct device *dmdev)
 		BIT(NL80211_IFTYPE_STATION) |
 		BIT(NL80211_IFTYPE_ADHOC);
 	skb_queue_head_init(&priv->bc_ps_buf);
+
+	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
 
 	SET_IEEE80211_DEV(hw, dmdev);
 

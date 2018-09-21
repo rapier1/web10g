@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  linux/fs/hpfs/hpfs_fn.h
  *
@@ -18,15 +19,14 @@
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/blkdev.h>
 #include <asm/unaligned.h>
 
 #include "hpfs.h"
 
 #define EIOERROR  EIO
-#define EFSERROR  EPERM
-#define EMEMERROR ENOMEM
+#define EFSERROR  EUCLEAN
 
 #define ANODE_ALLOC_FWD	512
 #define FNODE_ALLOC_FWD	0

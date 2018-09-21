@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/security.h>
+#include <linux/cred.h>
 #include <linux/eventpoll.h>
 #include <linux/rcupdate.h>
 #include <linux/mount.h>
@@ -22,7 +23,6 @@
 #include <linux/sysctl.h>
 #include <linux/percpu_counter.h>
 #include <linux/percpu.h>
-#include <linux/hardirq.h>
 #include <linux/task_work.h>
 #include <linux/ima.h>
 #include <linux/swap.h>
@@ -167,6 +167,7 @@ struct file *alloc_file(const struct path *path, fmode_t mode,
 	file->f_path = *path;
 	file->f_inode = path->dentry->d_inode;
 	file->f_mapping = path->dentry->d_inode->i_mapping;
+	file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
 	if ((mode & FMODE_READ) &&
 	     likely(fop->read || fop->read_iter))
 		mode |= FMODE_CAN_READ;
@@ -199,11 +200,11 @@ static void __fput(struct file *file)
 	eventpoll_release(file);
 	locks_remove_file(file);
 
+	ima_file_free(file);
 	if (unlikely(file->f_flags & FASYNC)) {
 		if (file->f_op->fasync)
 			file->f_op->fasync(-1, file, 0);
 	}
-	ima_file_free(file);
 	if (file->f_op->release)
 		file->f_op->release(inode, file);
 	security_file_free(file);
@@ -231,12 +232,10 @@ static LLIST_HEAD(delayed_fput_list);
 static void delayed_fput(struct work_struct *unused)
 {
 	struct llist_node *node = llist_del_all(&delayed_fput_list);
-	struct llist_node *next;
+	struct file *f, *t;
 
-	for (; node; node = next) {
-		next = llist_next(node);
-		__fput(llist_entry(node, struct file, f_u.fu_llist));
-	}
+	llist_for_each_entry_safe(f, t, node, f_u.fu_llist)
+		__fput(f);
 }
 
 static void ____fput(struct callback_head *work)
@@ -310,9 +309,9 @@ void put_filp(struct file *file)
 }
 
 void __init files_init(void)
-{ 
+{
 	filp_cachep = kmem_cache_create("filp", sizeof(struct file), 0,
-			SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+			SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_ACCOUNT, NULL);
 	percpu_counter_init(&nr_files, 0, GFP_KERNEL);
 }
 
@@ -329,4 +328,4 @@ void __init files_maxfiles_init(void)
 	n = ((totalram_pages - memreserve) * (PAGE_SIZE / 1024)) / 10;
 
 	files_stat.max_files = max_t(unsigned long, n, NR_FILE);
-} 
+}

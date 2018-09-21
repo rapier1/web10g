@@ -96,7 +96,8 @@ static void bochs_crtc_commit(struct drm_crtc *crtc)
 static int bochs_crtc_page_flip(struct drm_crtc *crtc,
 				struct drm_framebuffer *fb,
 				struct drm_pending_vblank_event *event,
-				uint32_t page_flip_flags)
+				uint32_t page_flip_flags,
+				struct drm_modeset_acquire_ctx *ctx)
 {
 	struct bochs_device *bochs =
 		container_of(crtc, struct bochs_device, crtc);
@@ -187,7 +188,7 @@ static int bochs_connector_get_modes(struct drm_connector *connector)
 	return count;
 }
 
-static int bochs_connector_mode_valid(struct drm_connector *connector,
+static enum drm_mode_status bochs_connector_mode_valid(struct drm_connector *connector,
 				      struct drm_display_mode *mode)
 {
 	struct bochs_device *bochs =
@@ -212,7 +213,7 @@ bochs_connector_best_encoder(struct drm_connector *connector)
 	int enc_id = connector->encoder_ids[0];
 	/* pick the encoder ids */
 	if (enc_id)
-		return drm_encoder_find(connector->dev, enc_id);
+		return drm_encoder_find(connector->dev, NULL, enc_id);
 	return NULL;
 }
 

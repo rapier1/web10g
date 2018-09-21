@@ -122,104 +122,41 @@
 #include "xgbe.h"
 #include "xgbe-common.h"
 
-static int xgbe_config_msi(struct xgbe_prv_data *pdata)
+static int xgbe_config_multi_msi(struct xgbe_prv_data *pdata)
 {
-	unsigned int msi_count;
+	unsigned int vector_count;
 	unsigned int i, j;
 	int ret;
 
-	msi_count = XGBE_MSIX_BASE_COUNT;
-	msi_count += max(pdata->rx_ring_count,
-			 pdata->tx_ring_count);
-	msi_count = roundup_pow_of_two(msi_count);
+	vector_count = XGBE_MSI_BASE_COUNT;
+	vector_count += max(pdata->rx_ring_count,
+			    pdata->tx_ring_count);
 
-	ret = pci_enable_msi_exact(pdata->pcidev, msi_count);
+	ret = pci_alloc_irq_vectors(pdata->pcidev, XGBE_MSI_MIN_COUNT,
+				    vector_count, PCI_IRQ_MSI | PCI_IRQ_MSIX);
 	if (ret < 0) {
-		dev_info(pdata->dev, "MSI request for %u interrupts failed\n",
-			 msi_count);
-
-		ret = pci_enable_msi(pdata->pcidev);
-		if (ret < 0) {
-			dev_info(pdata->dev, "MSI enablement failed\n");
-			return ret;
-		}
-
-		msi_count = 1;
-	}
-
-	pdata->irq_count = msi_count;
-
-	pdata->dev_irq = pdata->pcidev->irq;
-
-	if (msi_count > 1) {
-		pdata->ecc_irq = pdata->pcidev->irq + 1;
-		pdata->i2c_irq = pdata->pcidev->irq + 2;
-		pdata->an_irq = pdata->pcidev->irq + 3;
-
-		for (i = XGBE_MSIX_BASE_COUNT, j = 0;
-		     (i < msi_count) && (j < XGBE_MAX_DMA_CHANNELS);
-		     i++, j++)
-			pdata->channel_irq[j] = pdata->pcidev->irq + i;
-		pdata->channel_irq_count = j;
-
-		pdata->per_channel_irq = 1;
-		pdata->channel_irq_mode = XGBE_IRQ_MODE_LEVEL;
-	} else {
-		pdata->ecc_irq = pdata->pcidev->irq;
-		pdata->i2c_irq = pdata->pcidev->irq;
-		pdata->an_irq = pdata->pcidev->irq;
-	}
-
-	if (netif_msg_probe(pdata))
-		dev_dbg(pdata->dev, "MSI interrupts enabled\n");
-
-	return 0;
-}
-
-static int xgbe_config_msix(struct xgbe_prv_data *pdata)
-{
-	unsigned int msix_count;
-	unsigned int i, j;
-	int ret;
-
-	msix_count = XGBE_MSIX_BASE_COUNT;
-	msix_count += max(pdata->rx_ring_count,
-			  pdata->tx_ring_count);
-
-	pdata->msix_entries = devm_kcalloc(pdata->dev, msix_count,
-					   sizeof(struct msix_entry),
-					   GFP_KERNEL);
-	if (!pdata->msix_entries)
-		return -ENOMEM;
-
-	for (i = 0; i < msix_count; i++)
-		pdata->msix_entries[i].entry = i;
-
-	ret = pci_enable_msix_range(pdata->pcidev, pdata->msix_entries,
-				    XGBE_MSIX_MIN_COUNT, msix_count);
-	if (ret < 0) {
-		dev_info(pdata->dev, "MSI-X enablement failed\n");
-		devm_kfree(pdata->dev, pdata->msix_entries);
-		pdata->msix_entries = NULL;
+		dev_info(pdata->dev, "multi MSI/MSI-X enablement failed\n");
 		return ret;
 	}
 
+	pdata->isr_as_tasklet = 1;
 	pdata->irq_count = ret;
 
-	pdata->dev_irq = pdata->msix_entries[0].vector;
-	pdata->ecc_irq = pdata->msix_entries[1].vector;
-	pdata->i2c_irq = pdata->msix_entries[2].vector;
-	pdata->an_irq = pdata->msix_entries[3].vector;
+	pdata->dev_irq = pci_irq_vector(pdata->pcidev, 0);
+	pdata->ecc_irq = pci_irq_vector(pdata->pcidev, 1);
+	pdata->i2c_irq = pci_irq_vector(pdata->pcidev, 2);
+	pdata->an_irq = pci_irq_vector(pdata->pcidev, 3);
 
-	for (i = XGBE_MSIX_BASE_COUNT, j = 0; i < ret; i++, j++)
-		pdata->channel_irq[j] = pdata->msix_entries[i].vector;
+	for (i = XGBE_MSI_BASE_COUNT, j = 0; i < ret; i++, j++)
+		pdata->channel_irq[j] = pci_irq_vector(pdata->pcidev, i);
 	pdata->channel_irq_count = j;
 
 	pdata->per_channel_irq = 1;
 	pdata->channel_irq_mode = XGBE_IRQ_MODE_LEVEL;
 
 	if (netif_msg_probe(pdata))
-		dev_dbg(pdata->dev, "MSI-X interrupts enabled\n");
+		dev_dbg(pdata->dev, "multi %s interrupts enabled\n",
+			pdata->pcidev->msix_enabled ? "MSI-X" : "MSI");
 
 	return 0;
 }
@@ -228,21 +165,29 @@ static int xgbe_config_irqs(struct xgbe_prv_data *pdata)
 {
 	int ret;
 
-	ret = xgbe_config_msix(pdata);
+	ret = xgbe_config_multi_msi(pdata);
 	if (!ret)
 		goto out;
 
-	ret = xgbe_config_msi(pdata);
-	if (!ret)
-		goto out;
+	ret = pci_alloc_irq_vectors(pdata->pcidev, 1, 1,
+				    PCI_IRQ_LEGACY | PCI_IRQ_MSI);
+	if (ret < 0) {
+		dev_info(pdata->dev, "single IRQ enablement failed\n");
+		return ret;
+	}
 
+	pdata->isr_as_tasklet = pdata->pcidev->msi_enabled ? 1 : 0;
 	pdata->irq_count = 1;
-	pdata->irq_shared = 1;
+	pdata->channel_irq_count = 1;
 
-	pdata->dev_irq = pdata->pcidev->irq;
-	pdata->ecc_irq = pdata->pcidev->irq;
-	pdata->i2c_irq = pdata->pcidev->irq;
-	pdata->an_irq = pdata->pcidev->irq;
+	pdata->dev_irq = pci_irq_vector(pdata->pcidev, 0);
+	pdata->ecc_irq = pci_irq_vector(pdata->pcidev, 0);
+	pdata->i2c_irq = pci_irq_vector(pdata->pcidev, 0);
+	pdata->an_irq = pci_irq_vector(pdata->pcidev, 0);
+
+	if (netif_msg_probe(pdata))
+		dev_dbg(pdata->dev, "single %s interrupt enabled\n",
+			pdata->pcidev->msi_enabled ?  "MSI" : "legacy");
 
 out:
 	if (netif_msg_probe(pdata)) {
@@ -347,6 +292,10 @@ static int xgbe_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pdata->xpcs_window_size = 1 << (pdata->xpcs_window_size + 7);
 	pdata->xpcs_window_mask = pdata->xpcs_window_size - 1;
 	if (netif_msg_probe(pdata)) {
+		dev_dbg(dev, "xpcs window def  = %#010x\n",
+			pdata->xpcs_window_def_reg);
+		dev_dbg(dev, "xpcs window sel  = %#010x\n",
+			pdata->xpcs_window_sel_reg);
 		dev_dbg(dev, "xpcs window      = %#010x\n",
 			pdata->xpcs_window);
 		dev_dbg(dev, "xpcs window size = %#010x\n",
@@ -382,20 +331,37 @@ static int xgbe_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Set the DMA coherency values */
 	pdata->coherent = 1;
-	pdata->axdomain = XGBE_DMA_OS_AXDOMAIN;
-	pdata->arcache = XGBE_DMA_OS_ARCACHE;
-	pdata->awcache = XGBE_DMA_OS_AWCACHE;
+	pdata->arcr = XGBE_DMA_PCI_ARCR;
+	pdata->awcr = XGBE_DMA_PCI_AWCR;
+	pdata->awarcr = XGBE_DMA_PCI_AWARCR;
+
+	/* Read the port property registers */
+	pdata->pp0 = XP_IOREAD(pdata, XP_PROP_0);
+	pdata->pp1 = XP_IOREAD(pdata, XP_PROP_1);
+	pdata->pp2 = XP_IOREAD(pdata, XP_PROP_2);
+	pdata->pp3 = XP_IOREAD(pdata, XP_PROP_3);
+	pdata->pp4 = XP_IOREAD(pdata, XP_PROP_4);
+	if (netif_msg_probe(pdata)) {
+		dev_dbg(dev, "port property 0 = %#010x\n", pdata->pp0);
+		dev_dbg(dev, "port property 1 = %#010x\n", pdata->pp1);
+		dev_dbg(dev, "port property 2 = %#010x\n", pdata->pp2);
+		dev_dbg(dev, "port property 3 = %#010x\n", pdata->pp3);
+		dev_dbg(dev, "port property 4 = %#010x\n", pdata->pp4);
+	}
 
 	/* Set the maximum channels and queues */
-	reg = XP_IOREAD(pdata, XP_PROP_1);
-	pdata->tx_max_channel_count = XP_GET_BITS(reg, XP_PROP_1, MAX_TX_DMA);
-	pdata->rx_max_channel_count = XP_GET_BITS(reg, XP_PROP_1, MAX_RX_DMA);
-	pdata->tx_max_q_count = XP_GET_BITS(reg, XP_PROP_1, MAX_TX_QUEUES);
-	pdata->rx_max_q_count = XP_GET_BITS(reg, XP_PROP_1, MAX_RX_QUEUES);
+	pdata->tx_max_channel_count = XP_GET_BITS(pdata->pp1, XP_PROP_1,
+						  MAX_TX_DMA);
+	pdata->rx_max_channel_count = XP_GET_BITS(pdata->pp1, XP_PROP_1,
+						  MAX_RX_DMA);
+	pdata->tx_max_q_count = XP_GET_BITS(pdata->pp1, XP_PROP_1,
+					    MAX_TX_QUEUES);
+	pdata->rx_max_q_count = XP_GET_BITS(pdata->pp1, XP_PROP_1,
+					    MAX_RX_QUEUES);
 	if (netif_msg_probe(pdata)) {
 		dev_dbg(dev, "max tx/rx channel count = %u/%u\n",
 			pdata->tx_max_channel_count,
-			pdata->tx_max_channel_count);
+			pdata->rx_max_channel_count);
 		dev_dbg(dev, "max tx/rx hw queue count = %u/%u\n",
 			pdata->tx_max_q_count, pdata->rx_max_q_count);
 	}
@@ -404,12 +370,13 @@ static int xgbe_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	xgbe_set_counts(pdata);
 
 	/* Set the maximum fifo amounts */
-	reg = XP_IOREAD(pdata, XP_PROP_2);
-	pdata->tx_max_fifo_size = XP_GET_BITS(reg, XP_PROP_2, TX_FIFO_SIZE);
+	pdata->tx_max_fifo_size = XP_GET_BITS(pdata->pp2, XP_PROP_2,
+					      TX_FIFO_SIZE);
 	pdata->tx_max_fifo_size *= 16384;
 	pdata->tx_max_fifo_size = min(pdata->tx_max_fifo_size,
 				      pdata->vdata->tx_max_fifo_size);
-	pdata->rx_max_fifo_size = XP_GET_BITS(reg, XP_PROP_2, RX_FIFO_SIZE);
+	pdata->rx_max_fifo_size = XP_GET_BITS(pdata->pp2, XP_PROP_2,
+					      RX_FIFO_SIZE);
 	pdata->rx_max_fifo_size *= 16384;
 	pdata->rx_max_fifo_size = min(pdata->rx_max_fifo_size,
 				      pdata->vdata->rx_max_fifo_size);
@@ -425,11 +392,14 @@ static int xgbe_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Configure the netdev resource */
 	ret = xgbe_config_netdev(pdata);
 	if (ret)
-		goto err_pci_enable;
+		goto err_irq_vectors;
 
 	netdev_notice(pdata->netdev, "net device enabled\n");
 
 	return 0;
+
+err_irq_vectors:
+	pci_free_irq_vectors(pdata->pcidev);
 
 err_pci_enable:
 	xgbe_free_pdata(pdata);
@@ -445,6 +415,8 @@ static void xgbe_pci_remove(struct pci_dev *pdev)
 	struct xgbe_prv_data *pdata = pci_get_drvdata(pdev);
 
 	xgbe_deconfig_netdev(pdata);
+
+	pci_free_irq_vectors(pdata->pcidev);
 
 	xgbe_free_pdata(pdata);
 }
@@ -472,6 +444,8 @@ static int xgbe_pci_resume(struct pci_dev *pdev)
 	struct net_device *netdev = pdata->netdev;
 	int ret = 0;
 
+	XP_IOWRITE(pdata, XP_INT_EN, 0x1fffff);
+
 	pdata->lpm_ctrl &= ~MDIO_CTRL1_LPOWER;
 	XMDIO_WRITE(pdata, MDIO_MMD_PCS, MDIO_CTRL1, pdata->lpm_ctrl);
 
@@ -497,6 +471,10 @@ static const struct xgbe_version_data xgbe_v2a = {
 	.tx_tstamp_workaround		= 1,
 	.ecc_support			= 1,
 	.i2c_support			= 1,
+	.irq_reissue_support		= 1,
+	.tx_desc_prefetch		= 5,
+	.rx_desc_prefetch		= 5,
+	.an_cdr_workaround		= 1,
 };
 
 static const struct xgbe_version_data xgbe_v2b = {
@@ -508,6 +486,10 @@ static const struct xgbe_version_data xgbe_v2b = {
 	.tx_tstamp_workaround		= 1,
 	.ecc_support			= 1,
 	.i2c_support			= 1,
+	.irq_reissue_support		= 1,
+	.tx_desc_prefetch		= 5,
+	.rx_desc_prefetch		= 5,
+	.an_cdr_workaround		= 1,
 };
 
 static const struct pci_device_id xgbe_pci_table[] = {

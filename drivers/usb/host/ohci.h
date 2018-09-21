@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * OHCI HCD (Host Controller Driver) for USB.
  *
@@ -418,6 +419,7 @@ struct ohci_hcd {
 #define	OHCI_QUIRK_AMD_PLL	0x200			/* AMD PLL quirk*/
 #define	OHCI_QUIRK_AMD_PREFETCH	0x400			/* pre-fetch for ISO transfer */
 #define	OHCI_QUIRK_GLOBAL_SUSPEND	0x800		/* must suspend ports */
+#define	OHCI_QUIRK_QEMU		0x1000			/* relax timing expectations */
 
 	// there are also chip quirks/bugs in init logic
 
@@ -429,16 +431,13 @@ struct ohci_hcd {
 	struct work_struct	nec_work;	/* Worker for NEC quirk */
 
 	struct dentry		*debug_dir;
-	struct dentry		*debug_async;
-	struct dentry		*debug_periodic;
-	struct dentry		*debug_registers;
 
 	/* platform-specific data -- must come last */
 	unsigned long           priv[0] __aligned(sizeof(s64));
 
 };
 
-#ifdef CONFIG_PCI
+#ifdef CONFIG_USB_PCI
 static inline int quirk_nec(struct ohci_hcd *ohci)
 {
 	return ohci->flags & OHCI_QUIRK_NEC;

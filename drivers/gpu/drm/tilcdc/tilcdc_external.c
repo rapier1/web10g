@@ -167,10 +167,8 @@ int tilcdc_attach_bridge(struct drm_device *ddev, struct drm_bridge *bridge)
 	int ret;
 
 	priv->external_encoder->possible_crtcs = BIT(0);
-	priv->external_encoder->bridge = bridge;
-	bridge->encoder = priv->external_encoder;
 
-	ret = drm_bridge_attach(ddev, bridge);
+	ret = drm_bridge_attach(priv->external_encoder, bridge, NULL);
 	if (ret) {
 		dev_err(ddev->dev, "drm_bridge_attach() failed %d\n", ret);
 		return ret;
@@ -187,54 +185,19 @@ int tilcdc_attach_bridge(struct drm_device *ddev, struct drm_bridge *bridge)
 	return ret;
 }
 
-static int tilcdc_node_has_port(struct device_node *dev_node)
-{
-	struct device_node *node;
-
-	node = of_get_child_by_name(dev_node, "ports");
-	if (!node)
-		node = of_get_child_by_name(dev_node, "port");
-	if (!node)
-		return 0;
-	of_node_put(node);
-
-	return 1;
-}
-
-static
-struct device_node *tilcdc_get_remote_node(struct device_node *node)
-{
-	struct device_node *ep;
-	struct device_node *parent;
-
-	if (!tilcdc_node_has_port(node))
-		return NULL;
-
-	ep = of_graph_get_next_endpoint(node, NULL);
-	if (!ep)
-		return NULL;
-
-	parent = of_graph_get_remote_port_parent(ep);
-	of_node_put(ep);
-
-	return parent;
-}
-
 int tilcdc_attach_external_device(struct drm_device *ddev)
 {
 	struct tilcdc_drm_private *priv = ddev->dev_private;
-	struct device_node *remote_node;
 	struct drm_bridge *bridge;
+	struct drm_panel *panel;
 	int ret;
 
-	remote_node = tilcdc_get_remote_node(ddev->dev->of_node);
-	if (!remote_node)
+	ret = drm_of_find_panel_or_bridge(ddev->dev->of_node, 0, 0,
+					  &panel, &bridge);
+	if (ret == -ENODEV)
 		return 0;
-
-	bridge = of_drm_find_bridge(remote_node);
-	of_node_put(remote_node);
-	if (!bridge)
-		return -EPROBE_DEFER;
+	else if (ret)
+		return ret;
 
 	priv->external_encoder = devm_kzalloc(ddev->dev,
 					      sizeof(*priv->external_encoder),
@@ -250,10 +213,23 @@ int tilcdc_attach_external_device(struct drm_device *ddev)
 		return ret;
 	}
 
+	if (panel) {
+		bridge = devm_drm_panel_bridge_add(ddev->dev, panel,
+						   DRM_MODE_CONNECTOR_DPI);
+		if (IS_ERR(bridge)) {
+			ret = PTR_ERR(bridge);
+			goto err_encoder_cleanup;
+		}
+	}
+
 	ret = tilcdc_attach_bridge(ddev, bridge);
 	if (ret)
-		drm_encoder_cleanup(priv->external_encoder);
+		goto err_encoder_cleanup;
 
+	return 0;
+
+err_encoder_cleanup:
+	drm_encoder_cleanup(priv->external_encoder);
 	return ret;
 }
 
@@ -266,35 +242,16 @@ int tilcdc_get_external_components(struct device *dev,
 				   struct component_match **match)
 {
 	struct device_node *node;
-	struct device_node *ep = NULL;
-	int count = 0;
-	int ret = 0;
 
-	if (!tilcdc_node_has_port(dev->of_node))
-		return 0;
+	node = of_graph_get_remote_node(dev->of_node, 0, 0);
 
-	while ((ep = of_graph_get_next_endpoint(dev->of_node, ep))) {
-		node = of_graph_get_remote_port_parent(ep);
-		if (!node || !of_device_is_available(node)) {
-			of_node_put(node);
-			continue;
-		}
-
-		dev_dbg(dev, "Subdevice node '%s' found\n", node->name);
-
-		if (of_device_is_compatible(node, "nxp,tda998x")) {
-			if (match)
-				drm_of_component_match_add(dev, match,
-							   dev_match_of, node);
-			ret = 1;
-		}
-
+	if (!of_device_is_compatible(node, "nxp,tda998x")) {
 		of_node_put(node);
-		if (count++ > 1) {
-			dev_err(dev, "Only one port is supported\n");
-			return -EINVAL;
-		}
+		return 0;
 	}
 
-	return ret;
+	if (match)
+		drm_of_component_match_add(dev, match, dev_match_of, node);
+	of_node_put(node);
+	return 1;
 }

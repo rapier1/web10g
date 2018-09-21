@@ -33,8 +33,9 @@
  * @head: head of timerqueue
  * @node: timer node to be added
  *
- * Adds the timer node to the timerqueue, sorted by the
- * node's expires value.
+ * Adds the timer node to the timerqueue, sorted by the node's expires
+ * value. Returns true if the newly added timer is the first expiring timer in
+ * the queue.
  */
 bool timerqueue_add(struct timerqueue_head *head, struct timerqueue_node *node)
 {
@@ -70,7 +71,8 @@ EXPORT_SYMBOL_GPL(timerqueue_add);
  * @head: head of timerqueue
  * @node: timer node to be removed
  *
- * Removes the timer node from the timerqueue.
+ * Removes the timer node from the timerqueue. Returns true if the queue is
+ * not empty after the remove.
  */
 bool timerqueue_del(struct timerqueue_head *head, struct timerqueue_node *node)
 {
@@ -80,8 +82,7 @@ bool timerqueue_del(struct timerqueue_head *head, struct timerqueue_node *node)
 	if (head->next == node) {
 		struct rb_node *rbn = rb_next(&node->node);
 
-		head->next = rbn ?
-			rb_entry(rbn, struct timerqueue_node, node) : NULL;
+		head->next = rb_entry_safe(rbn, struct timerqueue_node, node);
 	}
 	rb_erase(&node->node, &head->head);
 	RB_CLEAR_NODE(&node->node);

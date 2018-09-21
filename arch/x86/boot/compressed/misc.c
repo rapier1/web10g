@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * misc.c
  *
@@ -13,6 +14,7 @@
 
 #include "misc.h"
 #include "error.h"
+#include "pgtable.h"
 #include "../string.h"
 #include "../voffset.h"
 
@@ -116,8 +118,7 @@ void __putstr(const char *s)
 		}
 	}
 
-	if (boot_params->screen_info.orig_video_mode == 0 &&
-	    lines == 0 && cols == 0)
+	if (lines == 0 || cols == 0)
 		return;
 
 	x = boot_params->screen_info.orig_x;
@@ -299,6 +300,10 @@ static void parse_elf(void *output)
 
 		switch (phdr->p_type) {
 		case PT_LOAD:
+#ifdef CONFIG_X86_64
+			if ((phdr->p_align % 0x200000) != 0)
+				error("Alignment of LOAD segment isn't multiple of 2MB");
+#endif
 #ifdef CONFIG_RELOCATABLE
 			dest = output;
 			dest += (phdr->p_paddr - LOAD_PHYSICAL_ADDR);
@@ -338,7 +343,7 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 				  unsigned long output_len)
 {
 	const unsigned long kernel_total_size = VO__end - VO__text;
-	unsigned long virt_addr = (unsigned long)output;
+	unsigned long virt_addr = LOAD_PHYSICAL_ADDR;
 
 	/* Retain x86 boot parameters pointer passed from startup_32/64. */
 	boot_params = rmode;
@@ -372,6 +377,11 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	debug_putaddr(output_len);
 	debug_putaddr(kernel_total_size);
 
+#ifdef CONFIG_X86_64
+	/* Report address of 32-bit trampoline */
+	debug_putaddr(trampoline_32bit);
+#endif
+
 	/*
 	 * The memory hole needed for the kernel is the larger of either
 	 * the entire decompressed kernel plus relocation table, or the
@@ -390,6 +400,8 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 #ifdef CONFIG_X86_64
 	if (heap > 0x3fffffffffffUL)
 		error("Destination address too large");
+	if (virt_addr + max(output_len, kernel_total_size) > KERNEL_IMAGE_SIZE)
+		error("Destination virtual address is beyond the kernel mapping area");
 #else
 	if (heap > ((-__PAGE_OFFSET-(128<<20)-1) & 0x7fffffff))
 		error("Destination address too large");
@@ -397,7 +409,7 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 #ifndef CONFIG_RELOCATABLE
 	if ((unsigned long)output != LOAD_PHYSICAL_ADDR)
 		error("Destination address does not match LOAD_PHYSICAL_ADDR");
-	if ((unsigned long)output != virt_addr)
+	if (virt_addr != LOAD_PHYSICAL_ADDR)
 		error("Destination virtual address changed when not relocatable");
 #endif
 
@@ -408,4 +420,9 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	handle_relocations(output, output_len, virt_addr);
 	debug_putstr("done.\nBooting the kernel.\n");
 	return output;
+}
+
+void fortify_panic(const char *name)
+{
+	error("detected buffer overflow");
 }

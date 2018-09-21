@@ -10,6 +10,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/interrupt.h>
@@ -144,6 +145,7 @@ struct rcar_dmac_chan_map {
  * @chan: base DMA channel object
  * @iomem: channel I/O memory base
  * @index: index of this channel in the controller
+ * @irq: channel IRQ
  * @src: slave memory address and size on the source side
  * @dst: slave memory address and size on the destination side
  * @mid_rid: hardware MID/RID for the DMA client using this channel
@@ -161,6 +163,7 @@ struct rcar_dmac_chan {
 	struct dma_chan chan;
 	void __iomem *iomem;
 	unsigned int index;
+	int irq;
 
 	struct rcar_dmac_chan_slave src;
 	struct rcar_dmac_chan_slave dst;
@@ -344,13 +347,19 @@ static void rcar_dmac_chan_start_xfer(struct rcar_dmac_chan *chan)
 		rcar_dmac_chan_write(chan, RCAR_DMARS, chan->mid_rid);
 
 	if (desc->hwdescs.use) {
-		struct rcar_dmac_xfer_chunk *chunk;
+		struct rcar_dmac_xfer_chunk *chunk =
+			list_first_entry(&desc->chunks,
+					 struct rcar_dmac_xfer_chunk, node);
 
 		dev_dbg(chan->chan.device->dev,
 			"chan%u: queue desc %p: %u@%pad\n",
 			chan->index, desc, desc->nchunks, &desc->hwdescs.dma);
 
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+		rcar_dmac_chan_write(chan, RCAR_DMAFIXSAR,
+				     chunk->src_addr >> 32);
+		rcar_dmac_chan_write(chan, RCAR_DMAFIXDAR,
+				     chunk->dst_addr >> 32);
 		rcar_dmac_chan_write(chan, RCAR_DMAFIXDPBASE,
 				     desc->hwdescs.dma >> 32);
 #endif
@@ -368,8 +377,6 @@ static void rcar_dmac_chan_start_xfer(struct rcar_dmac_chan *chan)
 		 * should. Initialize it manually with the destination address
 		 * of the first chunk.
 		 */
-		chunk = list_first_entry(&desc->chunks,
-					 struct rcar_dmac_xfer_chunk, node);
 		rcar_dmac_chan_write(chan, RCAR_DMADAR,
 				     chunk->dst_addr & 0xffffffff);
 
@@ -735,6 +742,41 @@ static int rcar_dmac_fill_hwdesc(struct rcar_dmac_chan *chan,
 /* -----------------------------------------------------------------------------
  * Stop and reset
  */
+static void rcar_dmac_chcr_de_barrier(struct rcar_dmac_chan *chan)
+{
+	u32 chcr;
+	unsigned int i;
+
+	/*
+	 * Ensure that the setting of the DE bit is actually 0 after
+	 * clearing it.
+	 */
+	for (i = 0; i < 1024; i++) {
+		chcr = rcar_dmac_chan_read(chan, RCAR_DMACHCR);
+		if (!(chcr & RCAR_DMACHCR_DE))
+			return;
+		udelay(1);
+	}
+
+	dev_err(chan->chan.device->dev, "CHCR DE check error\n");
+}
+
+static void rcar_dmac_sync_tcr(struct rcar_dmac_chan *chan)
+{
+	u32 chcr = rcar_dmac_chan_read(chan, RCAR_DMACHCR);
+
+	if (!(chcr & RCAR_DMACHCR_DE))
+		return;
+
+	/* set DE=0 and flush remaining data */
+	rcar_dmac_chan_write(chan, RCAR_DMACHCR, (chcr & ~RCAR_DMACHCR_DE));
+
+	/* make sure all remaining data was flushed */
+	rcar_dmac_chcr_de_barrier(chan);
+
+	/* back DE */
+	rcar_dmac_chan_write(chan, RCAR_DMACHCR, chcr);
+}
 
 static void rcar_dmac_chan_halt(struct rcar_dmac_chan *chan)
 {
@@ -743,6 +785,7 @@ static void rcar_dmac_chan_halt(struct rcar_dmac_chan *chan)
 	chcr &= ~(RCAR_DMACHCR_DSE | RCAR_DMACHCR_DSIE | RCAR_DMACHCR_IE |
 		  RCAR_DMACHCR_TE | RCAR_DMACHCR_DE);
 	rcar_dmac_chan_write(chan, RCAR_DMACHCR, chcr);
+	rcar_dmac_chcr_de_barrier(chan);
 }
 
 static void rcar_dmac_chan_reinit(struct rcar_dmac_chan *chan)
@@ -855,8 +898,12 @@ rcar_dmac_chan_prep_sg(struct rcar_dmac_chan *chan, struct scatterlist *sgl,
 	unsigned int nchunks = 0;
 	unsigned int max_chunk_size;
 	unsigned int full_size = 0;
-	bool highmem = false;
+	bool cross_boundary = false;
 	unsigned int i;
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+	u32 high_dev_addr;
+	u32 high_mem_addr;
+#endif
 
 	desc = rcar_dmac_desc_get(chan);
 	if (!desc)
@@ -870,7 +917,7 @@ rcar_dmac_chan_prep_sg(struct rcar_dmac_chan *chan, struct scatterlist *sgl,
 
 	rcar_dmac_chan_configure_desc(chan, desc);
 
-	max_chunk_size = (RCAR_DMATCR_MASK + 1) << desc->xfer_shift;
+	max_chunk_size = RCAR_DMATCR_MASK << desc->xfer_shift;
 
 	/*
 	 * Allocate and fill the transfer chunk descriptors. We own the only
@@ -882,6 +929,16 @@ rcar_dmac_chan_prep_sg(struct rcar_dmac_chan *chan, struct scatterlist *sgl,
 
 		full_size += len;
 
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+		if (i == 0) {
+			high_dev_addr = dev_addr >> 32;
+			high_mem_addr = mem_addr >> 32;
+		}
+
+		if ((dev_addr >> 32 != high_dev_addr) ||
+		    (mem_addr >> 32 != high_mem_addr))
+			cross_boundary = true;
+#endif
 		while (len) {
 			unsigned int size = min(len, max_chunk_size);
 
@@ -890,18 +947,14 @@ rcar_dmac_chan_prep_sg(struct rcar_dmac_chan *chan, struct scatterlist *sgl,
 			 * Prevent individual transfers from crossing 4GB
 			 * boundaries.
 			 */
-			if (dev_addr >> 32 != (dev_addr + size - 1) >> 32)
+			if (dev_addr >> 32 != (dev_addr + size - 1) >> 32) {
 				size = ALIGN(dev_addr, 1ULL << 32) - dev_addr;
-			if (mem_addr >> 32 != (mem_addr + size - 1) >> 32)
+				cross_boundary = true;
+			}
+			if (mem_addr >> 32 != (mem_addr + size - 1) >> 32) {
 				size = ALIGN(mem_addr, 1ULL << 32) - mem_addr;
-
-			/*
-			 * Check if either of the source or destination address
-			 * can't be expressed in 32 bits. If so we can't use
-			 * hardware descriptor lists.
-			 */
-			if (dev_addr >> 32 || mem_addr >> 32)
-				highmem = true;
+				cross_boundary = true;
+			}
 #endif
 
 			chunk = rcar_dmac_xfer_chunk_get(chan);
@@ -943,13 +996,11 @@ rcar_dmac_chan_prep_sg(struct rcar_dmac_chan *chan, struct scatterlist *sgl,
 	 * Use hardware descriptor lists if possible when more than one chunk
 	 * needs to be transferred (otherwise they don't make much sense).
 	 *
-	 * The highmem check currently covers the whole transfer. As an
-	 * optimization we could use descriptor lists for consecutive lowmem
-	 * chunks and direct manual mode for highmem chunks. Whether the
-	 * performance improvement would be significant enough compared to the
-	 * additional complexity remains to be investigated.
+	 * Source/Destination address should be located in same 4GiB region
+	 * in the 40bit address space when it uses Hardware descriptor,
+	 * and cross_boundary is checking it.
 	 */
-	desc->hwdescs.use = !highmem && nchunks > 1;
+	desc->hwdescs.use = !cross_boundary && nchunks > 1;
 	if (desc->hwdescs.use) {
 		if (rcar_dmac_fill_hwdesc(chan, desc) < 0)
 			desc->hwdescs.use = false;
@@ -996,7 +1047,11 @@ static void rcar_dmac_free_chan_resources(struct dma_chan *chan)
 	rcar_dmac_chan_halt(rchan);
 	spin_unlock_irq(&rchan->lock);
 
-	/* Now no new interrupts will occur */
+	/*
+	 * Now no new interrupts will occur, but one might already be
+	 * running. Wait for it to finish before freeing resources.
+	 */
+	synchronize_irq(rchan->irq);
 
 	if (rchan->mid_rid >= 0) {
 		/* The caller is holding dma_list_mutex */
@@ -1246,8 +1301,17 @@ static unsigned int rcar_dmac_chan_get_residue(struct rcar_dmac_chan *chan,
 	 * If the cookie doesn't correspond to the currently running transfer
 	 * then the descriptor hasn't been processed yet, and the residue is
 	 * equal to the full descriptor size.
+	 * Also, a client driver is possible to call this function before
+	 * rcar_dmac_isr_channel_thread() runs. In this case, the "desc.running"
+	 * will be the next descriptor, and the done list will appear. So, if
+	 * the argument cookie matches the done list's cookie, we can assume
+	 * the residue is zero.
 	 */
 	if (cookie != desc->async_tx.cookie) {
+		list_for_each_entry(desc, &chan->desc.done, node) {
+			if (cookie == desc->async_tx.cookie)
+				return 0;
+		}
 		list_for_each_entry(desc, &chan->desc.pending, node) {
 			if (cookie == desc->async_tx.cookie)
 				return desc->size;
@@ -1275,6 +1339,9 @@ static unsigned int rcar_dmac_chan_get_residue(struct rcar_dmac_chan *chan,
 	if (desc->hwdescs.use) {
 		dptr = (rcar_dmac_chan_read(chan, RCAR_DMACHCRB) &
 			RCAR_DMACHCRB_DPTR_MASK) >> RCAR_DMACHCRB_DPTR_SHIFT;
+		if (dptr == 0)
+			dptr = desc->nchunks;
+		dptr--;
 		WARN_ON(dptr >= desc->nchunks);
 	} else {
 		running = desc->running;
@@ -1288,8 +1355,11 @@ static unsigned int rcar_dmac_chan_get_residue(struct rcar_dmac_chan *chan,
 		residue += chunk->size;
 	}
 
+	if (desc->direction == DMA_DEV_TO_MEM)
+		rcar_dmac_sync_tcr(chan);
+
 	/* Add the residue for the current chunk. */
-	residue += rcar_dmac_chan_read(chan, RCAR_DMATCR) << desc->xfer_shift;
+	residue += rcar_dmac_chan_read(chan, RCAR_DMATCRB) << desc->xfer_shift;
 
 	return residue;
 }
@@ -1349,6 +1419,13 @@ static void rcar_dmac_issue_pending(struct dma_chan *chan)
 
 done:
 	spin_unlock_irqrestore(&rchan->lock, flags);
+}
+
+static void rcar_dmac_device_synchronize(struct dma_chan *chan)
+{
+	struct rcar_dmac_chan *rchan = to_rcar_dmac_chan(chan);
+
+	synchronize_irq(rchan->irq);
 }
 
 /* -----------------------------------------------------------------------------
@@ -1453,6 +1530,8 @@ static irqreturn_t rcar_dmac_isr_channel(int irq, void *dev)
 	if (chcr & RCAR_DMACHCR_TE)
 		mask |= RCAR_DMACHCR_DE;
 	rcar_dmac_chan_write(chan, RCAR_DMACHCR, chcr & ~mask);
+	if (mask & RCAR_DMACHCR_DE)
+		rcar_dmac_chcr_de_barrier(chan);
 
 	if (chcr & RCAR_DMACHCR_DSE)
 		ret |= rcar_dmac_isr_desc_stage_end(chan);
@@ -1587,22 +1666,6 @@ static struct dma_chan *rcar_dmac_of_xlate(struct of_phandle_args *dma_spec,
  * Power management
  */
 
-#ifdef CONFIG_PM_SLEEP
-static int rcar_dmac_sleep_suspend(struct device *dev)
-{
-	/*
-	 * TODO: Wait for the current transfer to complete and stop the device.
-	 */
-	return 0;
-}
-
-static int rcar_dmac_sleep_resume(struct device *dev)
-{
-	/* TODO: Resume transfers, if any. */
-	return 0;
-}
-#endif
-
 #ifdef CONFIG_PM
 static int rcar_dmac_runtime_suspend(struct device *dev)
 {
@@ -1618,7 +1681,13 @@ static int rcar_dmac_runtime_resume(struct device *dev)
 #endif
 
 static const struct dev_pm_ops rcar_dmac_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(rcar_dmac_sleep_suspend, rcar_dmac_sleep_resume)
+	/*
+	 * TODO for system sleep/resume:
+	 *   - Wait for the current transfer to complete and stop the device,
+	 *   - Resume transfers, if any.
+	 */
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				      pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(rcar_dmac_runtime_suspend, rcar_dmac_runtime_resume,
 			   NULL)
 };
@@ -1635,7 +1704,6 @@ static int rcar_dmac_chan_probe(struct rcar_dmac *dmac,
 	struct dma_chan *chan = &rchan->chan;
 	char pdev_irqname[5];
 	char *irqname;
-	int irq;
 	int ret;
 
 	rchan->index = index;
@@ -1652,8 +1720,8 @@ static int rcar_dmac_chan_probe(struct rcar_dmac *dmac,
 
 	/* Request the channel interrupt. */
 	sprintf(pdev_irqname, "ch%u", index);
-	irq = platform_get_irq_byname(pdev, pdev_irqname);
-	if (irq < 0) {
+	rchan->irq = platform_get_irq_byname(pdev, pdev_irqname);
+	if (rchan->irq < 0) {
 		dev_err(dmac->dev, "no IRQ specified for channel %u\n", index);
 		return -ENODEV;
 	}
@@ -1663,14 +1731,6 @@ static int rcar_dmac_chan_probe(struct rcar_dmac *dmac,
 	if (!irqname)
 		return -ENOMEM;
 
-	ret = devm_request_threaded_irq(dmac->dev, irq, rcar_dmac_isr_channel,
-					rcar_dmac_isr_channel_thread, 0,
-					irqname, rchan);
-	if (ret) {
-		dev_err(dmac->dev, "failed to request IRQ %u (%d)\n", irq, ret);
-		return ret;
-	}
-
 	/*
 	 * Initialize the DMA engine channel and add it to the DMA engine
 	 * channels list.
@@ -1679,6 +1739,16 @@ static int rcar_dmac_chan_probe(struct rcar_dmac *dmac,
 	dma_cookie_init(chan);
 
 	list_add_tail(&chan->device_node, &dmac->engine.channels);
+
+	ret = devm_request_threaded_irq(dmac->dev, rchan->irq,
+					rcar_dmac_isr_channel,
+					rcar_dmac_isr_channel_thread, 0,
+					irqname, rchan);
+	if (ret) {
+		dev_err(dmac->dev, "failed to request IRQ %u (%d)\n",
+			rchan->irq, ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -1724,6 +1794,7 @@ static int rcar_dmac_probe(struct platform_device *pdev)
 
 	dmac->dev = &pdev->dev;
 	platform_set_drvdata(pdev, dmac);
+	dma_set_mask_and_coherent(dmac->dev, DMA_BIT_MASK(40));
 
 	ret = rcar_dmac_parse_of(&pdev->dev, dmac);
 	if (ret < 0)
@@ -1764,14 +1835,6 @@ static int rcar_dmac_probe(struct platform_device *pdev)
 	if (!irqname)
 		return -ENOMEM;
 
-	ret = devm_request_irq(&pdev->dev, irq, rcar_dmac_isr_error, 0,
-			       irqname, dmac);
-	if (ret) {
-		dev_err(&pdev->dev, "failed to request IRQ %u (%d)\n",
-			irq, ret);
-		return ret;
-	}
-
 	/* Enable runtime PM and initialize the device. */
 	pm_runtime_enable(&pdev->dev);
 	ret = pm_runtime_get_sync(&pdev->dev);
@@ -1788,14 +1851,46 @@ static int rcar_dmac_probe(struct platform_device *pdev)
 		goto error;
 	}
 
-	/* Initialize the channels. */
-	INIT_LIST_HEAD(&dmac->engine.channels);
+	/* Initialize engine */
+	engine = &dmac->engine;
+
+	dma_cap_set(DMA_MEMCPY, engine->cap_mask);
+	dma_cap_set(DMA_SLAVE, engine->cap_mask);
+
+	engine->dev		= &pdev->dev;
+	engine->copy_align	= ilog2(RCAR_DMAC_MEMCPY_XFER_SIZE);
+
+	engine->src_addr_widths	= widths;
+	engine->dst_addr_widths	= widths;
+	engine->directions	= BIT(DMA_MEM_TO_DEV) | BIT(DMA_DEV_TO_MEM);
+	engine->residue_granularity = DMA_RESIDUE_GRANULARITY_BURST;
+
+	engine->device_alloc_chan_resources	= rcar_dmac_alloc_chan_resources;
+	engine->device_free_chan_resources	= rcar_dmac_free_chan_resources;
+	engine->device_prep_dma_memcpy		= rcar_dmac_prep_dma_memcpy;
+	engine->device_prep_slave_sg		= rcar_dmac_prep_slave_sg;
+	engine->device_prep_dma_cyclic		= rcar_dmac_prep_dma_cyclic;
+	engine->device_config			= rcar_dmac_device_config;
+	engine->device_terminate_all		= rcar_dmac_chan_terminate_all;
+	engine->device_tx_status		= rcar_dmac_tx_status;
+	engine->device_issue_pending		= rcar_dmac_issue_pending;
+	engine->device_synchronize		= rcar_dmac_device_synchronize;
+
+	INIT_LIST_HEAD(&engine->channels);
 
 	for (i = 0; i < dmac->n_channels; ++i) {
 		ret = rcar_dmac_chan_probe(dmac, &dmac->channels[i],
 					   i + channels_offset);
 		if (ret < 0)
 			goto error;
+	}
+
+	ret = devm_request_irq(&pdev->dev, irq, rcar_dmac_isr_error, 0,
+			       irqname, dmac);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to request IRQ %u (%d)\n",
+			irq, ret);
+		return ret;
 	}
 
 	/* Register the DMAC as a DMA provider for DT. */
@@ -1809,28 +1904,6 @@ static int rcar_dmac_probe(struct platform_device *pdev)
 	 *
 	 * Default transfer size of 32 bytes requires 32-byte alignment.
 	 */
-	engine = &dmac->engine;
-	dma_cap_set(DMA_MEMCPY, engine->cap_mask);
-	dma_cap_set(DMA_SLAVE, engine->cap_mask);
-
-	engine->dev = &pdev->dev;
-	engine->copy_align = ilog2(RCAR_DMAC_MEMCPY_XFER_SIZE);
-
-	engine->src_addr_widths = widths;
-	engine->dst_addr_widths = widths;
-	engine->directions = BIT(DMA_MEM_TO_DEV) | BIT(DMA_DEV_TO_MEM);
-	engine->residue_granularity = DMA_RESIDUE_GRANULARITY_BURST;
-
-	engine->device_alloc_chan_resources = rcar_dmac_alloc_chan_resources;
-	engine->device_free_chan_resources = rcar_dmac_free_chan_resources;
-	engine->device_prep_dma_memcpy = rcar_dmac_prep_dma_memcpy;
-	engine->device_prep_slave_sg = rcar_dmac_prep_slave_sg;
-	engine->device_prep_dma_cyclic = rcar_dmac_prep_dma_cyclic;
-	engine->device_config = rcar_dmac_device_config;
-	engine->device_terminate_all = rcar_dmac_chan_terminate_all;
-	engine->device_tx_status = rcar_dmac_tx_status;
-	engine->device_issue_pending = rcar_dmac_issue_pending;
-
 	ret = dma_async_device_register(engine);
 	if (ret < 0)
 		goto error;

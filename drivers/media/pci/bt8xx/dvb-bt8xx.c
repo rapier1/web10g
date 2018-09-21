@@ -13,10 +13,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -30,10 +26,10 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 
-#include "dmxdev.h"
-#include "dvbdev.h"
-#include "dvb_demux.h"
-#include "dvb_frontend.h"
+#include <media/dmxdev.h>
+#include <media/dvbdev.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
 #include "dvb-bt8xx.h"
 #include "bt878.h"
 
@@ -579,7 +575,6 @@ static struct mt352_config digitv_alps_tded4_config = {
 };
 
 static struct lgdt330x_config tdvs_tua6034_config = {
-	.demod_address    = 0x0e,
 	.demod_chip       = LGDT3303,
 	.serial_mpeg      = 0x40, /* TPSERIAL for 3303 in TOP_CONTROL */
 };
@@ -618,7 +613,8 @@ static void frontend_init(struct dvb_bt8xx_card *card, u32 type)
 
 	case BTTV_BOARD_DVICO_FUSIONHDTV_5_LITE:
 		lgdt330x_reset(card);
-		card->fe = dvb_attach(lgdt330x_attach, &tdvs_tua6034_config, card->i2c_adapter);
+		card->fe = dvb_attach(lgdt330x_attach, &tdvs_tua6034_config,
+				      0x0e, card->i2c_adapter);
 		if (card->fe != NULL) {
 			dvb_attach(simple_tuner_attach, card->fe,
 				   card->i2c_adapter, 0x61,
@@ -683,6 +679,7 @@ static void frontend_init(struct dvb_bt8xx_card *card, u32 type)
 		/*	DST is not a frontend, attaching the ASIC	*/
 		if (dvb_attach(dst_attach, state, &card->dvb_adapter) == NULL) {
 			pr_err("%s: Could not find a Twinhan DST\n", __func__);
+			kfree(state);
 			break;
 		}
 		/*	Attach other DST peripherals if any		*/

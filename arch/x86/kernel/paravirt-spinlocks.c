@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Split spinlock implementation out into its own file, so it can be
  * compiled in a FTRACE-compatible way.
@@ -20,7 +21,7 @@ bool pv_is_native_spin_unlock(void)
 		__raw_callee_save___native_queued_spin_unlock;
 }
 
-__visible bool __native_vcpu_is_preempted(int cpu)
+__visible bool __native_vcpu_is_preempted(long cpu)
 {
 	return false;
 }
@@ -42,6 +43,3 @@ struct pv_lock_ops pv_lock_ops = {
 #endif /* SMP */
 };
 EXPORT_SYMBOL(pv_lock_ops);
-
-struct static_key paravirt_ticketlocks_enabled = STATIC_KEY_INIT_FALSE;
-EXPORT_SYMBOL(paravirt_ticketlocks_enabled);

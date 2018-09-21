@@ -1,9 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Greybus audio driver
  * Copyright 2015 Google Inc.
  * Copyright 2015 Linaro Ltd.
- *
- * Released under the GPLv2 only.
  */
 
 #ifndef __LINUX_GBAUDIO_CODEC_H
@@ -24,19 +23,10 @@ enum {
 	NUM_CODEC_DAIS,
 };
 
-enum gbcodec_reg_index {
-	GBCODEC_CTL_REG,
-	GBCODEC_MUTE_REG,
-	GBCODEC_PB_LVOL_REG,
-	GBCODEC_PB_RVOL_REG,
-	GBCODEC_CAP_LVOL_REG,
-	GBCODEC_CAP_RVOL_REG,
-	GBCODEC_APB1_MUX_REG,
-	GBCODEC_APB2_MUX_REG,
-	GBCODEC_REG_COUNT
-};
-
-/* device_type should be same as defined in audio.h (Android media layer) */
+/*
+ * device_type should be same as defined in audio.h
+ * (Android media layer)
+ */
 enum {
 	GBAUDIO_DEVICE_NONE                     = 0x0,
 	/* reserved bits */
@@ -51,41 +41,8 @@ enum {
 	GBAUDIO_DEVICE_IN_WIRED_HEADSET         = GBAUDIO_DEVICE_BIT_IN | 0x10,
 };
 
-/* bit 0-SPK, 1-HP, 2-DAC,
- * 4-MIC, 5-HSMIC, 6-MIC2
- */
-#define GBCODEC_CTL_REG_DEFAULT		0x00
-
-/* bit 0,1 - APB1-PB-L/R
- * bit 2,3 - APB2-PB-L/R
- * bit 4,5 - APB1-Cap-L/R
- * bit 6,7 - APB2-Cap-L/R
- */
-#define	GBCODEC_MUTE_REG_DEFAULT	0x00
-
-/* 0-127 steps */
-#define	GBCODEC_PB_VOL_REG_DEFAULT	0x00
-#define	GBCODEC_CAP_VOL_REG_DEFAULT	0x00
-
-/* bit 0,1,2 - PB stereo, left, right
- * bit 8,9,10 - Cap stereo, left, right
- */
-#define GBCODEC_APB1_MUX_REG_DEFAULT	0x00
-#define GBCODEC_APB2_MUX_REG_DEFAULT	0x00
-
 #define GBCODEC_JACK_MASK		0x0000FFFF
 #define GBCODEC_JACK_BUTTON_MASK	0xFFFF0000
-
-static const u8 gbcodec_reg_defaults[GBCODEC_REG_COUNT] = {
-	GBCODEC_CTL_REG_DEFAULT,
-	GBCODEC_MUTE_REG_DEFAULT,
-	GBCODEC_PB_VOL_REG_DEFAULT,
-	GBCODEC_PB_VOL_REG_DEFAULT,
-	GBCODEC_CAP_VOL_REG_DEFAULT,
-	GBCODEC_CAP_VOL_REG_DEFAULT,
-	GBCODEC_APB1_MUX_REG_DEFAULT,
-	GBCODEC_APB2_MUX_REG_DEFAULT,
-};
 
 enum gbaudio_codec_state {
 	GBAUDIO_CODEC_SHUTDOWN = 0,
@@ -99,7 +56,7 @@ enum gbaudio_codec_state {
 struct gbaudio_stream_params {
 	int state;
 	u8 sig_bits, channels;
-	uint32_t format, rate;
+	u32 format, rate;
 };
 
 struct gbaudio_codec_dai {
@@ -116,7 +73,6 @@ struct gbaudio_codec_info {
 	/* to maintain runtime stream params for each DAI */
 	struct list_head dai_list;
 	struct mutex lock;
-	u8 reg[GBCODEC_REG_COUNT];
 };
 
 struct gbaudio_widget {
@@ -206,7 +162,7 @@ struct gbaudio_module_info {
 };
 
 int gbaudio_tplg_parse_data(struct gbaudio_module_info *module,
-			       struct gb_audio_topology *tplg_data);
+			    struct gb_audio_topology *tplg_data);
 void gbaudio_tplg_release(struct gbaudio_module_info *module);
 
 int gbaudio_module_update(struct gbaudio_codec_info *codec,
@@ -230,12 +186,12 @@ extern int gb_audio_gb_enable_widget(struct gb_connection *connection,
 extern int gb_audio_gb_disable_widget(struct gb_connection *connection,
 				      u8 widget_id);
 extern int gb_audio_gb_get_pcm(struct gb_connection *connection,
-			       u16 data_cport, uint32_t *format,
-			       uint32_t *rate, u8 *channels,
+			       u16 data_cport, u32 *format,
+			       u32 *rate, u8 *channels,
 			       u8 *sig_bits);
 extern int gb_audio_gb_set_pcm(struct gb_connection *connection,
-			       u16 data_cport, uint32_t format,
-			       uint32_t rate, u8 channels,
+			       u16 data_cport, u32 format,
+			       u32 rate, u8 channels,
 			       u8 sig_bits);
 extern int gb_audio_gb_set_tx_data_size(struct gb_connection *connection,
 					u16 data_cport, u16 size);

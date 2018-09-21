@@ -41,6 +41,7 @@
 #include <linux/cpu.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/cred.h>
 #include <linux/errno.h>
 #include <linux/mm.h>
 #include <linux/bootmem.h>
@@ -256,10 +257,25 @@ static void release_memory_resource(struct resource *resource)
 	kfree(resource);
 }
 
+/*
+ * Host memory not allocated to dom0. We can use this range for hotplug-based
+ * ballooning.
+ *
+ * It's a type-less resource. Setting IORESOURCE_MEM will make resource
+ * management algorithms (arch_remove_reservations()) look into guest e820,
+ * which we don't want.
+ */
+static struct resource hostmem_resource = {
+	.name   = "Host RAM",
+};
+
+void __attribute__((weak)) __init arch_xen_balloon_init(struct resource *res)
+{}
+
 static struct resource *additional_memory_resource(phys_addr_t size)
 {
-	struct resource *res;
-	int ret;
+	struct resource *res, *res_hostmem;
+	int ret = -ENOMEM;
 
 	res = kzalloc(sizeof(*res), GFP_KERNEL);
 	if (!res)
@@ -268,13 +284,42 @@ static struct resource *additional_memory_resource(phys_addr_t size)
 	res->name = "System RAM";
 	res->flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
 
-	ret = allocate_resource(&iomem_resource, res,
-				size, 0, -1,
-				PAGES_PER_SECTION * PAGE_SIZE, NULL, NULL);
-	if (ret < 0) {
-		pr_err("Cannot allocate new System RAM resource\n");
-		kfree(res);
-		return NULL;
+	res_hostmem = kzalloc(sizeof(*res), GFP_KERNEL);
+	if (res_hostmem) {
+		/* Try to grab a range from hostmem */
+		res_hostmem->name = "Host memory";
+		ret = allocate_resource(&hostmem_resource, res_hostmem,
+					size, 0, -1,
+					PAGES_PER_SECTION * PAGE_SIZE, NULL, NULL);
+	}
+
+	if (!ret) {
+		/*
+		 * Insert this resource into iomem. Because hostmem_resource
+		 * tracks portion of guest e820 marked as UNUSABLE noone else
+		 * should try to use it.
+		 */
+		res->start = res_hostmem->start;
+		res->end = res_hostmem->end;
+		ret = insert_resource(&iomem_resource, res);
+		if (ret < 0) {
+			pr_err("Can't insert iomem_resource [%llx - %llx]\n",
+				res->start, res->end);
+			release_memory_resource(res_hostmem);
+			res_hostmem = NULL;
+			res->start = res->end = 0;
+		}
+	}
+
+	if (ret) {
+		ret = allocate_resource(&iomem_resource, res,
+					size, 0, -1,
+					PAGES_PER_SECTION * PAGE_SIZE, NULL, NULL);
+		if (ret < 0) {
+			pr_err("Cannot allocate new System RAM resource\n");
+			kfree(res);
+			return NULL;
+		}
 	}
 
 #ifdef CONFIG_SPARSEMEM
@@ -286,6 +331,7 @@ static struct resource *additional_memory_resource(phys_addr_t size)
 			pr_err("New System RAM resource outside addressable RAM (%lu > %lu)\n",
 			       pfn, limit);
 			release_memory_resource(res);
+			release_memory_resource(res_hostmem);
 			return NULL;
 		}
 	}
@@ -663,9 +709,11 @@ int alloc_xenballooned_pages(int nr_pages, struct page **pages)
 			 */
 			BUILD_BUG_ON(XEN_PAGE_SIZE != PAGE_SIZE);
 
-			ret = xen_alloc_p2m_entry(page_to_pfn(page));
-			if (ret < 0)
-				goto out_undo;
+			if (!xen_feature(XENFEAT_auto_translated_physmap)) {
+				ret = xen_alloc_p2m_entry(page_to_pfn(page));
+				if (ret < 0)
+					goto out_undo;
+			}
 #endif
 		} else {
 			ret = add_ballooned_pages(nr_pages - pgno);
@@ -708,6 +756,7 @@ void free_xenballooned_pages(int nr_pages, struct page **pages)
 }
 EXPORT_SYMBOL(free_xenballooned_pages);
 
+#ifdef CONFIG_XEN_PV
 static void __init balloon_add_region(unsigned long start_pfn,
 				      unsigned long pages)
 {
@@ -731,19 +780,22 @@ static void __init balloon_add_region(unsigned long start_pfn,
 
 	balloon_stats.total_pages += extra_pfn_end - start_pfn;
 }
+#endif
 
 static int __init balloon_init(void)
 {
-	int i;
-
 	if (!xen_domain())
 		return -ENODEV;
 
 	pr_info("Initialising balloon driver\n");
 
+#ifdef CONFIG_XEN_PV
 	balloon_stats.current_pages = xen_pv_domain()
 		? min(xen_start_info->nr_pages - xen_released_pages, max_pfn)
 		: get_num_physpages();
+#else
+	balloon_stats.current_pages = get_num_physpages();
+#endif
 	balloon_stats.target_pages  = balloon_stats.current_pages;
 	balloon_stats.balloon_low   = 0;
 	balloon_stats.balloon_high  = 0;
@@ -758,16 +810,27 @@ static int __init balloon_init(void)
 	set_online_page_callback(&xen_online_page);
 	register_memory_notifier(&xen_memory_nb);
 	register_sysctl_table(xen_root);
+
+	arch_xen_balloon_init(&hostmem_resource);
 #endif
 
-	/*
-	 * Initialize the balloon with pages from the extra memory
-	 * regions (see arch/x86/xen/setup.c).
-	 */
-	for (i = 0; i < XEN_EXTRA_MEM_MAX_REGIONS; i++)
-		if (xen_extra_mem[i].n_pfns)
-			balloon_add_region(xen_extra_mem[i].start_pfn,
-					   xen_extra_mem[i].n_pfns);
+#ifdef CONFIG_XEN_PV
+	{
+		int i;
+
+		/*
+		 * Initialize the balloon with pages from the extra memory
+		 * regions (see arch/x86/xen/setup.c).
+		 */
+		for (i = 0; i < XEN_EXTRA_MEM_MAX_REGIONS; i++)
+			if (xen_extra_mem[i].n_pfns)
+				balloon_add_region(xen_extra_mem[i].start_pfn,
+						   xen_extra_mem[i].n_pfns);
+	}
+#endif
+
+	/* Init the xen-balloon driver. */
+	xen_balloon_init();
 
 	return 0;
 }

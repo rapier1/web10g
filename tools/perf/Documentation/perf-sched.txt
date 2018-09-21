@@ -1,5 +1,5 @@
 perf-sched(1)
-==============
+=============
 
 NAME
 ----
@@ -74,6 +74,10 @@ OPTIONS
 --dump-raw-trace=::
         Display verbose dump of the sched data.
 
+-f::
+--force::
+	Don't complain, do it.
+
 OPTIONS for 'perf sched map'
 ----------------------------
 
@@ -100,11 +104,19 @@ OPTIONS for 'perf sched timehist'
     kallsyms pathname
 
 -g::
---no-call-graph::
-	Do not display call chains if present.
+--call-graph::
+	Display call chains if present (default on).
 
 --max-stack::
 	Maximum number of functions to display in backtrace, default 5.
+
+-p=::
+--pid=::
+	Only show events for given process ID (comma separated list).
+
+-t=::
+--tid=::
+	Only show events for given thread ID (comma separated list).
 
 -s::
 --summary::
@@ -132,6 +144,10 @@ OPTIONS for 'perf sched timehist'
 --migrations::
 	Show migration events.
 
+-n::
+--next::
+	Show next task.
+
 -I::
 --idle-hist::
 	Show idle-related events only.
@@ -143,6 +159,8 @@ OPTIONS for 'perf sched timehist'
 	stop time is not given (i.e, time string is 'x.y,') then analysis goes
 	to end of file.
 
+--state::
+	Show task state when it switched out.
 
 SEE ALSO
 --------

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/mm/compaction.c
  *
@@ -12,6 +13,7 @@
 #include <linux/migrate.h>
 #include <linux/compaction.h>
 #include <linux/mm_inline.h>
+#include <linux/sched/signal.h>
 #include <linux/backing-dev.h>
 #include <linux/sysctl.h>
 #include <linux/sysfs.h>
@@ -86,11 +88,6 @@ static void map_pages(struct list_head *list)
 	}
 
 	list_splice(&tmp_list, list);
-}
-
-static inline bool migrate_async_suitable(int migratetype)
-{
-	return is_migrate_cma(migratetype) || migratetype == MIGRATE_MOVABLE;
 }
 
 #ifdef CONFIG_COMPACTION
@@ -222,6 +219,24 @@ static void reset_cached_positions(struct zone *zone)
 }
 
 /*
+ * Compound pages of >= pageblock_order should consistenly be skipped until
+ * released. It is always pointless to compact pages of such order (if they are
+ * migratable), and the pageblocks they occupy cannot contain any free pages.
+ */
+static bool pageblock_skip_persistent(struct page *page)
+{
+	if (!PageCompound(page))
+		return false;
+
+	page = compound_head(page);
+
+	if (compound_order(page) >= pageblock_order)
+		return true;
+
+	return false;
+}
+
+/*
  * This function is called to clear all cached information on pageblocks that
  * should be skipped for page isolation when the migrate and free page scanner
  * meet.
@@ -240,11 +255,12 @@ static void __reset_isolation_suitable(struct zone *zone)
 
 		cond_resched();
 
-		if (!pfn_valid(pfn))
+		page = pfn_to_online_page(pfn);
+		if (!page)
 			continue;
-
-		page = pfn_to_page(pfn);
 		if (zone != page_zone(page))
+			continue;
+		if (pageblock_skip_persistent(page))
 			continue;
 
 		clear_pageblock_skip(page);
@@ -279,7 +295,7 @@ static void update_pageblock_skip(struct compact_control *cc,
 	struct zone *zone = cc->zone;
 	unsigned long pfn;
 
-	if (cc->ignore_skip_hint)
+	if (cc->no_set_skip_hint)
 		return;
 
 	if (!page)
@@ -311,7 +327,12 @@ static inline bool isolation_suitable(struct compact_control *cc,
 	return true;
 }
 
-static void update_pageblock_skip(struct compact_control *cc,
+static inline bool pageblock_skip_persistent(struct page *page)
+{
+	return false;
+}
+
+static inline void update_pageblock_skip(struct compact_control *cc,
 			struct page *page, unsigned long nr_isolated,
 			bool migrate_scanner)
 {
@@ -453,13 +474,12 @@ static unsigned long isolate_freepages_block(struct compact_control *cc,
 		 * and the only danger is skipping too much.
 		 */
 		if (PageCompound(page)) {
-			unsigned int comp_order = compound_order(page);
+			const unsigned int order = compound_order(page);
 
-			if (likely(comp_order < MAX_ORDER)) {
-				blockpfn += (1UL << comp_order) - 1;
-				cursor += (1UL << comp_order) - 1;
+			if (likely(order < MAX_ORDER)) {
+				blockpfn += (1UL << order) - 1;
+				cursor += (1UL << order) - 1;
 			}
-
 			goto isolate_fail;
 		}
 
@@ -548,7 +568,7 @@ isolate_fail:
 	if (blockpfn == end_pfn)
 		update_pageblock_skip(cc, valid_page, total_isolated, false);
 
-	count_compact_events(COMPACTFREE_SCANNED, nr_scanned);
+	cc->total_free_scanned += nr_scanned;
 	if (total_isolated)
 		count_compact_events(COMPACTISOLATED, total_isolated);
 	return total_isolated;
@@ -556,6 +576,7 @@ isolate_fail:
 
 /**
  * isolate_freepages_range() - isolate free pages.
+ * @cc:        Compaction control structure.
  * @start_pfn: The first PFN to start isolating.
  * @end_pfn:   The one-past-last PFN.
  *
@@ -776,11 +797,10 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 		 * danger is skipping too much.
 		 */
 		if (PageCompound(page)) {
-			unsigned int comp_order = compound_order(page);
+			const unsigned int order = compound_order(page);
 
-			if (likely(comp_order < MAX_ORDER))
-				low_pfn += (1UL << comp_order) - 1;
-
+			if (likely(order < MAX_ORDER))
+				low_pfn += (1UL << order) - 1;
 			goto isolate_fail;
 		}
 
@@ -802,7 +822,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 					locked = false;
 				}
 
-				if (isolate_movable_page(page, isolate_mode))
+				if (!isolate_movable_page(page, isolate_mode))
 					goto isolate_success;
 			}
 
@@ -931,7 +951,7 @@ isolate_fail:
 	trace_mm_compaction_isolate_migratepages(start_pfn, low_pfn,
 						nr_scanned, nr_isolated);
 
-	count_compact_events(COMPACTMIGRATE_SCANNED, nr_scanned);
+	cc->total_migrate_scanned += nr_scanned;
 	if (nr_isolated)
 		count_compact_events(COMPACTISOLATED, nr_isolated);
 
@@ -987,13 +1007,26 @@ isolate_migratepages_range(struct compact_control *cc, unsigned long start_pfn,
 #endif /* CONFIG_COMPACTION || CONFIG_CMA */
 #ifdef CONFIG_COMPACTION
 
+static bool suitable_migration_source(struct compact_control *cc,
+							struct page *page)
+{
+	int block_mt;
+
+	if ((cc->mode != MIGRATE_ASYNC) || !cc->direct_compaction)
+		return true;
+
+	block_mt = get_pageblock_migratetype(page);
+
+	if (cc->migratetype == MIGRATE_MOVABLE)
+		return is_migrate_movable(block_mt);
+	else
+		return block_mt == cc->migratetype;
+}
+
 /* Returns true if the page is within a block suitable for migration to */
 static bool suitable_migration_target(struct compact_control *cc,
 							struct page *page)
 {
-	if (cc->ignore_block_suitable)
-		return true;
-
 	/* If the page is a large free page, then disallow migration */
 	if (PageBuddy(page)) {
 		/*
@@ -1005,8 +1038,11 @@ static bool suitable_migration_target(struct compact_control *cc,
 			return false;
 	}
 
+	if (cc->ignore_block_suitable)
+		return true;
+
 	/* If the block is MIGRATE_MOVABLE or MIGRATE_CMA, allow migration */
-	if (migrate_async_suitable(get_pageblock_migratetype(page)))
+	if (is_migrate_movable(get_pageblock_migratetype(page)))
 		return true;
 
 	/* Otherwise skip the block */
@@ -1130,8 +1166,7 @@ static void isolate_freepages(struct compact_control *cc)
  * from the isolated freelists in the block we are migrating to.
  */
 static struct page *compaction_alloc(struct page *migratepage,
-					unsigned long data,
-					int **result)
+					unsigned long data)
 {
 	struct compact_control *cc = (struct compact_control *)data;
 	struct page *freepage;
@@ -1241,8 +1276,7 @@ static isolate_migrate_t isolate_migratepages(struct zone *zone,
 		 * Async compaction is optimistic to see if the minimum amount
 		 * of work satisfies the allocation.
 		 */
-		if (cc->mode == MIGRATE_ASYNC &&
-		    !migrate_async_suitable(get_pageblock_migratetype(page)))
+		if (!suitable_migration_source(cc, page))
 			continue;
 
 		/* Perform the isolation */
@@ -1275,11 +1309,11 @@ static inline bool is_via_compact_memory(int order)
 	return order == -1;
 }
 
-static enum compact_result __compact_finished(struct zone *zone, struct compact_control *cc,
-			    const int migratetype)
+static enum compact_result __compact_finished(struct zone *zone,
+						struct compact_control *cc)
 {
 	unsigned int order;
-	unsigned long watermark;
+	const int migratetype = cc->migratetype;
 
 	if (cc->contended || fatal_signal_pending(current))
 		return COMPACT_CONTENDED;
@@ -1307,12 +1341,16 @@ static enum compact_result __compact_finished(struct zone *zone, struct compact_
 	if (is_via_compact_memory(cc->order))
 		return COMPACT_CONTINUE;
 
-	/* Compaction run is not finished if the watermark is not met */
-	watermark = zone->watermark[cc->alloc_flags & ALLOC_WMARK_MASK];
-
-	if (!zone_watermark_ok(zone, cc->order, watermark, cc->classzone_idx,
-							cc->alloc_flags))
-		return COMPACT_CONTINUE;
+	if (cc->finishing_block) {
+		/*
+		 * We have finished the pageblock, but better check again that
+		 * we really succeeded.
+		 */
+		if (IS_ALIGNED(cc->migrate_pfn, pageblock_nr_pages))
+			cc->finishing_block = false;
+		else
+			return COMPACT_CONTINUE;
+	}
 
 	/* Direct compactor: Is a suitable page free? */
 	for (order = cc->order; order < MAX_ORDER; order++) {
@@ -1334,20 +1372,40 @@ static enum compact_result __compact_finished(struct zone *zone, struct compact_
 		 * other migratetype buddy lists.
 		 */
 		if (find_suitable_fallback(area, order, migratetype,
-						true, &can_steal) != -1)
-			return COMPACT_SUCCESS;
+						true, &can_steal) != -1) {
+
+			/* movable pages are OK in any pageblock */
+			if (migratetype == MIGRATE_MOVABLE)
+				return COMPACT_SUCCESS;
+
+			/*
+			 * We are stealing for a non-movable allocation. Make
+			 * sure we finish compacting the current pageblock
+			 * first so it is as free as possible and we won't
+			 * have to steal another one soon. This only applies
+			 * to sync compaction, as async compaction operates
+			 * on pageblocks of the same migratetype.
+			 */
+			if (cc->mode == MIGRATE_ASYNC ||
+					IS_ALIGNED(cc->migrate_pfn,
+							pageblock_nr_pages)) {
+				return COMPACT_SUCCESS;
+			}
+
+			cc->finishing_block = true;
+			return COMPACT_CONTINUE;
+		}
 	}
 
 	return COMPACT_NO_SUITABLE_PAGE;
 }
 
 static enum compact_result compact_finished(struct zone *zone,
-			struct compact_control *cc,
-			const int migratetype)
+			struct compact_control *cc)
 {
 	int ret;
 
-	ret = __compact_finished(zone, cc, migratetype);
+	ret = __compact_finished(zone, cc);
 	trace_mm_compaction_finished(zone, cc->order, ret);
 	if (ret == COMPACT_NO_SUITABLE_PAGE)
 		ret = COMPACT_CONTINUE;
@@ -1480,9 +1538,9 @@ static enum compact_result compact_zone(struct zone *zone, struct compact_contro
 	enum compact_result ret;
 	unsigned long start_pfn = zone->zone_start_pfn;
 	unsigned long end_pfn = zone_end_pfn(zone);
-	const int migratetype = gfpflags_to_migratetype(cc->gfp_mask);
 	const bool sync = cc->mode != MIGRATE_ASYNC;
 
+	cc->migratetype = gfpflags_to_migratetype(cc->gfp_mask);
 	ret = compaction_suitable(zone, cc->order, cc->alloc_flags,
 							cc->classzone_idx);
 	/* Compaction is likely to fail */
@@ -1532,8 +1590,7 @@ static enum compact_result compact_zone(struct zone *zone, struct compact_contro
 
 	migrate_prep_local();
 
-	while ((ret = compact_finished(zone, cc, migratetype)) ==
-						COMPACT_CONTINUE) {
+	while ((ret = compact_finished(zone, cc)) == COMPACT_CONTINUE) {
 		int err;
 
 		switch (isolate_migratepages(zone, cc)) {
@@ -1631,6 +1688,9 @@ out:
 			zone->compact_cached_free_pfn = free_pfn;
 	}
 
+	count_compact_events(COMPACTMIGRATE_SCANNED, cc->total_migrate_scanned);
+	count_compact_events(COMPACTFREE_SCANNED, cc->total_free_scanned);
+
 	trace_mm_compaction_end(start_pfn, cc->migrate_pfn,
 				cc->free_pfn, end_pfn, sync, ret);
 
@@ -1645,6 +1705,8 @@ static enum compact_result compact_zone_order(struct zone *zone, int order,
 	struct compact_control cc = {
 		.nr_freepages = 0,
 		.nr_migratepages = 0,
+		.total_migrate_scanned = 0,
+		.total_free_scanned = 0,
 		.order = order,
 		.gfp_mask = gfp_mask,
 		.zone = zone,
@@ -1676,7 +1738,7 @@ int sysctl_extfrag_threshold = 500;
  * @order: The order of the current allocation
  * @alloc_flags: The allocation flags of the current allocation
  * @ac: The context of current allocation
- * @mode: The migration mode for async, sync light, or sync migration
+ * @prio: Determines how hard direct compaction should try to succeed
  *
  * This is the main entry point for direct page compaction.
  */
@@ -1757,6 +1819,8 @@ static void compact_node(int nid)
 	struct zone *zone;
 	struct compact_control cc = {
 		.order = -1,
+		.total_migrate_scanned = 0,
+		.total_free_scanned = 0,
 		.mode = MIGRATE_SYNC,
 		.ignore_skip_hint = true,
 		.whole_zone = true,
@@ -1835,7 +1899,7 @@ static ssize_t sysfs_compact_node(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(compact, S_IWUSR, NULL, sysfs_compact_node);
+static DEVICE_ATTR(compact, 0200, NULL, sysfs_compact_node);
 
 int compaction_register_node(struct node *node)
 {
@@ -1883,15 +1947,16 @@ static void kcompactd_do_work(pg_data_t *pgdat)
 	struct zone *zone;
 	struct compact_control cc = {
 		.order = pgdat->kcompactd_max_order,
+		.total_migrate_scanned = 0,
+		.total_free_scanned = 0,
 		.classzone_idx = pgdat->kcompactd_classzone_idx,
 		.mode = MIGRATE_SYNC_LIGHT,
-		.ignore_skip_hint = true,
+		.ignore_skip_hint = false,
 		.gfp_mask = GFP_KERNEL,
-
 	};
 	trace_mm_compaction_kcompactd_wake(pgdat->node_id, cc.order,
 							cc.classzone_idx);
-	count_vm_event(KCOMPACTD_WAKE);
+	count_compact_event(KCOMPACTD_WAKE);
 
 	for (zoneid = 0; zoneid <= cc.classzone_idx; zoneid++) {
 		int status;
@@ -1909,6 +1974,8 @@ static void kcompactd_do_work(pg_data_t *pgdat)
 
 		cc.nr_freepages = 0;
 		cc.nr_migratepages = 0;
+		cc.total_migrate_scanned = 0;
+		cc.total_free_scanned = 0;
 		cc.zone = zone;
 		INIT_LIST_HEAD(&cc.freepages);
 		INIT_LIST_HEAD(&cc.migratepages);
@@ -1921,11 +1988,24 @@ static void kcompactd_do_work(pg_data_t *pgdat)
 			compaction_defer_reset(zone, cc.order, false);
 		} else if (status == COMPACT_PARTIAL_SKIPPED || status == COMPACT_COMPLETE) {
 			/*
+			 * Buddy pages may become stranded on pcps that could
+			 * otherwise coalesce on the zone's free area for
+			 * order >= cc.order.  This is ratelimited by the
+			 * upcoming deferral.
+			 */
+			drain_all_pages(zone);
+
+			/*
 			 * We use sync migration mode here, so we defer like
 			 * sync direct compaction does.
 			 */
 			defer_compaction(zone, cc.order);
 		}
+
+		count_compact_events(KCOMPACTD_MIGRATE_SCANNED,
+				     cc.total_migrate_scanned);
+		count_compact_events(KCOMPACTD_FREE_SCANNED,
+				     cc.total_free_scanned);
 
 		VM_BUG_ON(!list_empty(&cc.freepages));
 		VM_BUG_ON(!list_empty(&cc.migratepages));
@@ -1953,7 +2033,11 @@ void wakeup_kcompactd(pg_data_t *pgdat, int order, int classzone_idx)
 	if (pgdat->kcompactd_classzone_idx > classzone_idx)
 		pgdat->kcompactd_classzone_idx = classzone_idx;
 
-	if (!waitqueue_active(&pgdat->kcompactd_wait))
+	/*
+	 * Pairs with implicit barrier in wait_event_freezable()
+	 * such that wakeups are not missed.
+	 */
+	if (!wq_has_sleeper(&pgdat->kcompactd_wait))
 		return;
 
 	if (!kcompactd_node_suitable(pgdat))

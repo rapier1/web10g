@@ -30,9 +30,10 @@
  * whenever the backing MOB is evicted.
  */
 
+#include <drm/ttm/ttm_placement.h>
+
 #include "vmwgfx_drv.h"
 #include "vmwgfx_resource_priv.h"
-#include <ttm/ttm_placement.h>
 #include "vmwgfx_so.h"
 
 /**
@@ -386,6 +387,7 @@ static int vmw_cotable_readback(struct vmw_resource *res)
  */
 static int vmw_cotable_resize(struct vmw_resource *res, size_t new_size)
 {
+	struct ttm_operation_ctx ctx = { false, false };
 	struct vmw_private *dev_priv = res->dev_priv;
 	struct vmw_cotable *vcotbl = vmw_cotable(res);
 	struct vmw_dma_buffer *buf, *old_buf = res->backup;
@@ -454,7 +456,7 @@ static int vmw_cotable_resize(struct vmw_resource *res, size_t new_size)
 	}
 
 	/* Unpin new buffer, and switch backup buffers. */
-	ret = ttm_bo_validate(bo, &vmw_mob_placement, false, false);
+	ret = ttm_bo_validate(bo, &vmw_mob_placement, &ctx);
 	if (unlikely(ret != 0)) {
 		DRM_ERROR("Failed validating new COTable backup buffer.\n");
 		goto out_wait;
@@ -571,6 +573,10 @@ struct vmw_resource *vmw_cotable_alloc(struct vmw_private *dev_priv,
 				       u32 type)
 {
 	struct vmw_cotable *vcotbl;
+	struct ttm_operation_ctx ttm_opt_ctx = {
+		.interruptible = true,
+		.no_wait_gpu = false
+	};
 	int ret;
 	u32 num_entries;
 
@@ -578,12 +584,12 @@ struct vmw_resource *vmw_cotable_alloc(struct vmw_private *dev_priv,
 		cotable_acc_size = ttm_round_pot(sizeof(struct vmw_cotable));
 
 	ret = ttm_mem_global_alloc(vmw_mem_glob(dev_priv),
-				   cotable_acc_size, false, true);
+				   cotable_acc_size, &ttm_opt_ctx);
 	if (unlikely(ret))
 		return ERR_PTR(ret);
 
 	vcotbl = kzalloc(sizeof(*vcotbl), GFP_KERNEL);
-	if (unlikely(vcotbl == NULL)) {
+	if (unlikely(!vcotbl)) {
 		ret = -ENOMEM;
 		goto out_no_alloc;
 	}

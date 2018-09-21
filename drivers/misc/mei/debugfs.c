@@ -67,7 +67,7 @@ static ssize_t mei_dbgfs_read_meclients(struct file *fp, char __user *ubuf,
 				me_cl->props.max_number_of_connections,
 				me_cl->props.max_msg_length,
 				me_cl->props.single_recv_buf,
-				atomic_read(&me_cl->refcnt.refcount));
+				kref_read(&me_cl->refcnt));
 
 			mei_me_cl_put(me_cl);
 		}
@@ -97,7 +97,7 @@ static ssize_t mei_dbgfs_read_active(struct file *fp, char __user *ubuf,
 	int pos = 0;
 	int ret;
 
-#define HDR "   |me|host|state|rd|wr|\n"
+#define HDR "   |me|host|state|rd|wr|wrq\n"
 
 	if (!dev)
 		return -ENODEV;
@@ -130,9 +130,10 @@ static ssize_t mei_dbgfs_read_active(struct file *fp, char __user *ubuf,
 	list_for_each_entry(cl, &dev->file_list, link) {
 
 		pos += scnprintf(buf + pos, bufsz - pos,
-			"%3d|%2d|%4d|%5d|%2d|%2d|\n",
+			"%3d|%2d|%4d|%5d|%2d|%2d|%3u\n",
 			i, mei_cl_me_id(cl), cl->host_client_id, cl->state,
-			!list_empty(&cl->rd_completed), cl->writing_state);
+			!list_empty(&cl->rd_completed), cl->writing_state,
+			cl->tx_cb_queued);
 		i++;
 	}
 out:

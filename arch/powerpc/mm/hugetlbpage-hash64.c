@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PPC64 Huge TLB Page Support for hash based MMUs (POWER4 and later)
  *
@@ -22,10 +23,11 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 		     pte_t *ptep, unsigned long trap, unsigned long flags,
 		     int ssize, unsigned int shift, unsigned int mmu_psize)
 {
+	real_pte_t rpte;
 	unsigned long vpn;
 	unsigned long old_pte, new_pte;
 	unsigned long rflags, pa, sz;
-	long slot;
+	long slot, offset;
 
 	BUG_ON(shift != mmu_psize_defs[mmu_psize].shift);
 
@@ -61,6 +63,11 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 	} while(!pte_xchg(ptep, __pte(old_pte), __pte(new_pte)));
 
 	rflags = htab_convert_pte_flags(new_pte);
+	if (unlikely(mmu_psize == MMU_PAGE_16G))
+		offset = PTRS_PER_PUD;
+	else
+		offset = PTRS_PER_PMD;
+	rpte = __real_pte(__pte(old_pte), ptep, offset);
 
 	sz = ((1UL) << shift);
 	if (!cpu_has_feature(CPU_FTR_COHERENT_ICACHE))
@@ -71,15 +78,10 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 	/* Check if pte already has an hpte (case 2) */
 	if (unlikely(old_pte & H_PAGE_HASHPTE)) {
 		/* There MIGHT be an HPTE for this pte */
-		unsigned long hash, slot;
+		unsigned long gslot;
 
-		hash = hpt_hash(vpn, shift, ssize);
-		if (old_pte & H_PAGE_F_SECOND)
-			hash = ~hash;
-		slot = (hash & htab_hash_mask) * HPTES_PER_GROUP;
-		slot += (old_pte & H_PAGE_F_GIX) >> H_PAGE_F_GIX_SHIFT;
-
-		if (mmu_hash_ops.hpte_updatepp(slot, rflags, vpn, mmu_psize,
+		gslot = pte_get_hash_gslot(vpn, shift, ssize, rpte, 0);
+		if (mmu_hash_ops.hpte_updatepp(gslot, rflags, vpn, mmu_psize,
 					       mmu_psize, ssize, flags) == -1)
 			old_pte &= ~_PAGE_HPTEFLAGS;
 	}
@@ -106,8 +108,7 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 			return -1;
 		}
 
-		new_pte |= (slot << H_PAGE_F_GIX_SHIFT) &
-			(H_PAGE_F_SECOND | H_PAGE_F_GIX);
+		new_pte |= pte_set_hidx(ptep, rpte, 0, slot, offset);
 	}
 
 	/*
@@ -116,24 +117,3 @@ int __hash_page_huge(unsigned long ea, unsigned long access, unsigned long vsid,
 	*ptep = __pte(new_pte & ~H_PAGE_BUSY);
 	return 0;
 }
-
-#if defined(CONFIG_PPC_64K_PAGES) && defined(CONFIG_DEBUG_VM)
-/*
- * This enables us to catch the wrong page directory format
- * Moved here so that we can use WARN() in the call.
- */
-int hugepd_ok(hugepd_t hpd)
-{
-	bool is_hugepd;
-	unsigned long hpdval;
-
-	hpdval = hpd_val(hpd);
-
-	/*
-	 * We should not find this format in page directory, warn otherwise.
-	 */
-	is_hugepd = (((hpdval & 0x3) == 0x0) && ((hpdval & HUGEPD_SHIFT_MASK) != 0));
-	WARN(is_hugepd, "Found wrong page directory format\n");
-	return 0;
-}
-#endif

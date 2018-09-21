@@ -1,11 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 
 #ifndef _BCACHE_UTIL_H
 #define _BCACHE_UTIL_H
 
 #include <linux/blkdev.h>
 #include <linux/errno.h>
-#include <linux/blkdev.h>
 #include <linux/kernel.h>
+#include <linux/sched/clock.h>
 #include <linux/llist.h>
 #include <linux/ratelimit.h>
 #include <linux/vmalloc.h>
@@ -43,11 +44,7 @@ struct closure;
 	(heap)->used = 0;						\
 	(heap)->size = (_size);						\
 	_bytes = (heap)->size * sizeof(*(heap)->data);			\
-	(heap)->data = NULL;						\
-	if (_bytes < KMALLOC_MAX_SIZE)					\
-		(heap)->data = kmalloc(_bytes, (gfp));			\
-	if ((!(heap)->data) && ((gfp) & GFP_KERNEL))			\
-		(heap)->data = vmalloc(_bytes);				\
+	(heap)->data = kvmalloc(_bytes, (gfp) & GFP_KERNEL);		\
 	(heap)->data;							\
 })
 
@@ -115,6 +112,8 @@ do {									\
 
 #define heap_full(h)	((h)->used == (h)->size)
 
+#define heap_empty(h)	((h)->used == 0)
+
 #define DECLARE_FIFO(type, name)					\
 	struct {							\
 		size_t front, back, size, mask;				\
@@ -136,12 +135,8 @@ do {									\
 									\
 	(fifo)->mask = _allocated_size - 1;				\
 	(fifo)->front = (fifo)->back = 0;				\
-	(fifo)->data = NULL;						\
 									\
-	if (_bytes < KMALLOC_MAX_SIZE)					\
-		(fifo)->data = kmalloc(_bytes, (gfp));			\
-	if ((!(fifo)->data) && ((gfp) & GFP_KERNEL))			\
-		(fifo)->data = vmalloc(_bytes);				\
+	(fifo)->data = kvmalloc(_bytes, (gfp) & GFP_KERNEL);		\
 	(fifo)->data;							\
 })
 
@@ -370,11 +365,6 @@ ssize_t bch_hprint(char *buf, int64_t v);
 bool bch_is_zero(const char *p, size_t n);
 int bch_parse_uuid(const char *s, char *uuid);
 
-ssize_t bch_snprint_string_list(char *buf, size_t size, const char * const list[],
-			    size_t selected);
-
-ssize_t bch_read_string_list(const char *buf, const char * const list[]);
-
 struct time_stats {
 	spinlock_t	lock;
 	/*
@@ -449,10 +439,10 @@ struct bch_ratelimit {
 	uint64_t		next;
 
 	/*
-	 * Rate at which we want to do work, in units per nanosecond
+	 * Rate at which we want to do work, in units per second
 	 * The units here correspond to the units passed to bch_next_delay()
 	 */
-	unsigned		rate;
+	uint32_t		rate;
 };
 
 static inline void bch_ratelimit_reset(struct bch_ratelimit *d)
@@ -565,17 +555,12 @@ static inline unsigned fract_exp_two(unsigned x, unsigned fract_bits)
 }
 
 void bch_bio_map(struct bio *bio, void *base);
+int bch_bio_alloc_pages(struct bio *bio, gfp_t gfp_mask);
 
 static inline sector_t bdev_sectors(struct block_device *bdev)
 {
 	return bdev->bd_inode->i_size >> 9;
 }
-
-#define closure_bio_submit(bio, cl)					\
-do {									\
-	closure_get(cl);						\
-	generic_make_request(bio);					\
-} while (0)
 
 uint64_t bch_crc64_update(uint64_t, const void *, size_t);
 uint64_t bch_crc64(const void *, size_t);

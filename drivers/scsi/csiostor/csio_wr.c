@@ -276,7 +276,7 @@ csio_wr_alloc_q(struct csio_hw *hw, uint32_t qsize, uint32_t wrsize,
 			q->un.iq.flq_idx = flq_idx;
 
 			flq = wrm->q_arr[q->un.iq.flq_idx];
-			flq->un.fl.bufs = kzalloc(flq->credits *
+			flq->un.fl.bufs = kcalloc(flq->credits,
 						  sizeof(struct csio_dma_buf),
 						  GFP_KERNEL);
 			if (!flq->un.fl.bufs) {
@@ -480,12 +480,14 @@ csio_wr_iq_create(struct csio_hw *hw, void *priv, int iq_idx,
 
 	flq_idx = csio_q_iq_flq_idx(hw, iq_idx);
 	if (flq_idx != -1) {
+		enum chip_type chip = CHELSIO_CHIP_VERSION(hw->chip_id);
 		struct csio_q *flq = hw->wrm.q_arr[flq_idx];
 
 		iqp.fl0paden	= 1;
 		iqp.fl0packen	= flq->un.fl.packen ? 1 : 0;
 		iqp.fl0fbmin	= X_FETCHBURSTMIN_64B;
-		iqp.fl0fbmax	= X_FETCHBURSTMAX_512B;
+		iqp.fl0fbmax	= ((chip == CHELSIO_T5) ?
+				  X_FETCHBURSTMAX_512B : X_FETCHBURSTMAX_256B);
 		iqp.fl0size	= csio_q_size(hw, flq_idx) / CSIO_QCREDIT_SZ;
 		iqp.fl0addr	= csio_q_pstart(hw, flq_idx);
 	}
@@ -1577,7 +1579,7 @@ csio_wrm_init(struct csio_wrm *wrm, struct csio_hw *hw)
 		return -EINVAL;
 	}
 
-	wrm->q_arr = kzalloc(sizeof(struct csio_q *) * wrm->num_q, GFP_KERNEL);
+	wrm->q_arr = kcalloc(wrm->num_q, sizeof(struct csio_q *), GFP_KERNEL);
 	if (!wrm->q_arr)
 		goto err;
 

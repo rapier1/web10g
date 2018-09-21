@@ -7,6 +7,7 @@
 #include <linux/export.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
+#include <linux/cred.h>
 #include <linux/mount.h>
 #include <linux/vfs.h>
 #include <linux/quotaops.h>
@@ -20,10 +21,10 @@
 
 #include "internal.h"
 
-int simple_getattr(struct vfsmount *mnt, struct dentry *dentry,
-		   struct kstat *stat)
+int simple_getattr(const struct path *path, struct kstat *stat,
+		   u32 request_mask, unsigned int query_flags)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = d_inode(path->dentry);
 	generic_fillattr(inode, stat);
 	stat->blocks = inode->i_mapping->nrpages << (PAGE_SHIFT - 9);
 	return 0;
@@ -245,7 +246,7 @@ struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
 	struct inode *root;
 	struct qstr d_name = QSTR_INIT(name, strlen(name));
 
-	s = sget_userns(fs_type, NULL, set_anon_super, MS_KERNMOUNT|MS_NOUSER,
+	s = sget_userns(fs_type, NULL, set_anon_super, SB_KERNMOUNT|SB_NOUSER,
 			&init_user_ns, NULL);
 	if (IS_ERR(s))
 		return ERR_CAST(s);
@@ -276,7 +277,7 @@ struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
 	d_instantiate(dentry, root);
 	s->s_root = dentry;
 	s->s_d_op = dops;
-	s->s_flags |= MS_ACTIVE;
+	s->s_flags |= SB_ACTIVE;
 	return dget(s->s_root);
 
 Enomem:
@@ -506,7 +507,7 @@ EXPORT_SYMBOL(simple_write_end);
  * to pass it an appropriate max_reserved value to avoid collisions.
  */
 int simple_fill_super(struct super_block *s, unsigned long magic,
-		      struct tree_descr *files)
+		      const struct tree_descr *files)
 {
 	struct inode *inode;
 	struct dentry *root;
@@ -577,7 +578,7 @@ int simple_pin_fs(struct file_system_type *type, struct vfsmount **mount, int *c
 	spin_lock(&pin_fs_lock);
 	if (unlikely(!*mount)) {
 		spin_unlock(&pin_fs_lock);
-		mnt = vfs_kern_mount(type, MS_KERNMOUNT, type->name, NULL);
+		mnt = vfs_kern_mount(type, SB_KERNMOUNT, type->name, NULL);
 		if (IS_ERR(mnt))
 			return PTR_ERR(mnt);
 		spin_lock(&pin_fs_lock);
@@ -973,7 +974,7 @@ int __generic_file_fsync(struct file *file, loff_t start, loff_t end,
 	int err;
 	int ret;
 
-	err = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	err = file_write_and_wait_range(file, start, end);
 	if (err)
 		return err;
 
@@ -990,6 +991,10 @@ int __generic_file_fsync(struct file *file, loff_t start, loff_t end,
 
 out:
 	inode_unlock(inode);
+	/* check and advance again to catch errors after syncing out buffers */
+	err = file_check_and_advance_wb_err(file);
+	if (ret == 0)
+		ret = err;
 	return ret;
 }
 EXPORT_SYMBOL(__generic_file_fsync);
@@ -1054,6 +1059,45 @@ int noop_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	return 0;
 }
 EXPORT_SYMBOL(noop_fsync);
+
+int noop_set_page_dirty(struct page *page)
+{
+	/*
+	 * Unlike __set_page_dirty_no_writeback that handles dirty page
+	 * tracking in the page object, dax does all dirty tracking in
+	 * the inode address_space in response to mkwrite faults. In the
+	 * dax case we only need to worry about potentially dirty CPU
+	 * caches, not dirty page cache pages to write back.
+	 *
+	 * This callback is defined to prevent fallback to
+	 * __set_page_dirty_buffers() in set_page_dirty().
+	 */
+	return 0;
+}
+EXPORT_SYMBOL_GPL(noop_set_page_dirty);
+
+void noop_invalidatepage(struct page *page, unsigned int offset,
+		unsigned int length)
+{
+	/*
+	 * There is no page cache to invalidate in the dax case, however
+	 * we need this callback defined to prevent falling back to
+	 * block_invalidatepage() in do_invalidatepage().
+	 */
+}
+EXPORT_SYMBOL_GPL(noop_invalidatepage);
+
+ssize_t noop_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
+{
+	/*
+	 * iomap based filesystems support direct I/O without need for
+	 * this callback. However, it still needs to be set in
+	 * inode->a_ops so that open/fcntl know that direct I/O is
+	 * generally supported.
+	 */
+	return -EINVAL;
+}
+EXPORT_SYMBOL_GPL(noop_direct_IO);
 
 /* Because kfree isn't assignment-compatible with void(void*) ;-/ */
 void kfree_link(void *p)
@@ -1143,10 +1187,10 @@ static struct dentry *empty_dir_lookup(struct inode *dir, struct dentry *dentry,
 	return ERR_PTR(-ENOENT);
 }
 
-static int empty_dir_getattr(struct vfsmount *mnt, struct dentry *dentry,
-				 struct kstat *stat)
+static int empty_dir_getattr(const struct path *path, struct kstat *stat,
+			     u32 request_mask, unsigned int query_flags)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = d_inode(path->dentry);
 	generic_fillattr(inode, stat);
 	return 0;
 }

@@ -459,6 +459,11 @@ isl1208_i2c_set_time(struct i2c_client *client, struct rtc_time const *tm)
 	}
 
 	/* clear WRTC again */
+	sr = isl1208_i2c_get_sr(client);
+	if (sr < 0) {
+		dev_err(&client->dev, "%s: reading SR failed\n", __func__);
+		return sr;
+	}
 	sr = i2c_smbus_write_byte_data(client, ISL1208_REG_SR,
 				       sr & ~ISL1208_REG_SR_WRTC);
 	if (sr < 0) {
@@ -630,28 +635,11 @@ isl1208_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (isl1208_i2c_validate_client(client) < 0)
 		return -ENODEV;
 
-	if (client->irq > 0) {
-		rc = devm_request_threaded_irq(&client->dev, client->irq, NULL,
-					       isl1208_rtc_interrupt,
-					       IRQF_SHARED | IRQF_ONESHOT,
-					       isl1208_driver.driver.name,
-					       client);
-		if (!rc) {
-			device_init_wakeup(&client->dev, 1);
-			enable_irq_wake(client->irq);
-		} else {
-			dev_err(&client->dev,
-				"Unable to request irq %d, no alarm support\n",
-				client->irq);
-			client->irq = 0;
-		}
-	}
-
-	rtc = devm_rtc_device_register(&client->dev, isl1208_driver.driver.name,
-				  &isl1208_rtc_ops,
-				  THIS_MODULE);
+	rtc = devm_rtc_allocate_device(&client->dev);
 	if (IS_ERR(rtc))
 		return PTR_ERR(rtc);
+
+	rtc->ops = &isl1208_rtc_ops;
 
 	i2c_set_clientdata(client, rtc);
 
@@ -669,7 +657,24 @@ isl1208_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (rc)
 		return rc;
 
-	return 0;
+	if (client->irq > 0) {
+		rc = devm_request_threaded_irq(&client->dev, client->irq, NULL,
+					       isl1208_rtc_interrupt,
+					       IRQF_SHARED | IRQF_ONESHOT,
+					       isl1208_driver.driver.name,
+					       client);
+		if (!rc) {
+			device_init_wakeup(&client->dev, 1);
+			enable_irq_wake(client->irq);
+		} else {
+			dev_err(&client->dev,
+				"Unable to request irq %d, no alarm support\n",
+				client->irq);
+			client->irq = 0;
+		}
+	}
+
+	return rtc_register_device(rtc);
 }
 
 static int
@@ -687,10 +692,18 @@ static const struct i2c_device_id isl1208_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, isl1208_id);
 
+static const struct of_device_id isl1208_of_match[] = {
+	{ .compatible = "isil,isl1208" },
+	{ .compatible = "isil,isl1218" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, isl1208_of_match);
+
 static struct i2c_driver isl1208_driver = {
 	.driver = {
-		   .name = "rtc-isl1208",
-		   },
+		.name = "rtc-isl1208",
+		.of_match_table = of_match_ptr(isl1208_of_match),
+	},
 	.probe = isl1208_probe,
 	.remove = isl1208_remove,
 	.id_table = isl1208_id,

@@ -25,6 +25,9 @@
 #include <linux/types.h>
 #include <uapi/drm/drm_fourcc.h>
 
+struct drm_device;
+struct drm_mode_fb_cmd2;
+
 /**
  * struct drm_format_info - information about a DRM format
  * @format: 4CC format identifier (DRM_FORMAT_*)
@@ -35,6 +38,7 @@
  * @cpp: Number of bytes per pixel (per plane)
  * @hsub: Horizontal chroma subsampling factor
  * @vsub: Vertical chroma subsampling factor
+ * @has_alpha: Does the format embeds an alpha component?
  */
 struct drm_format_info {
 	u32 format;
@@ -43,6 +47,7 @@ struct drm_format_info {
 	u8 cpp[3];
 	u8 hsub;
 	u8 vsub;
+	bool has_alpha;
 };
 
 /**
@@ -55,6 +60,9 @@ struct drm_format_name_buf {
 
 const struct drm_format_info *__drm_format_info(u32 format);
 const struct drm_format_info *drm_format_info(u32 format);
+const struct drm_format_info *
+drm_get_format_info(struct drm_device *dev,
+		    const struct drm_mode_fb_cmd2 *mode_cmd);
 uint32_t drm_mode_legacy_fb_format(uint32_t bpp, uint32_t depth);
 int drm_format_num_planes(uint32_t format);
 int drm_format_plane_cpp(uint32_t format, int plane);

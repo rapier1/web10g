@@ -17,6 +17,8 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/livepatch.h>
@@ -82,7 +84,6 @@ static int livepatch_init(void)
 
 static void livepatch_exit(void)
 {
-	WARN_ON(klp_disable_patch(&patch));
 	WARN_ON(klp_unregister_patch(&patch));
 }
 

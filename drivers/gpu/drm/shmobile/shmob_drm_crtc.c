@@ -21,8 +21,6 @@
 #include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_plane_helper.h>
 
-#include <video/sh_mobile_meram.h>
-
 #include "shmob_drm_backlight.h"
 #include "shmob_drm_crtc.h"
 #include "shmob_drm_drv.h"
@@ -47,20 +45,12 @@ static int shmob_drm_clk_on(struct shmob_drm_device *sdev)
 		if (ret < 0)
 			return ret;
 	}
-#if 0
-	if (sdev->meram_dev && sdev->meram_dev->pdev)
-		pm_runtime_get_sync(&sdev->meram_dev->pdev->dev);
-#endif
 
 	return 0;
 }
 
 static void shmob_drm_clk_off(struct shmob_drm_device *sdev)
 {
-#if 0
-	if (sdev->meram_dev && sdev->meram_dev->pdev)
-		pm_runtime_put_sync(&sdev->meram_dev->pdev->dev);
-#endif
 	if (sdev->clock)
 		clk_disable_unprepare(sdev->clock);
 }
@@ -174,7 +164,7 @@ static void shmob_drm_crtc_start(struct shmob_drm_crtc *scrtc)
 	if (scrtc->started)
 		return;
 
-	format = shmob_drm_format_info(crtc->primary->fb->pixel_format);
+	format = shmob_drm_format_info(crtc->primary->fb->format->format);
 	if (WARN_ON(format == NULL))
 		return;
 
@@ -269,12 +259,6 @@ static void shmob_drm_crtc_stop(struct shmob_drm_crtc *scrtc)
 	if (!scrtc->started)
 		return;
 
-	/* Disable the MERAM cache. */
-	if (scrtc->cache) {
-		sh_mobile_meram_cache_free(sdev->meram, scrtc->cache);
-		scrtc->cache = NULL;
-	}
-
 	/* Stop the LCDC. */
 	shmob_drm_crtc_start_stop(scrtc, false);
 
@@ -305,7 +289,6 @@ static void shmob_drm_crtc_compute_base(struct shmob_drm_crtc *scrtc,
 {
 	struct drm_crtc *crtc = &scrtc->crtc;
 	struct drm_framebuffer *fb = crtc->primary->fb;
-	struct shmob_drm_device *sdev = crtc->dev->dev_private;
 	struct drm_gem_cma_object *gem;
 	unsigned int bpp;
 
@@ -321,11 +304,6 @@ static void shmob_drm_crtc_compute_base(struct shmob_drm_crtc *scrtc,
 			      + y / (bpp == 4 ? 2 : 1) * fb->pitches[1]
 			      + x * (bpp == 16 ? 2 : 1);
 	}
-
-	if (scrtc->cache)
-		sh_mobile_meram_cache_update(sdev->meram, scrtc->cache,
-					     scrtc->dma[0], scrtc->dma[1],
-					     &scrtc->dma[0], &scrtc->dma[1]);
 }
 
 static void shmob_drm_crtc_update_base(struct shmob_drm_crtc *scrtc)
@@ -372,37 +350,17 @@ static int shmob_drm_crtc_mode_set(struct drm_crtc *crtc,
 {
 	struct shmob_drm_crtc *scrtc = to_shmob_crtc(crtc);
 	struct shmob_drm_device *sdev = crtc->dev->dev_private;
-	const struct sh_mobile_meram_cfg *mdata = sdev->pdata->meram;
 	const struct shmob_drm_format_info *format;
-	void *cache;
 
-	format = shmob_drm_format_info(crtc->primary->fb->pixel_format);
+	format = shmob_drm_format_info(crtc->primary->fb->format->format);
 	if (format == NULL) {
 		dev_dbg(sdev->dev, "mode_set: unsupported format %08x\n",
-			crtc->primary->fb->pixel_format);
+			crtc->primary->fb->format->format);
 		return -EINVAL;
 	}
 
 	scrtc->format = format;
 	scrtc->line_size = crtc->primary->fb->pitches[0];
-
-	if (sdev->meram) {
-		/* Enable MERAM cache if configured. We need to de-init
-		 * configured ICBs before we can re-initialize them.
-		 */
-		if (scrtc->cache) {
-			sh_mobile_meram_cache_free(sdev->meram, scrtc->cache);
-			scrtc->cache = NULL;
-		}
-
-		cache = sh_mobile_meram_cache_alloc(sdev->meram, mdata,
-						    crtc->primary->fb->pitches[0],
-						    adjusted_mode->vdisplay,
-						    format->meram,
-						    &scrtc->line_size);
-		if (!IS_ERR(cache))
-			scrtc->cache = cache;
-	}
 
 	shmob_drm_crtc_compute_base(scrtc, x, y);
 
@@ -449,7 +407,8 @@ void shmob_drm_crtc_finish_page_flip(struct shmob_drm_crtc *scrtc)
 static int shmob_drm_crtc_page_flip(struct drm_crtc *crtc,
 				    struct drm_framebuffer *fb,
 				    struct drm_pending_vblank_event *event,
-				    uint32_t page_flip_flags)
+				    uint32_t page_flip_flags,
+				    struct drm_modeset_acquire_ctx *ctx)
 {
 	struct shmob_drm_crtc *scrtc = to_shmob_crtc(crtc);
 	struct drm_device *dev = scrtc->crtc.dev;
@@ -476,10 +435,45 @@ static int shmob_drm_crtc_page_flip(struct drm_crtc *crtc,
 	return 0;
 }
 
+static void shmob_drm_crtc_enable_vblank(struct shmob_drm_device *sdev,
+					 bool enable)
+{
+	unsigned long flags;
+	u32 ldintr;
+
+	/* Be careful not to acknowledge any pending interrupt. */
+	spin_lock_irqsave(&sdev->irq_lock, flags);
+	ldintr = lcdc_read(sdev, LDINTR) | LDINTR_STATUS_MASK;
+	if (enable)
+		ldintr |= LDINTR_VEE;
+	else
+		ldintr &= ~LDINTR_VEE;
+	lcdc_write(sdev, LDINTR, ldintr);
+	spin_unlock_irqrestore(&sdev->irq_lock, flags);
+}
+
+static int shmob_drm_enable_vblank(struct drm_crtc *crtc)
+{
+	struct shmob_drm_device *sdev = crtc->dev->dev_private;
+
+	shmob_drm_crtc_enable_vblank(sdev, true);
+
+	return 0;
+}
+
+static void shmob_drm_disable_vblank(struct drm_crtc *crtc)
+{
+	struct shmob_drm_device *sdev = crtc->dev->dev_private;
+
+	shmob_drm_crtc_enable_vblank(sdev, false);
+}
+
 static const struct drm_crtc_funcs crtc_funcs = {
 	.destroy = drm_crtc_cleanup,
 	.set_config = drm_crtc_helper_set_config,
 	.page_flip = shmob_drm_crtc_page_flip,
+	.enable_vblank = shmob_drm_enable_vblank,
+	.disable_vblank = shmob_drm_disable_vblank,
 };
 
 int shmob_drm_crtc_create(struct shmob_drm_device *sdev)
@@ -594,22 +588,6 @@ int shmob_drm_encoder_create(struct shmob_drm_device *sdev)
 	return 0;
 }
 
-void shmob_drm_crtc_enable_vblank(struct shmob_drm_device *sdev, bool enable)
-{
-	unsigned long flags;
-	u32 ldintr;
-
-	/* Be careful not to acknowledge any pending interrupt. */
-	spin_lock_irqsave(&sdev->irq_lock, flags);
-	ldintr = lcdc_read(sdev, LDINTR) | LDINTR_STATUS_MASK;
-	if (enable)
-		ldintr |= LDINTR_VEE;
-	else
-		ldintr &= ~LDINTR_VEE;
-	lcdc_write(sdev, LDINTR, ldintr);
-	spin_unlock_irqrestore(&sdev->irq_lock, flags);
-}
-
 /* -----------------------------------------------------------------------------
  * Connector
  */
@@ -692,13 +670,10 @@ int shmob_drm_connector_create(struct shmob_drm_device *sdev,
 		return ret;
 
 	drm_connector_helper_add(connector, &connector_helper_funcs);
-	ret = drm_connector_register(connector);
-	if (ret < 0)
-		goto err_cleanup;
 
 	ret = shmob_drm_backlight_init(&sdev->connector);
 	if (ret < 0)
-		goto err_sysfs;
+		goto err_cleanup;
 
 	ret = drm_mode_connector_attach_encoder(connector, encoder);
 	if (ret < 0)
@@ -712,8 +687,6 @@ int shmob_drm_connector_create(struct shmob_drm_device *sdev,
 
 err_backlight:
 	shmob_drm_backlight_exit(&sdev->connector);
-err_sysfs:
-	drm_connector_unregister(connector);
 err_cleanup:
 	drm_connector_cleanup(connector);
 	return ret;

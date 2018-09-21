@@ -303,7 +303,7 @@ struct fimc_m2m_device {
  * @input: capture input type, grp_id of the attached subdev
  * @user_subdev_api: true if subdevs are not configured by the host driver
  * @inh_sensor_ctrls: a flag indicating v4l2 controls are inherited from
- * 		      an image sensor subdev
+ *		      an image sensor subdev
  */
 struct fimc_vid_cap {
 	struct fimc_ctx			*ctx;
@@ -358,7 +358,7 @@ struct fimc_pix_limit {
  * @pix_limit: pixel size constraints for the scaler
  * @min_inp_pixsize: minimum input pixel size
  * @min_out_pixsize: minimum output pixel size
- * @hor_offs_align: horizontal pixel offset aligment
+ * @hor_offs_align: horizontal pixel offset alignment
  * @min_vsize_align: minimum vertical pixel size alignment
  */
 struct fimc_variant {

@@ -1078,11 +1078,11 @@ static int ath6kl_wmi_tkip_micerr_event_rx(struct wmi *wmi, u8 *datap, int len,
 	return 0;
 }
 
-void ath6kl_wmi_sscan_timer(unsigned long ptr)
+void ath6kl_wmi_sscan_timer(struct timer_list *t)
 {
-	struct ath6kl_vif *vif = (struct ath6kl_vif *) ptr;
+	struct ath6kl_vif *vif = from_timer(vif, t, sched_scan_timer);
 
-	cfg80211_sched_scan_results(vif->ar->wiphy);
+	cfg80211_sched_scan_results(vif->ar->wiphy, 0);
 }
 
 static int ath6kl_wmi_bssinfo_event_rx(struct wmi *wmi, u8 *datap, int len,
@@ -1596,7 +1596,7 @@ static int ath6kl_wmi_txe_notify_event_rx(struct wmi *wmi, u8 *datap, int len,
 	rate = le32_to_cpu(ev->rate);
 	pkts = le32_to_cpu(ev->pkts);
 
-	ath6kl_dbg(ATH6KL_DBG_WMI, "TXE notify event: peer %pM rate %d% pkts %d intvl %ds\n",
+	ath6kl_dbg(ATH6KL_DBG_WMI, "TXE notify event: peer %pM rate %d%% pkts %d intvl %ds\n",
 		   vif->bssid, rate, pkts, vif->txe_intvl);
 
 	cfg80211_cqm_txe_notify(vif->ndev, vif->bssid, pkts,

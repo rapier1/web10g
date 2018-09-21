@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /**
  * debugfs.c - DesignWare USB3 DRD Controller DebugFS file
  *
@@ -5,15 +6,6 @@
  *
  * Authors: Felipe Balbi <balbi@ti.com>,
  *	    Sebastian Andrzej Siewior <bigeasy@linutronix.de>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2  of
- * the License as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -89,6 +81,11 @@ static const struct debugfs_reg32 dwc3_regs[] = {
 	dump_register(GHWPARAMS7),
 	dump_register(GDBGFIFOSPACE),
 	dump_register(GDBGLTSSM),
+	dump_register(GDBGBMU),
+	dump_register(GDBGLSPMUX),
+	dump_register(GDBGLSP),
+	dump_register(GDBGEPINFO0),
+	dump_register(GDBGEPINFO1),
 	dump_register(GPRTBIMAP_HS0),
 	dump_register(GPRTBIMAP_HS1),
 	dump_register(GPRTBIMAP_FS0),
@@ -300,7 +297,7 @@ static int dwc3_mode_show(struct seq_file *s, void *unused)
 		seq_printf(s, "device\n");
 		break;
 	case DWC3_GCTL_PRTCAP_OTG:
-		seq_printf(s, "OTG\n");
+		seq_printf(s, "otg\n");
 		break;
 	default:
 		seq_printf(s, "UNKNOWN %08x\n", DWC3_GCTL_PRTCAP(reg));
@@ -319,7 +316,6 @@ static ssize_t dwc3_mode_write(struct file *file,
 {
 	struct seq_file		*s = file->private_data;
 	struct dwc3		*dwc = s->private;
-	unsigned long		flags;
 	u32			mode = 0;
 	char			buf[32];
 
@@ -327,19 +323,16 @@ static ssize_t dwc3_mode_write(struct file *file,
 		return -EFAULT;
 
 	if (!strncmp(buf, "host", 4))
-		mode |= DWC3_GCTL_PRTCAP_HOST;
+		mode = DWC3_GCTL_PRTCAP_HOST;
 
 	if (!strncmp(buf, "device", 6))
-		mode |= DWC3_GCTL_PRTCAP_DEVICE;
+		mode = DWC3_GCTL_PRTCAP_DEVICE;
 
 	if (!strncmp(buf, "otg", 3))
-		mode |= DWC3_GCTL_PRTCAP_OTG;
+		mode = DWC3_GCTL_PRTCAP_OTG;
 
-	if (mode) {
-		spin_lock_irqsave(&dwc->lock, flags);
-		dwc3_set_mode(dwc, mode);
-		spin_unlock_irqrestore(&dwc->lock, flags);
-	}
+	dwc3_set_mode(dwc, mode);
+
 	return count;
 }
 
@@ -446,52 +439,7 @@ static int dwc3_link_state_show(struct seq_file *s, void *unused)
 	state = DWC3_DSTS_USBLNKST(reg);
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
-	switch (state) {
-	case DWC3_LINK_STATE_U0:
-		seq_printf(s, "U0\n");
-		break;
-	case DWC3_LINK_STATE_U1:
-		seq_printf(s, "U1\n");
-		break;
-	case DWC3_LINK_STATE_U2:
-		seq_printf(s, "U2\n");
-		break;
-	case DWC3_LINK_STATE_U3:
-		seq_printf(s, "U3\n");
-		break;
-	case DWC3_LINK_STATE_SS_DIS:
-		seq_printf(s, "SS.Disabled\n");
-		break;
-	case DWC3_LINK_STATE_RX_DET:
-		seq_printf(s, "Rx.Detect\n");
-		break;
-	case DWC3_LINK_STATE_SS_INACT:
-		seq_printf(s, "SS.Inactive\n");
-		break;
-	case DWC3_LINK_STATE_POLL:
-		seq_printf(s, "Poll\n");
-		break;
-	case DWC3_LINK_STATE_RECOV:
-		seq_printf(s, "Recovery\n");
-		break;
-	case DWC3_LINK_STATE_HRESET:
-		seq_printf(s, "HRESET\n");
-		break;
-	case DWC3_LINK_STATE_CMPLY:
-		seq_printf(s, "Compliance\n");
-		break;
-	case DWC3_LINK_STATE_LPBK:
-		seq_printf(s, "Loopback\n");
-		break;
-	case DWC3_LINK_STATE_RESET:
-		seq_printf(s, "Reset\n");
-		break;
-	case DWC3_LINK_STATE_RESUME:
-		seq_printf(s, "Resume\n");
-		break;
-	default:
-		seq_printf(s, "UNKNOWN %d\n", state);
-	}
+	seq_printf(s, "%s\n", dwc3_gadget_link_string(state));
 
 	return 0;
 }
@@ -544,8 +492,8 @@ static const struct file_operations dwc3_link_state_fops = {
 };
 
 struct dwc3_ep_file_map {
-	char name[25];
-	int (*show)(struct seq_file *s, void *unused);
+	const char name[25];
+	const struct file_operations *const fops;
 };
 
 static int dwc3_tx_fifo_queue_show(struct seq_file *s, void *unused)
@@ -653,7 +601,7 @@ static int dwc3_event_queue_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int dwc3_ep_transfer_type_show(struct seq_file *s, void *unused)
+static int dwc3_transfer_type_show(struct seq_file *s, void *unused)
 {
 	struct dwc3_ep		*dep = s->private;
 	struct dwc3		*dwc = dep->dwc;
@@ -689,31 +637,7 @@ out:
 	return 0;
 }
 
-static inline const char *dwc3_trb_type_string(struct dwc3_trb *trb)
-{
-	switch (DWC3_TRBCTL_TYPE(trb->ctrl)) {
-	case DWC3_TRBCTL_NORMAL:
-		return "normal";
-	case DWC3_TRBCTL_CONTROL_SETUP:
-		return "control-setup";
-	case DWC3_TRBCTL_CONTROL_STATUS2:
-		return "control-status2";
-	case DWC3_TRBCTL_CONTROL_STATUS3:
-		return "control-status3";
-	case DWC3_TRBCTL_CONTROL_DATA:
-		return "control-data";
-	case DWC3_TRBCTL_ISOCHRONOUS_FIRST:
-		return "isoc-first";
-	case DWC3_TRBCTL_ISOCHRONOUS:
-		return "isoc";
-	case DWC3_TRBCTL_LINK_TRB:
-		return "link";
-	default:
-		return "UNKNOWN";
-	}
-}
-
-static int dwc3_ep_trb_ring_show(struct seq_file *s, void *unused)
+static int dwc3_trb_ring_show(struct seq_file *s, void *unused)
 {
 	struct dwc3_ep		*dep = s->private;
 	struct dwc3		*dwc = dep->dwc;
@@ -726,23 +650,23 @@ static int dwc3_ep_trb_ring_show(struct seq_file *s, void *unused)
 		goto out;
 	}
 
-	seq_printf(s, "enqueue pointer %d\n", dep->trb_enqueue);
-	seq_printf(s, "dequeue pointer %d\n", dep->trb_dequeue);
-	seq_printf(s, "\n--------------------------------------------------\n\n");
 	seq_printf(s, "buffer_addr,size,type,ioc,isp_imi,csp,chn,lst,hwo\n");
 
 	for (i = 0; i < DWC3_TRB_NUM; i++) {
 		struct dwc3_trb *trb = &dep->trb_pool[i];
+		unsigned int type = DWC3_TRBCTL_TYPE(trb->ctrl);
 
-		seq_printf(s, "%08x%08x,%d,%s,%d,%d,%d,%d,%d,%d\n",
+		seq_printf(s, "%08x%08x,%d,%s,%d,%d,%d,%d,%d,%d       %c%c\n",
 				trb->bph, trb->bpl, trb->size,
-				dwc3_trb_type_string(trb),
+				dwc3_trb_type_string(type),
 				!!(trb->ctrl & DWC3_TRB_CTRL_IOC),
 				!!(trb->ctrl & DWC3_TRB_CTRL_ISP_IMI),
 				!!(trb->ctrl & DWC3_TRB_CTRL_CSP),
 				!!(trb->ctrl & DWC3_TRB_CTRL_CHN),
 				!!(trb->ctrl & DWC3_TRB_CTRL_LST),
-				!!(trb->ctrl & DWC3_TRB_CTRL_HWO));
+				!!(trb->ctrl & DWC3_TRB_CTRL_HWO),
+				dep->trb_enqueue == i ? 'E' : ' ',
+				dep->trb_dequeue == i ? 'D' : ' ');
 	}
 
 out:
@@ -751,58 +675,39 @@ out:
 	return 0;
 }
 
-static struct dwc3_ep_file_map map[] = {
-	{ "tx_fifo_queue", dwc3_tx_fifo_queue_show, },
-	{ "rx_fifo_queue", dwc3_rx_fifo_queue_show, },
-	{ "tx_request_queue", dwc3_tx_request_queue_show, },
-	{ "rx_request_queue", dwc3_rx_request_queue_show, },
-	{ "rx_info_queue", dwc3_rx_info_queue_show, },
-	{ "descriptor_fetch_queue", dwc3_descriptor_fetch_queue_show, },
-	{ "event_queue", dwc3_event_queue_show, },
-	{ "transfer_type", dwc3_ep_transfer_type_show, },
-	{ "trb_ring", dwc3_ep_trb_ring_show, },
+DEFINE_SHOW_ATTRIBUTE(dwc3_tx_fifo_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_rx_fifo_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_tx_request_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_rx_request_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_rx_info_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_descriptor_fetch_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_event_queue);
+DEFINE_SHOW_ATTRIBUTE(dwc3_transfer_type);
+DEFINE_SHOW_ATTRIBUTE(dwc3_trb_ring);
+
+static const struct dwc3_ep_file_map dwc3_ep_file_map[] = {
+	{ "tx_fifo_queue", &dwc3_tx_fifo_queue_fops, },
+	{ "rx_fifo_queue", &dwc3_rx_fifo_queue_fops, },
+	{ "tx_request_queue", &dwc3_tx_request_queue_fops, },
+	{ "rx_request_queue", &dwc3_rx_request_queue_fops, },
+	{ "rx_info_queue", &dwc3_rx_info_queue_fops, },
+	{ "descriptor_fetch_queue", &dwc3_descriptor_fetch_queue_fops, },
+	{ "event_queue", &dwc3_event_queue_fops, },
+	{ "transfer_type", &dwc3_transfer_type_fops, },
+	{ "trb_ring", &dwc3_trb_ring_fops, },
 };
-
-static int dwc3_endpoint_open(struct inode *inode, struct file *file)
-{
-	const char		*file_name = file_dentry(file)->d_iname;
-	struct dwc3_ep_file_map	*f_map;
-	int			i;
-
-	for (i = 0; i < ARRAY_SIZE(map); i++) {
-		f_map = &map[i];
-
-		if (strcmp(f_map->name, file_name) == 0)
-			break;
-	}
-
-	return single_open(file, f_map->show, inode->i_private);
-}
-
-static const struct file_operations dwc3_endpoint_fops = {
-	.open			= dwc3_endpoint_open,
-	.read			= seq_read,
-	.llseek			= seq_lseek,
-	.release		= single_release,
-};
-
-static void dwc3_debugfs_create_endpoint_file(struct dwc3_ep *dep,
-		struct dentry *parent, int type)
-{
-	struct dentry		*file;
-	struct dwc3_ep_file_map	*ep_file = &map[type];
-
-	file = debugfs_create_file(ep_file->name, S_IRUGO, parent, dep,
-			&dwc3_endpoint_fops);
-}
 
 static void dwc3_debugfs_create_endpoint_files(struct dwc3_ep *dep,
 		struct dentry *parent)
 {
 	int			i;
 
-	for (i = 0; i < ARRAY_SIZE(map); i++)
-		dwc3_debugfs_create_endpoint_file(dep, parent, i);
+	for (i = 0; i < ARRAY_SIZE(dwc3_ep_file_map); i++) {
+		const struct file_operations *fops = dwc3_ep_file_map[i].fops;
+		const char *name = dwc3_ep_file_map[i].name;
+
+		debugfs_create_file(name, S_IRUGO, parent, dep, fops);
+	}
 }
 
 static void dwc3_debugfs_create_endpoint_dir(struct dwc3_ep *dep,
@@ -811,9 +716,6 @@ static void dwc3_debugfs_create_endpoint_dir(struct dwc3_ep *dep,
 	struct dentry		*dir;
 
 	dir = debugfs_create_dir(dep->name, parent);
-	if (IS_ERR_OR_NULL(dir))
-		return;
-
 	dwc3_debugfs_create_endpoint_files(dep, dir);
 }
 
@@ -822,19 +724,8 @@ static void dwc3_debugfs_create_endpoint_dirs(struct dwc3 *dwc,
 {
 	int			i;
 
-	for (i = 0; i < dwc->num_in_eps; i++) {
-		u8		epnum = (i << 1) | 1;
-		struct dwc3_ep	*dep = dwc->eps[epnum];
-
-		if (!dep)
-			continue;
-
-		dwc3_debugfs_create_endpoint_dir(dep, parent);
-	}
-
-	for (i = 0; i < dwc->num_out_eps; i++) {
-		u8		epnum = (i << 1);
-		struct dwc3_ep	*dep = dwc->eps[epnum];
+	for (i = 0; i < dwc->num_eps; i++) {
+		struct dwc3_ep	*dep = dwc->eps[i];
 
 		if (!dep)
 			continue;
@@ -846,49 +737,31 @@ static void dwc3_debugfs_create_endpoint_dirs(struct dwc3 *dwc,
 void dwc3_debugfs_init(struct dwc3 *dwc)
 {
 	struct dentry		*root;
-	struct dentry           *file;
-
-	root = debugfs_create_dir(dev_name(dwc->dev), NULL);
-	if (IS_ERR_OR_NULL(root)) {
-		if (!root)
-			dev_err(dwc->dev, "Can't create debugfs root\n");
-		return;
-	}
-	dwc->root = root;
 
 	dwc->regset = kzalloc(sizeof(*dwc->regset), GFP_KERNEL);
-	if (!dwc->regset) {
-		debugfs_remove_recursive(root);
+	if (!dwc->regset)
 		return;
-	}
 
 	dwc->regset->regs = dwc3_regs;
 	dwc->regset->nregs = ARRAY_SIZE(dwc3_regs);
 	dwc->regset->base = dwc->regs - DWC3_GLOBALS_REGS_START;
 
-	file = debugfs_create_regset32("regdump", S_IRUGO, root, dwc->regset);
-	if (!file)
-		dev_dbg(dwc->dev, "Can't create debugfs regdump\n");
+	root = debugfs_create_dir(dev_name(dwc->dev), NULL);
+	dwc->root = root;
+
+	debugfs_create_regset32("regdump", S_IRUGO, root, dwc->regset);
 
 	if (IS_ENABLED(CONFIG_USB_DWC3_DUAL_ROLE)) {
-		file = debugfs_create_file("mode", S_IRUGO | S_IWUSR, root,
-				dwc, &dwc3_mode_fops);
-		if (!file)
-			dev_dbg(dwc->dev, "Can't create debugfs mode\n");
+		debugfs_create_file("mode", S_IRUGO | S_IWUSR, root, dwc,
+				    &dwc3_mode_fops);
 	}
 
 	if (IS_ENABLED(CONFIG_USB_DWC3_DUAL_ROLE) ||
 			IS_ENABLED(CONFIG_USB_DWC3_GADGET)) {
-		file = debugfs_create_file("testmode", S_IRUGO | S_IWUSR, root,
-				dwc, &dwc3_testmode_fops);
-		if (!file)
-			dev_dbg(dwc->dev, "Can't create debugfs testmode\n");
-
-		file = debugfs_create_file("link_state", S_IRUGO | S_IWUSR,
-				root, dwc, &dwc3_link_state_fops);
-		if (!file)
-			dev_dbg(dwc->dev, "Can't create debugfs link_state\n");
-
+		debugfs_create_file("testmode", S_IRUGO | S_IWUSR, root, dwc,
+				    &dwc3_testmode_fops);
+		debugfs_create_file("link_state", S_IRUGO | S_IWUSR, root, dwc,
+				    &dwc3_link_state_fops);
 		dwc3_debugfs_create_endpoint_dirs(dwc, root);
 	}
 }

@@ -38,13 +38,13 @@ static bool access_actlr(struct kvm_vcpu *vcpu,
 	if (p->is_write)
 		return ignore_write(vcpu, p);
 
-	p->regval = vcpu_sys_reg(vcpu, ACTLR_EL1);
+	p->regval = vcpu_read_sys_reg(vcpu, ACTLR_EL1);
 	return true;
 }
 
 static void reset_actlr(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
 {
-	vcpu_sys_reg(vcpu, ACTLR_EL1) = read_sysreg(actlr_el1);
+	__vcpu_sys_reg(vcpu, ACTLR_EL1) = read_sysreg(actlr_el1);
 }
 
 /*
@@ -52,9 +52,7 @@ static void reset_actlr(struct kvm_vcpu *vcpu, const struct sys_reg_desc *r)
  * Important: Must be sorted ascending by Op0, Op1, CRn, CRm, Op2
  */
 static const struct sys_reg_desc genericv8_sys_regs[] = {
-	/* ACTLR_EL1 */
-	{ Op0(0b11), Op1(0b000), CRn(0b0001), CRm(0b0000), Op2(0b001),
-	  access_actlr, reset_actlr, ACTLR_EL1 },
+	{ SYS_DESC(SYS_ACTLR_EL1), access_actlr, reset_actlr, ACTLR_EL1 },
 };
 
 static const struct sys_reg_desc genericv8_cp15_regs[] = {

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2005-2011 Atheros Communications Inc.
- * Copyright (c) 2011-2013 Qualcomm Atheros, Inc.
+ * Copyright (c) 2011-2015,2017 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -20,13 +20,14 @@
 
 #include <linux/kernel.h>
 #include "core.h"
+#include "bmi.h"
 #include "debug.h"
 
 struct ath10k_hif_sg_item {
 	u16 transfer_id;
 	void *transfer_context; /* NULL = tx completion callback not called */
 	void *vaddr; /* for debugging mostly */
-	u32 paddr;
+	dma_addr_t paddr;
 	u16 len;
 };
 
@@ -54,7 +55,8 @@ struct ath10k_hif_ops {
 	int (*start)(struct ath10k *ar);
 
 	/* Clean up what start() did. This does not revert to BMI phase. If
-	 * desired so, call power_down() and power_up() */
+	 * desired so, call power_down() and power_up()
+	 */
 	void (*stop)(struct ath10k *ar);
 
 	int (*map_service_to_pipe)(struct ath10k *ar, u16 service_id,
@@ -82,7 +84,8 @@ struct ath10k_hif_ops {
 	int (*power_up)(struct ath10k *ar);
 
 	/* Power down the device and free up resources. stop() must be called
-	 * before this if start() was called earlier */
+	 * before this if start() was called earlier
+	 */
 	void (*power_down)(struct ath10k *ar);
 
 	int (*suspend)(struct ath10k *ar);
@@ -91,6 +94,9 @@ struct ath10k_hif_ops {
 	/* fetch calibration data from target eeprom */
 	int (*fetch_cal_eeprom)(struct ath10k *ar, void **data,
 				size_t *data_len);
+
+	int (*get_target_info)(struct ath10k *ar,
+			       struct bmi_target_info *target_info);
 };
 
 static inline int ath10k_hif_tx_sg(struct ath10k *ar, u8 pipe_id,
@@ -214,6 +220,15 @@ static inline int ath10k_hif_fetch_cal_eeprom(struct ath10k *ar,
 		return -EOPNOTSUPP;
 
 	return ar->hif.ops->fetch_cal_eeprom(ar, data, data_len);
+}
+
+static inline int ath10k_hif_get_target_info(struct ath10k *ar,
+					     struct bmi_target_info *tgt_info)
+{
+	if (!ar->hif.ops->get_target_info)
+		return -EOPNOTSUPP;
+
+	return ar->hif.ops->get_target_info(ar, tgt_info);
 }
 
 #endif /* _HIF_H_ */

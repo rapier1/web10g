@@ -21,12 +21,13 @@
  * Data Sheet:
  *   http://www.silabs.com/Support%20Documents/TechnicalDocs/CP2112.pdf
  * Programming Interface Specification:
- *   http://www.silabs.com/Support%20Documents/TechnicalDocs/AN495.pdf
+ *   https://www.silabs.com/documents/public/application-notes/an495-cp2112-interface-specification.pdf
  */
 
 #include <linux/gpio.h>
 #include <linux/gpio/driver.h>
 #include <linux/hid.h>
+#include <linux/hidraw.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/nls.h>
@@ -195,6 +196,8 @@ static int cp2112_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 				 HID_REQ_GET_REPORT);
 	if (ret != CP2112_GPIO_CONFIG_LENGTH) {
 		hid_err(hdev, "error requesting GPIO config: %d\n", ret);
+		if (ret >= 0)
+			ret = -EIO;
 		goto exit;
 	}
 
@@ -204,8 +207,10 @@ static int cp2112_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 	ret = hid_hw_raw_request(hdev, CP2112_GPIO_CONFIG, buf,
 				 CP2112_GPIO_CONFIG_LENGTH, HID_FEATURE_REPORT,
 				 HID_REQ_SET_REPORT);
-	if (ret < 0) {
+	if (ret != CP2112_GPIO_CONFIG_LENGTH) {
 		hid_err(hdev, "error setting GPIO config: %d\n", ret);
+		if (ret >= 0)
+			ret = -EIO;
 		goto exit;
 	}
 
@@ -213,7 +218,7 @@ static int cp2112_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
 
 exit:
 	mutex_unlock(&dev->lock);
-	return ret < 0 ? ret : -EIO;
+	return ret;
 }
 
 static void cp2112_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
@@ -691,8 +696,16 @@ static int cp2112_xfer(struct i2c_adapter *adap, u16 addr,
 					      (u8 *)&word, 2);
 		break;
 	case I2C_SMBUS_I2C_BLOCK_DATA:
-		size = I2C_SMBUS_BLOCK_DATA;
-		/* fallthrough */
+		if (read_write == I2C_SMBUS_READ) {
+			read_length = data->block[0];
+			count = cp2112_write_read_req(buf, addr, read_length,
+						      command, NULL, 0);
+		} else {
+			count = cp2112_write_req(buf, addr, command,
+						 data->block + 1,
+						 data->block[0]);
+		}
+		break;
 	case I2C_SMBUS_BLOCK_DATA:
 		if (I2C_SMBUS_READ == read_write) {
 			count = cp2112_write_read_req(buf, addr,
@@ -779,6 +792,9 @@ static int cp2112_xfer(struct i2c_adapter *adap, u16 addr,
 		break;
 	case I2C_SMBUS_WORD_DATA:
 		data->word = le16_to_cpup((__le16 *)buf);
+		break;
+	case I2C_SMBUS_I2C_BLOCK_DATA:
+		memcpy(data->block + 1, buf, read_length);
 		break;
 	case I2C_SMBUS_BLOCK_DATA:
 		if (read_length > I2C_SMBUS_BLOCK_MAX) {
@@ -1297,7 +1313,8 @@ static int cp2112_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	dev->adap.algo_data	= dev;
 	dev->adap.dev.parent	= &hdev->dev;
 	snprintf(dev->adap.name, sizeof(dev->adap.name),
-		 "CP2112 SMBus Bridge on hiddev%d", hdev->minor);
+		 "CP2112 SMBus Bridge on hidraw%d",
+		 ((struct hidraw *)hdev->hidraw)->minor);
 	dev->hwversion = buf[2];
 	init_waitqueue_head(&dev->wait);
 

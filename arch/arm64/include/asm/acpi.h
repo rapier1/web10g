@@ -23,9 +23,9 @@
 #define ACPI_MADT_GICC_LENGTH	\
 	(acpi_gbl_FADT.header.revision < 6 ? 76 : 80)
 
-#define BAD_MADT_GICC_ENTRY(entry, end)						\
-	(!(entry) || (unsigned long)(entry) + sizeof(*(entry)) > (end) ||	\
-	 (entry)->header.length != ACPI_MADT_GICC_LENGTH)
+#define BAD_MADT_GICC_ENTRY(entry, end)					\
+	(!(entry) || (entry)->header.length != ACPI_MADT_GICC_LENGTH ||	\
+	(unsigned long)(entry) + ACPI_MADT_GICC_LENGTH > (end))
 
 /* Basic configuration for ACPI */
 #ifdef	CONFIG_ACPI
@@ -85,6 +85,12 @@ static inline bool acpi_has_cpu_in_madt(void)
 	return true;
 }
 
+struct acpi_madt_generic_interrupt *acpi_cpu_get_madt_gicc(int cpu);
+static inline u32 get_acpi_id_for_cpu(unsigned int cpu)
+{
+	return	acpi_cpu_get_madt_gicc(cpu)->uid;
+}
+
 static inline void arch_fix_phys_package_id(int num, u32 slot) { }
 void __init acpi_init_cpus(void);
 
@@ -124,18 +130,6 @@ static inline const char *acpi_get_enable_method(int cpu)
  */
 #define acpi_disable_cmcff 1
 pgprot_t arch_apei_get_mem_attribute(phys_addr_t addr);
-
-/*
- * Despite its name, this function must still broadcast the TLB
- * invalidation in order to ensure other CPUs don't end up with junk
- * entries as a result of speculation. Unusually, its also called in
- * IRQ context (ghes_iounmap_irq) so if we ever need to use IPIs for
- * TLB broadcasting, then we're in trouble here.
- */
-static inline void arch_apei_flush_tlb_one(unsigned long addr)
-{
-	flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
-}
 #endif /* CONFIG_ACPI_APEI */
 
 #ifdef CONFIG_ACPI_NUMA

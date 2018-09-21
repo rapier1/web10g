@@ -1,28 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Hardware driver for NI 660x devices
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 /*
  * Driver: ni_660x
  * Description: National Instruments 660x counter/timer boards
  * Devices: [National Instruments] PCI-6601 (ni_660x), PCI-6602, PXI-6602,
- *   PXI-6608, PXI-6624
+ *   PXI-6608, PCI-6624, PXI-6624
  * Author: J.P. Mellor <jpmellor@rose-hulman.edu>,
  *   Herman.Bruyninckx@mech.kuleuven.ac.be,
  *   Wim.Meeussen@mech.kuleuven.ac.be,
  *   Klaas.Gadeyne@mech.kuleuven.ac.be,
  *   Frank Mori Hess <fmhess@users.sourceforge.net>
- * Updated: Fri, 15 Mar 2013 10:47:56 +0000
+ * Updated: Mon, 16 Jan 2017 14:00:43 +0000
  * Status: experimental
  *
  * Encoders work.  PulseGeneration (both single pulse and pulse train)
@@ -211,6 +202,7 @@ enum ni_660x_boardid {
 	BOARD_PCI6602,
 	BOARD_PXI6602,
 	BOARD_PXI6608,
+	BOARD_PCI6624,
 	BOARD_PXI6624
 };
 
@@ -234,6 +226,10 @@ static const struct ni_660x_board ni_660x_boards[] = {
 	},
 	[BOARD_PXI6608] = {
 		.name		= "PXI-6608",
+		.n_chips	= 2,
+	},
+	[BOARD_PCI6624] = {
+		.name		= "PCI-6624",
 		.n_chips	= 2,
 	},
 	[BOARD_PXI6624] = {
@@ -920,6 +916,7 @@ static const struct pci_device_id ni_660x_pci_table[] = {
 	{ PCI_VDEVICE(NI, 0x1360), BOARD_PXI6602 },
 	{ PCI_VDEVICE(NI, 0x2c60), BOARD_PCI6601 },
 	{ PCI_VDEVICE(NI, 0x2cc0), BOARD_PXI6608 },
+	{ PCI_VDEVICE(NI, 0x1e30), BOARD_PCI6624 },
 	{ PCI_VDEVICE(NI, 0x1e40), BOARD_PXI6624 },
 	{ 0 }
 };

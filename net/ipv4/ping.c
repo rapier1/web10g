@@ -156,17 +156,18 @@ int ping_hash(struct sock *sk)
 void ping_unhash(struct sock *sk)
 {
 	struct inet_sock *isk = inet_sk(sk);
+
 	pr_debug("ping_unhash(isk=%p,isk->num=%u)\n", isk, isk->inet_num);
+	write_lock_bh(&ping_table.lock);
 	if (sk_hashed(sk)) {
-		write_lock_bh(&ping_table.lock);
 		hlist_nulls_del(&sk->sk_nulls_node);
 		sk_nulls_node_init(&sk->sk_nulls_node);
 		sock_put(sk);
 		isk->inet_num = 0;
 		isk->inet_sport = 0;
 		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
-		write_unlock_bh(&ping_table.lock);
 	}
+	write_unlock_bh(&ping_table.lock);
 }
 EXPORT_SYMBOL_GPL(ping_unhash);
 
@@ -289,7 +290,7 @@ void ping_close(struct sock *sk, long timeout)
 {
 	pr_debug("ping_close(sk=%p,sk->num=%u)\n",
 		 inet_sk(sk), inet_sk(sk)->inet_num);
-	pr_debug("isk->refcnt = %d\n", sk->sk_refcnt.counter);
+	pr_debug("isk->refcnt = %d\n", refcount_read(&sk->sk_refcnt));
 
 	sk_common_release(sk);
 }
@@ -433,9 +434,9 @@ int ping_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		goto out;
 	}
 
-	pr_debug("after bind(): num = %d, dif = %d\n",
-		 (int)isk->inet_num,
-		 (int)sk->sk_bound_dev_if);
+	pr_debug("after bind(): num = %hu, dif = %d\n",
+		 isk->inet_num,
+		 sk->sk_bound_dev_if);
 
 	err = 0;
 	if (sk->sk_family == AF_INET && isk->inet_rcv_saddr)
@@ -774,8 +775,10 @@ static int ping_v4_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	ipc.addr = faddr = daddr;
 
 	if (ipc.opt && ipc.opt->opt.srr) {
-		if (!daddr)
-			return -EINVAL;
+		if (!daddr) {
+			err = -EINVAL;
+			goto out_free;
+		}
 		faddr = ipc.opt->opt.faddr;
 	}
 	tos = get_rttos(&ipc, inet);
@@ -841,6 +844,7 @@ back_from_confirm:
 
 out:
 	ip_rt_put(rt);
+out_free:
 	if (free)
 		kfree(ipc.opt);
 	if (!err) {
@@ -850,7 +854,8 @@ out:
 	return err;
 
 do_confirm:
-	dst_confirm(&rt->dst);
+	if (msg->msg_flags & MSG_PROBE)
+		dst_confirm_neigh(&rt->dst, &fl4.daddr);
 	if (!(msg->msg_flags & MSG_PROBE) || len)
 		goto back_from_confirm;
 	err = 0;
@@ -1125,7 +1130,7 @@ static void ping_v4_format_sock(struct sock *sp, struct seq_file *f,
 		0, 0L, 0,
 		from_kuid_munged(seq_user_ns(f), sock_i_uid(sp)),
 		0, sock_i_ino(sp),
-		atomic_read(&sp->sk_refcnt), sp,
+		refcount_read(&sp->sk_refcnt), sp,
 		atomic_read(&sp->sk_drops));
 }
 
@@ -1145,58 +1150,24 @@ static int ping_v4_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static int ping_seq_open(struct inode *inode, struct file *file)
-{
-	struct ping_seq_afinfo *afinfo = PDE_DATA(inode);
-	return seq_open_net(inode, file, &afinfo->seq_ops,
-			   sizeof(struct ping_iter_state));
-}
-
-const struct file_operations ping_seq_fops = {
-	.open		= ping_seq_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release_net,
+static const struct seq_operations ping_v4_seq_ops = {
+	.start		= ping_v4_seq_start,
+	.show		= ping_v4_seq_show,
+	.next		= ping_seq_next,
+	.stop		= ping_seq_stop,
 };
-EXPORT_SYMBOL_GPL(ping_seq_fops);
-
-static struct ping_seq_afinfo ping_v4_seq_afinfo = {
-	.name		= "icmp",
-	.family		= AF_INET,
-	.seq_fops	= &ping_seq_fops,
-	.seq_ops	= {
-		.start		= ping_v4_seq_start,
-		.show		= ping_v4_seq_show,
-		.next		= ping_seq_next,
-		.stop		= ping_seq_stop,
-	},
-};
-
-int ping_proc_register(struct net *net, struct ping_seq_afinfo *afinfo)
-{
-	struct proc_dir_entry *p;
-	p = proc_create_data(afinfo->name, S_IRUGO, net->proc_net,
-			     afinfo->seq_fops, afinfo);
-	if (!p)
-		return -ENOMEM;
-	return 0;
-}
-EXPORT_SYMBOL_GPL(ping_proc_register);
-
-void ping_proc_unregister(struct net *net, struct ping_seq_afinfo *afinfo)
-{
-	remove_proc_entry(afinfo->name, net->proc_net);
-}
-EXPORT_SYMBOL_GPL(ping_proc_unregister);
 
 static int __net_init ping_v4_proc_init_net(struct net *net)
 {
-	return ping_proc_register(net, &ping_v4_seq_afinfo);
+	if (!proc_create_net("icmp", 0444, net->proc_net, &ping_v4_seq_ops,
+			sizeof(struct ping_iter_state)))
+		return -ENOMEM;
+	return 0;
 }
 
 static void __net_exit ping_v4_proc_exit_net(struct net *net)
 {
-	ping_proc_unregister(net, &ping_v4_seq_afinfo);
+	remove_proc_entry("icmp", net->proc_net);
 }
 
 static struct pernet_operations ping_v4_net_ops = {

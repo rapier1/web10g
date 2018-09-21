@@ -1,10 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *	PCI searching functions.
+ * PCI searching functions
  *
- *	Copyright (C) 1993 -- 1997 Drew Eckhardt, Frederic Potter,
+ * Copyright (C) 1993 -- 1997 Drew Eckhardt, Frederic Potter,
  *					David Mosberger-Tang
- *	Copyright (C) 1997 -- 2000 Martin Mares <mj@ucw.cz>
- *	Copyright (C) 2003 -- 2004 Greg Kroah-Hartman <greg@kroah.com>
+ * Copyright (C) 1997 -- 2000 Martin Mares <mj@ucw.cz>
+ * Copyright (C) 2003 -- 2004 Greg Kroah-Hartman <greg@kroah.com>
  */
 
 #include <linux/pci.h>
@@ -59,6 +60,10 @@ int pci_for_each_dma_alias(struct pci_dev *pdev,
 			continue;
 
 		tmp = bus->self;
+
+		/* stop at bridge where translation unit is associated */
+		if (tmp->dev_flags & PCI_DEV_FLAGS_BRIDGE_XLATE_ROOT)
+			return ret;
 
 		/*
 		 * PCIe-to-PCI/X bridges alias transactions from downstream

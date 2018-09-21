@@ -32,6 +32,8 @@
 #include <linux/smp.h>
 #include <linux/interrupt.h>
 #include <linux/sched.h>
+#include <uapi/linux/sched/types.h>
+#include <linux/rtmutex.h>
 #include <linux/atomic.h>
 #include <linux/moduleparam.h>
 #include <linux/delay.h>
@@ -74,10 +76,6 @@ struct lock_stress_stats {
 	long n_lock_fail;
 	long n_lock_acquired;
 };
-
-int torture_runnable = IS_ENABLED(MODULE);
-module_param(torture_runnable, int, 0444);
-MODULE_PARM_DESC(torture_runnable, "Start locktorture at module init");
 
 /* Forward reference. */
 static void lock_torture_cleanup(void);
@@ -128,10 +126,8 @@ static void torture_lock_busted_write_delay(struct torture_random_state *trsp)
 	if (!(torture_random(trsp) %
 	      (cxt.nrealwriters_stress * 2000 * longdelay_ms)))
 		mdelay(longdelay_ms);
-#ifdef CONFIG_PREEMPT
 	if (!(torture_random(trsp) % (cxt.nrealwriters_stress * 20000)))
-		preempt_schedule();  /* Allow test to be preempted. */
-#endif
+		torture_preempt_schedule();  /* Allow test to be preempted. */
 }
 
 static void torture_lock_busted_write_unlock(void)
@@ -177,10 +173,8 @@ static void torture_spin_lock_write_delay(struct torture_random_state *trsp)
 	if (!(torture_random(trsp) %
 	      (cxt.nrealwriters_stress * 2 * shortdelay_us)))
 		udelay(shortdelay_us);
-#ifdef CONFIG_PREEMPT
 	if (!(torture_random(trsp) % (cxt.nrealwriters_stress * 20000)))
-		preempt_schedule();  /* Allow test to be preempted. */
-#endif
+		torture_preempt_schedule();  /* Allow test to be preempted. */
 }
 
 static void torture_spin_lock_write_unlock(void) __releases(torture_spinlock)
@@ -350,10 +344,8 @@ static void torture_mutex_delay(struct torture_random_state *trsp)
 		mdelay(longdelay_ms * 5);
 	else
 		mdelay(longdelay_ms / 5);
-#ifdef CONFIG_PREEMPT
 	if (!(torture_random(trsp) % (cxt.nrealwriters_stress * 20000)))
-		preempt_schedule();  /* Allow test to be preempted. */
-#endif
+		torture_preempt_schedule();  /* Allow test to be preempted. */
 }
 
 static void torture_mutex_unlock(void) __releases(torture_mutex)
@@ -370,6 +362,78 @@ static struct lock_torture_ops mutex_lock_ops = {
 	.read_delay     = NULL,
 	.readunlock     = NULL,
 	.name		= "mutex_lock"
+};
+
+#include <linux/ww_mutex.h>
+static DEFINE_WW_CLASS(torture_ww_class);
+static DEFINE_WW_MUTEX(torture_ww_mutex_0, &torture_ww_class);
+static DEFINE_WW_MUTEX(torture_ww_mutex_1, &torture_ww_class);
+static DEFINE_WW_MUTEX(torture_ww_mutex_2, &torture_ww_class);
+
+static int torture_ww_mutex_lock(void)
+__acquires(torture_ww_mutex_0)
+__acquires(torture_ww_mutex_1)
+__acquires(torture_ww_mutex_2)
+{
+	LIST_HEAD(list);
+	struct reorder_lock {
+		struct list_head link;
+		struct ww_mutex *lock;
+	} locks[3], *ll, *ln;
+	struct ww_acquire_ctx ctx;
+
+	locks[0].lock = &torture_ww_mutex_0;
+	list_add(&locks[0].link, &list);
+
+	locks[1].lock = &torture_ww_mutex_1;
+	list_add(&locks[1].link, &list);
+
+	locks[2].lock = &torture_ww_mutex_2;
+	list_add(&locks[2].link, &list);
+
+	ww_acquire_init(&ctx, &torture_ww_class);
+
+	list_for_each_entry(ll, &list, link) {
+		int err;
+
+		err = ww_mutex_lock(ll->lock, &ctx);
+		if (!err)
+			continue;
+
+		ln = ll;
+		list_for_each_entry_continue_reverse(ln, &list, link)
+			ww_mutex_unlock(ln->lock);
+
+		if (err != -EDEADLK)
+			return err;
+
+		ww_mutex_lock_slow(ll->lock, &ctx);
+		list_move(&ll->link, &list);
+	}
+
+	ww_acquire_fini(&ctx);
+	return 0;
+}
+
+static void torture_ww_mutex_unlock(void)
+__releases(torture_ww_mutex_0)
+__releases(torture_ww_mutex_1)
+__releases(torture_ww_mutex_2)
+{
+	ww_mutex_unlock(&torture_ww_mutex_0);
+	ww_mutex_unlock(&torture_ww_mutex_1);
+	ww_mutex_unlock(&torture_ww_mutex_2);
+}
+
+static struct lock_torture_ops ww_mutex_lock_ops = {
+	.writelock	= torture_ww_mutex_lock,
+	.write_delay	= torture_mutex_delay,
+	.task_boost     = torture_boost_dummy,
+	.writeunlock	= torture_ww_mutex_unlock,
+	.readlock       = NULL,
+	.read_delay     = NULL,
+	.readunlock     = NULL,
+	.name		= "ww_mutex_lock"
 };
 
 #ifdef CONFIG_RT_MUTEXES
@@ -433,10 +497,8 @@ static void torture_rtmutex_delay(struct torture_random_state *trsp)
 	if (!(torture_random(trsp) %
 	      (cxt.nrealwriters_stress * 2 * shortdelay_us)))
 		udelay(shortdelay_us);
-#ifdef CONFIG_PREEMPT
 	if (!(torture_random(trsp) % (cxt.nrealwriters_stress * 20000)))
-		preempt_schedule();  /* Allow test to be preempted. */
-#endif
+		torture_preempt_schedule();  /* Allow test to be preempted. */
 }
 
 static void torture_rtmutex_unlock(void) __releases(torture_rtmutex)
@@ -473,10 +535,8 @@ static void torture_rwsem_write_delay(struct torture_random_state *trsp)
 		mdelay(longdelay_ms * 10);
 	else
 		mdelay(longdelay_ms / 10);
-#ifdef CONFIG_PREEMPT
 	if (!(torture_random(trsp) % (cxt.nrealwriters_stress * 20000)))
-		preempt_schedule();  /* Allow test to be preempted. */
-#endif
+		torture_preempt_schedule();  /* Allow test to be preempted. */
 }
 
 static void torture_rwsem_up_write(void) __releases(torture_rwsem)
@@ -496,14 +556,12 @@ static void torture_rwsem_read_delay(struct torture_random_state *trsp)
 
 	/* We want a long delay occasionally to force massive contention.  */
 	if (!(torture_random(trsp) %
-	      (cxt.nrealwriters_stress * 2000 * longdelay_ms)))
+	      (cxt.nrealreaders_stress * 2000 * longdelay_ms)))
 		mdelay(longdelay_ms * 2);
 	else
 		mdelay(longdelay_ms / 2);
-#ifdef CONFIG_PREEMPT
 	if (!(torture_random(trsp) % (cxt.nrealreaders_stress * 20000)))
-		preempt_schedule();  /* Allow test to be preempted. */
-#endif
+		torture_preempt_schedule();  /* Allow test to be preempted. */
 }
 
 static void torture_rwsem_up_read(void) __releases(torture_rwsem)
@@ -641,8 +699,7 @@ static void __torture_print_stats(char *page,
 {
 	bool fail = 0;
 	int i, n_stress;
-	long max = 0;
-	long min = statp[0].n_lock_acquired;
+	long max = 0, min = statp ? statp[0].n_lock_acquired : 0;
 	long long sum = 0;
 
 	n_stress = write ? cxt.nrealwriters_stress : cxt.nrealreaders_stress;
@@ -749,7 +806,7 @@ static void lock_torture_cleanup(void)
 	 * such, only perform the underlying torture-specific cleanups,
 	 * and avoid anything related to locktorture.
 	 */
-	if (!cxt.lwsa)
+	if (!cxt.lwsa && !cxt.lrsa)
 		goto end;
 
 	if (writer_tasks) {
@@ -780,6 +837,10 @@ static void lock_torture_cleanup(void)
 	else
 		lock_torture_print_module_parms(cxt.cur_ops,
 						"End of test: SUCCESS");
+
+	kfree(cxt.lwsa);
+	kfree(cxt.lrsa);
+
 end:
 	torture_cleanup_end();
 }
@@ -793,6 +854,7 @@ static int __init lock_torture_init(void)
 		&spin_lock_ops, &spin_lock_irq_ops,
 		&rw_lock_ops, &rw_lock_irq_ops,
 		&mutex_lock_ops,
+		&ww_mutex_lock_ops,
 #ifdef CONFIG_RT_MUTEXES
 		&rtmutex_lock_ops,
 #endif
@@ -800,7 +862,7 @@ static int __init lock_torture_init(void)
 		&percpu_rwsem_lock_ops,
 	};
 
-	if (!torture_init_begin(torture_type, verbose, &torture_runnable))
+	if (!torture_init_begin(torture_type, verbose))
 		return -EBUSY;
 
 	/* Process args and tell the world that the torturer is on the job. */
@@ -819,6 +881,13 @@ static int __init lock_torture_init(void)
 		firsterr = -EINVAL;
 		goto unwind;
 	}
+
+	if (nwriters_stress == 0 && nreaders_stress == 0) {
+		pr_alert("lock-torture: must run at least one locking thread\n");
+		firsterr = -EINVAL;
+		goto unwind;
+	}
+
 	if (cxt.cur_ops->init)
 		cxt.cur_ops->init();
 
@@ -842,17 +911,21 @@ static int __init lock_torture_init(void)
 #endif
 
 	/* Initialize the statistics so that each run gets its own numbers. */
+	if (nwriters_stress) {
+		lock_is_write_held = 0;
+		cxt.lwsa = kmalloc_array(cxt.nrealwriters_stress,
+					 sizeof(*cxt.lwsa),
+					 GFP_KERNEL);
+		if (cxt.lwsa == NULL) {
+			VERBOSE_TOROUT_STRING("cxt.lwsa: Out of memory");
+			firsterr = -ENOMEM;
+			goto unwind;
+		}
 
-	lock_is_write_held = 0;
-	cxt.lwsa = kmalloc(sizeof(*cxt.lwsa) * cxt.nrealwriters_stress, GFP_KERNEL);
-	if (cxt.lwsa == NULL) {
-		VERBOSE_TOROUT_STRING("cxt.lwsa: Out of memory");
-		firsterr = -ENOMEM;
-		goto unwind;
-	}
-	for (i = 0; i < cxt.nrealwriters_stress; i++) {
-		cxt.lwsa[i].n_lock_fail = 0;
-		cxt.lwsa[i].n_lock_acquired = 0;
+		for (i = 0; i < cxt.nrealwriters_stress; i++) {
+			cxt.lwsa[i].n_lock_fail = 0;
+			cxt.lwsa[i].n_lock_acquired = 0;
+		}
 	}
 
 	if (cxt.cur_ops->readlock) {
@@ -869,19 +942,23 @@ static int __init lock_torture_init(void)
 			cxt.nrealreaders_stress = cxt.nrealwriters_stress;
 		}
 
-		lock_is_read_held = 0;
-		cxt.lrsa = kmalloc(sizeof(*cxt.lrsa) * cxt.nrealreaders_stress, GFP_KERNEL);
-		if (cxt.lrsa == NULL) {
-			VERBOSE_TOROUT_STRING("cxt.lrsa: Out of memory");
-			firsterr = -ENOMEM;
-			kfree(cxt.lwsa);
-			cxt.lwsa = NULL;
-			goto unwind;
-		}
+		if (nreaders_stress) {
+			lock_is_read_held = 0;
+			cxt.lrsa = kmalloc_array(cxt.nrealreaders_stress,
+						 sizeof(*cxt.lrsa),
+						 GFP_KERNEL);
+			if (cxt.lrsa == NULL) {
+				VERBOSE_TOROUT_STRING("cxt.lrsa: Out of memory");
+				firsterr = -ENOMEM;
+				kfree(cxt.lwsa);
+				cxt.lwsa = NULL;
+				goto unwind;
+			}
 
-		for (i = 0; i < cxt.nrealreaders_stress; i++) {
-			cxt.lrsa[i].n_lock_fail = 0;
-			cxt.lrsa[i].n_lock_acquired = 0;
+			for (i = 0; i < cxt.nrealreaders_stress; i++) {
+				cxt.lrsa[i].n_lock_fail = 0;
+				cxt.lrsa[i].n_lock_acquired = 0;
+			}
 		}
 	}
 
@@ -911,19 +988,25 @@ static int __init lock_torture_init(void)
 			goto unwind;
 	}
 
-	writer_tasks = kzalloc(cxt.nrealwriters_stress * sizeof(writer_tasks[0]),
-			       GFP_KERNEL);
-	if (writer_tasks == NULL) {
-		VERBOSE_TOROUT_ERRSTRING("writer_tasks: Out of memory");
-		firsterr = -ENOMEM;
-		goto unwind;
+	if (nwriters_stress) {
+		writer_tasks = kcalloc(cxt.nrealwriters_stress,
+				       sizeof(writer_tasks[0]),
+				       GFP_KERNEL);
+		if (writer_tasks == NULL) {
+			VERBOSE_TOROUT_ERRSTRING("writer_tasks: Out of memory");
+			firsterr = -ENOMEM;
+			goto unwind;
+		}
 	}
 
 	if (cxt.cur_ops->readlock) {
-		reader_tasks = kzalloc(cxt.nrealreaders_stress * sizeof(reader_tasks[0]),
+		reader_tasks = kcalloc(cxt.nrealreaders_stress,
+				       sizeof(reader_tasks[0]),
 				       GFP_KERNEL);
 		if (reader_tasks == NULL) {
 			VERBOSE_TOROUT_ERRSTRING("reader_tasks: Out of memory");
+			kfree(writer_tasks);
+			writer_tasks = NULL;
 			firsterr = -ENOMEM;
 			goto unwind;
 		}

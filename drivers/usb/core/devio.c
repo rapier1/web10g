@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*****************************************************************************/
 
 /*
  *      devio.c  --  User space communication with USB devices.
  *
  *      Copyright (C) 1999-2000  Thomas Sailer (sailer@ife.ee.ethz.ch)
- *
- *      This program is free software; you can redistribute it and/or modify
- *      it under the terms of the GNU General Public License as published by
- *      the Free Software Foundation; either version 2 of the License, or
- *      (at your option) any later version.
- *
- *      This program is distributed in the hope that it will be useful,
- *      but WITHOUT ANY WARRANTY; without even the implied warranty of
- *      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *      GNU General Public License for more details.
- *
- *      You should have received a copy of the GNU General Public License
- *      along with this program; if not, write to the Free Software
- *      Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  *  This file implements the usbfs/x/y files, where
  *  x is the bus number and y the device number.
@@ -36,6 +23,7 @@
 
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/signal.h>
 #include <linux/poll.h>
@@ -77,7 +65,6 @@ struct usb_dev_state {
 	const struct cred *cred;
 	void __user *disccontext;
 	unsigned long ifclaimed;
-	u32 secid;
 	u32 disabled_bulk_eps;
 	bool privileges_dropped;
 	unsigned long interface_allowed_mask;
@@ -107,7 +94,6 @@ struct async {
 	struct usb_memory *usbm;
 	unsigned int mem_usage;
 	int status;
-	u32 secid;
 	u8 bulk_addr;
 	u8 bulk_status;
 };
@@ -134,42 +120,38 @@ enum snoop_when {
 #define USB_DEVICE_DEV		MKDEV(USB_DEVICE_MAJOR, 0)
 
 /* Limit on the total amount of memory we can allocate for transfers */
-static unsigned usbfs_memory_mb = 16;
+static u32 usbfs_memory_mb = 16;
 module_param(usbfs_memory_mb, uint, 0644);
 MODULE_PARM_DESC(usbfs_memory_mb,
 		"maximum MB allowed for usbfs buffers (0 = no limit)");
 
 /* Hard limit, necessary to avoid arithmetic overflow */
-#define USBFS_XFER_MAX		(UINT_MAX / 2 - 1000000)
+#define USBFS_XFER_MAX         (UINT_MAX / 2 - 1000000)
 
-static atomic_t usbfs_memory_usage;	/* Total memory currently allocated */
+static atomic64_t usbfs_memory_usage;	/* Total memory currently allocated */
 
 /* Check whether it's okay to allocate more memory for a transfer */
-static int usbfs_increase_memory_usage(unsigned amount)
+static int usbfs_increase_memory_usage(u64 amount)
 {
-	unsigned lim;
+	u64 lim;
 
-	/*
-	 * Convert usbfs_memory_mb to bytes, avoiding overflows.
-	 * 0 means use the hard limit (effectively unlimited).
-	 */
-	lim = ACCESS_ONCE(usbfs_memory_mb);
-	if (lim == 0 || lim > (USBFS_XFER_MAX >> 20))
-		lim = USBFS_XFER_MAX;
-	else
-		lim <<= 20;
+	lim = READ_ONCE(usbfs_memory_mb);
+	lim <<= 20;
 
-	atomic_add(amount, &usbfs_memory_usage);
-	if (atomic_read(&usbfs_memory_usage) <= lim)
-		return 0;
-	atomic_sub(amount, &usbfs_memory_usage);
-	return -ENOMEM;
+	atomic64_add(amount, &usbfs_memory_usage);
+
+	if (lim > 0 && atomic64_read(&usbfs_memory_usage) > lim) {
+		atomic64_sub(amount, &usbfs_memory_usage);
+		return -ENOMEM;
+	}
+
+	return 0;
 }
 
 /* Memory for a transfer is being deallocated */
-static void usbfs_decrease_memory_usage(unsigned amount)
+static void usbfs_decrease_memory_usage(u64 amount)
 {
-	atomic_sub(amount, &usbfs_memory_usage);
+	atomic64_sub(amount, &usbfs_memory_usage);
 }
 
 static int connected(struct usb_dev_state *ps)
@@ -216,7 +198,7 @@ static void usbdev_vm_close(struct vm_area_struct *vma)
 	dec_usb_memory_use_count(usbm, &usbm->vma_use_count);
 }
 
-static struct vm_operations_struct usbdev_vm_ops = {
+static const struct vm_operations_struct usbdev_vm_ops = {
 	.open = usbdev_vm_open,
 	.close = usbdev_vm_close
 };
@@ -481,11 +463,11 @@ static void snoop_urb(struct usb_device *udev,
 
 	if (userurb) {		/* Async */
 		if (when == SUBMIT)
-			dev_info(&udev->dev, "userurb %p, ep%d %s-%s, "
+			dev_info(&udev->dev, "userurb %pK, ep%d %s-%s, "
 					"length %u\n",
 					userurb, ep, t, d, length);
 		else
-			dev_info(&udev->dev, "userurb %p, ep%d %s-%s, "
+			dev_info(&udev->dev, "userurb %pK, ep%d %s-%s, "
 					"actual_length %u status %d\n",
 					userurb, ep, t, d, length,
 					timeout_or_status);
@@ -602,7 +584,6 @@ static void async_completed(struct urb *urb)
 	struct usb_dev_state *ps = as->ps;
 	struct siginfo sinfo;
 	struct pid *pid = NULL;
-	u32 secid = 0;
 	const struct cred *cred = NULL;
 	int signr;
 
@@ -611,14 +592,13 @@ static void async_completed(struct urb *urb)
 	as->status = urb->status;
 	signr = as->signr;
 	if (signr) {
-		memset(&sinfo, 0, sizeof(sinfo));
+		clear_siginfo(&sinfo);
 		sinfo.si_signo = as->signr;
 		sinfo.si_errno = as->status;
 		sinfo.si_code = SI_ASYNCIO;
 		sinfo.si_addr = as->userurb;
 		pid = get_pid(as->pid);
 		cred = get_cred(as->cred);
-		secid = as->secid;
 	}
 	snoop(&urb->dev->dev, "urb complete\n");
 	snoop_urb(urb->dev, as->userurb, urb->pipe, urb->actual_length,
@@ -629,15 +609,15 @@ static void async_completed(struct urb *urb)
 	if (as->status < 0 && as->bulk_addr && as->status != -ECONNRESET &&
 			as->status != -ENOENT)
 		cancel_bulk_urbs(ps, as->bulk_addr);
+
+	wake_up(&ps->wait);
 	spin_unlock(&ps->lock);
 
 	if (signr) {
-		kill_pid_info_as_cred(sinfo.si_signo, &sinfo, pid, cred, secid);
+		kill_pid_info_as_cred(sinfo.si_signo, &sinfo, pid, cred);
 		put_pid(pid);
 		put_cred(cred);
 	}
-
-	wake_up(&ps->wait);
 }
 
 static void destroy_async(struct usb_dev_state *ps, struct list_head *list)
@@ -917,7 +897,7 @@ static int parse_usbdevfs_streams(struct usb_dev_state *ps,
 	if (num_streams_ret && (num_streams < 2 || num_streams > 65536))
 		return -EINVAL;
 
-	eps = kmalloc(num_eps * sizeof(*eps), GFP_KERNEL);
+	eps = kmalloc_array(num_eps, sizeof(*eps), GFP_KERNEL);
 	if (!eps)
 		return -ENOMEM;
 
@@ -1029,7 +1009,6 @@ static int usbdev_open(struct inode *inode, struct file *file)
 	init_waitqueue_head(&ps->wait);
 	ps->disc_pid = get_pid(task_pid(current));
 	ps->cred = get_current_cred();
-	security_task_getsecid(current, &ps->secid);
 	smp_wmb();
 	list_add_tail(&ps->list, &dev->filelist);
 	file->private_data = ps;
@@ -1191,7 +1170,7 @@ static int proc_bulk(struct usb_dev_state *ps, void __user *arg)
 	if (!usb_maxpacket(dev, pipe, !(bulk.ep & USB_DIR_IN)))
 		return -EINVAL;
 	len1 = bulk.len;
-	if (len1 >= USBFS_XFER_MAX)
+	if (len1 >= (INT_MAX - sizeof(struct urb)))
 		return -EINVAL;
 	ret = usbfs_increase_memory_usage(len1 + sizeof(struct urb));
 	if (ret)
@@ -1458,13 +1437,19 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 	int number_of_packets = 0;
 	unsigned int stream_id = 0;
 	void *buf;
-
-	if (uurb->flags & ~(USBDEVFS_URB_ISO_ASAP |
-				USBDEVFS_URB_SHORT_NOT_OK |
+	unsigned long mask =	USBDEVFS_URB_SHORT_NOT_OK |
 				USBDEVFS_URB_BULK_CONTINUATION |
 				USBDEVFS_URB_NO_FSBR |
 				USBDEVFS_URB_ZERO_PACKET |
-				USBDEVFS_URB_NO_INTERRUPT))
+				USBDEVFS_URB_NO_INTERRUPT;
+	/* USBDEVFS_URB_ISO_ASAP is a special case */
+	if (uurb->type == USBDEVFS_URB_TYPE_ISO)
+		mask |= USBDEVFS_URB_ISO_ASAP;
+
+	if (uurb->flags & ~mask)
+			return -EINVAL;
+
+	if ((unsigned int)uurb->buffer_length >= USBFS_XFER_MAX)
 		return -EINVAL;
 	if (uurb->buffer_length > 0 && !uurb->buffer)
 		return -EINVAL;
@@ -1584,10 +1569,6 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 		return -EINVAL;
 	}
 
-	if (uurb->buffer_length >= USBFS_XFER_MAX) {
-		ret = -EINVAL;
-		goto error;
-	}
 	if (uurb->buffer_length > 0 &&
 			!access_ok(is_in ? VERIFY_WRITE : VERIFY_READ,
 				uurb->buffer, uurb->buffer_length)) {
@@ -1621,8 +1602,9 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 	as->mem_usage = u;
 
 	if (num_sgs) {
-		as->urb->sg = kmalloc(num_sgs * sizeof(struct scatterlist),
-				      GFP_KERNEL);
+		as->urb->sg = kmalloc_array(num_sgs,
+					    sizeof(struct scatterlist),
+					    GFP_KERNEL);
 		if (!as->urb->sg) {
 			ret = -ENOMEM;
 			goto error;
@@ -1695,8 +1677,6 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 		u |= URB_ISO_ASAP;
 	if (uurb->flags & USBDEVFS_URB_SHORT_NOT_OK && is_in)
 		u |= URB_SHORT_NOT_OK;
-	if (uurb->flags & USBDEVFS_URB_NO_FSBR)
-		u |= URB_NO_FSBR;
 	if (uurb->flags & USBDEVFS_URB_ZERO_PACKET)
 		u |= URB_ZERO_PACKET;
 	if (uurb->flags & USBDEVFS_URB_NO_INTERRUPT)
@@ -1743,7 +1723,6 @@ static int proc_do_submiturb(struct usb_dev_state *ps, struct usbdevfs_urb *uurb
 	as->ifnum = ifnum;
 	as->pid = get_pid(task_pid(current));
 	as->cred = get_current_cred();
-	security_task_getsecid(current, &as->secid);
 	snoop_urb(ps->dev, as->userurb, as->urb->pipe,
 			as->urb->transfer_buffer_length, 0, SUBMIT,
 			NULL, 0);
@@ -1838,6 +1817,18 @@ static int proc_unlinkurb(struct usb_dev_state *ps, void __user *arg)
 	return 0;
 }
 
+static void compute_isochronous_actual_length(struct urb *urb)
+{
+	unsigned int i;
+
+	if (urb->number_of_packets > 0) {
+		urb->actual_length = 0;
+		for (i = 0; i < urb->number_of_packets; i++)
+			urb->actual_length +=
+					urb->iso_frame_desc[i].actual_length;
+	}
+}
+
 static int processcompl(struct async *as, void __user * __user *arg)
 {
 	struct urb *urb = as->urb;
@@ -1845,6 +1836,7 @@ static int processcompl(struct async *as, void __user * __user *arg)
 	void __user *addr = as->userurb;
 	unsigned int i;
 
+	compute_isochronous_actual_length(urb);
 	if (as->userbuffer && urb->actual_length) {
 		if (copy_urb_data_to_user(as->userbuffer, urb))
 			goto err_out;
@@ -1905,7 +1897,7 @@ static int proc_reapurb(struct usb_dev_state *ps, void __user *arg)
 	if (as) {
 		int retval;
 
-		snoop(&ps->dev->dev, "reap %p\n", as->userurb);
+		snoop(&ps->dev->dev, "reap %pK\n", as->userurb);
 		retval = processcompl(as, (void __user * __user *)arg);
 		free_async(as);
 		return retval;
@@ -1922,7 +1914,7 @@ static int proc_reapurbnonblock(struct usb_dev_state *ps, void __user *arg)
 
 	as = async_getcompleted(ps);
 	if (as) {
-		snoop(&ps->dev->dev, "reap %p\n", as->userurb);
+		snoop(&ps->dev->dev, "reap %pK\n", as->userurb);
 		retval = processcompl(as, (void __user * __user *)arg);
 		free_async(as);
 	} else {
@@ -1976,27 +1968,21 @@ static int proc_disconnectsignal_compat(struct usb_dev_state *ps, void __user *a
 static int get_urb32(struct usbdevfs_urb *kurb,
 		     struct usbdevfs_urb32 __user *uurb)
 {
-	__u32  uptr;
-	if (!access_ok(VERIFY_READ, uurb, sizeof(*uurb)) ||
-	    __get_user(kurb->type, &uurb->type) ||
-	    __get_user(kurb->endpoint, &uurb->endpoint) ||
-	    __get_user(kurb->status, &uurb->status) ||
-	    __get_user(kurb->flags, &uurb->flags) ||
-	    __get_user(kurb->buffer_length, &uurb->buffer_length) ||
-	    __get_user(kurb->actual_length, &uurb->actual_length) ||
-	    __get_user(kurb->start_frame, &uurb->start_frame) ||
-	    __get_user(kurb->number_of_packets, &uurb->number_of_packets) ||
-	    __get_user(kurb->error_count, &uurb->error_count) ||
-	    __get_user(kurb->signr, &uurb->signr))
+	struct usbdevfs_urb32 urb32;
+	if (copy_from_user(&urb32, uurb, sizeof(*uurb)))
 		return -EFAULT;
-
-	if (__get_user(uptr, &uurb->buffer))
-		return -EFAULT;
-	kurb->buffer = compat_ptr(uptr);
-	if (__get_user(uptr, &uurb->usercontext))
-		return -EFAULT;
-	kurb->usercontext = compat_ptr(uptr);
-
+	kurb->type = urb32.type;
+	kurb->endpoint = urb32.endpoint;
+	kurb->status = urb32.status;
+	kurb->flags = urb32.flags;
+	kurb->buffer = compat_ptr(urb32.buffer);
+	kurb->buffer_length = urb32.buffer_length;
+	kurb->actual_length = urb32.actual_length;
+	kurb->start_frame = urb32.start_frame;
+	kurb->number_of_packets = urb32.number_of_packets;
+	kurb->error_count = urb32.error_count;
+	kurb->signr = urb32.signr;
+	kurb->usercontext = compat_ptr(urb32.usercontext);
 	return 0;
 }
 
@@ -2019,6 +2005,7 @@ static int processcompl_compat(struct async *as, void __user * __user *arg)
 	void __user *addr = as->userurb;
 	unsigned int i;
 
+	compute_isochronous_actual_length(urb);
 	if (as->userbuffer && urb->actual_length) {
 		if (copy_urb_data_to_user(as->userbuffer, urb))
 			return -EFAULT;
@@ -2053,7 +2040,7 @@ static int proc_reapurb_compat(struct usb_dev_state *ps, void __user *arg)
 	if (as) {
 		int retval;
 
-		snoop(&ps->dev->dev, "reap %p\n", as->userurb);
+		snoop(&ps->dev->dev, "reap %pK\n", as->userurb);
 		retval = processcompl_compat(as, (void __user * __user *)arg);
 		free_async(as);
 		return retval;
@@ -2070,7 +2057,7 @@ static int proc_reapurbnonblock_compat(struct usb_dev_state *ps, void __user *ar
 
 	as = async_getcompleted(ps);
 	if (as) {
-		snoop(&ps->dev->dev, "reap %p\n", as->userurb);
+		snoop(&ps->dev->dev, "reap %pK\n", as->userurb);
 		retval = processcompl_compat(as, (void __user * __user *)arg);
 		free_async(as);
 	} else {
@@ -2208,18 +2195,14 @@ static int proc_ioctl_default(struct usb_dev_state *ps, void __user *arg)
 #ifdef CONFIG_COMPAT
 static int proc_ioctl_compat(struct usb_dev_state *ps, compat_uptr_t arg)
 {
-	struct usbdevfs_ioctl32 __user *uioc;
+	struct usbdevfs_ioctl32 ioc32;
 	struct usbdevfs_ioctl ctrl;
-	u32 udata;
 
-	uioc = compat_ptr((long)arg);
-	if (!access_ok(VERIFY_READ, uioc, sizeof(*uioc)) ||
-	    __get_user(ctrl.ifno, &uioc->ifno) ||
-	    __get_user(ctrl.ioctl_code, &uioc->ioctl_code) ||
-	    __get_user(udata, &uioc->data))
+	if (copy_from_user(&ioc32, compat_ptr(arg), sizeof(ioc32)))
 		return -EFAULT;
-	ctrl.data = compat_ptr(udata);
-
+	ctrl.ifno = ioc32.ifno;
+	ctrl.ioctl_code = ioc32.ioctl_code;
+	ctrl.data = compat_ptr(ioc32.data);
 	return proc_ioctl(ps, &ctrl);
 }
 #endif
@@ -2346,7 +2329,7 @@ static int proc_drop_privileges(struct usb_dev_state *ps, void __user *arg)
 	if (copy_from_user(&data, arg, sizeof(data)))
 		return -EFAULT;
 
-	/* This is an one way operation. Once privileges are
+	/* This is a one way operation. Once privileges are
 	 * dropped, you cannot regain them. You may however reissue
 	 * this ioctl to shrink the allowed interfaces mask.
 	 */
@@ -2499,7 +2482,7 @@ static long usbdev_do_ioctl(struct file *file, unsigned int cmd,
 #endif
 
 	case USBDEVFS_DISCARDURB:
-		snoop(&dev->dev, "%s: DISCARDURB %p\n", __func__, p);
+		snoop(&dev->dev, "%s: DISCARDURB %pK\n", __func__, p);
 		ret = proc_unlinkurb(ps, p);
 		break;
 
@@ -2547,6 +2530,9 @@ static long usbdev_do_ioctl(struct file *file, unsigned int cmd,
 	case USBDEVFS_DROP_PRIVILEGES:
 		ret = proc_drop_privileges(ps, p);
 		break;
+	case USBDEVFS_GET_SPEED:
+		ret = ps->dev->speed;
+		break;
 	}
 
  done:
@@ -2579,19 +2565,19 @@ static long usbdev_compat_ioctl(struct file *file, unsigned int cmd,
 #endif
 
 /* No kernel lock - fine */
-static unsigned int usbdev_poll(struct file *file,
+static __poll_t usbdev_poll(struct file *file,
 				struct poll_table_struct *wait)
 {
 	struct usb_dev_state *ps = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	poll_wait(file, &ps->wait, wait);
 	if (file->f_mode & FMODE_WRITE && !list_empty(&ps->async_completed))
-		mask |= POLLOUT | POLLWRNORM;
+		mask |= EPOLLOUT | EPOLLWRNORM;
 	if (!connected(ps))
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 	if (list_empty(&ps->list))
-		mask |= POLLERR;
+		mask |= EPOLLERR;
 	return mask;
 }
 
@@ -2620,13 +2606,13 @@ static void usbdev_remove(struct usb_device *udev)
 		wake_up_all(&ps->wait);
 		list_del_init(&ps->list);
 		if (ps->discsignr) {
-			memset(&sinfo, 0, sizeof(sinfo));
+			clear_siginfo(&sinfo);
 			sinfo.si_signo = ps->discsignr;
 			sinfo.si_errno = EPIPE;
 			sinfo.si_code = SI_ASYNCIO;
 			sinfo.si_addr = ps->disccontext;
 			kill_pid_info_as_cred(ps->discsignr, &sinfo,
-					ps->disc_pid, ps->cred, ps->secid);
+					ps->disc_pid, ps->cred);
 		}
 	}
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1)
 /* src/p80211/p80211req.c
  *
  * Request/Indication/MacMgmt interface handling functions
@@ -198,7 +199,8 @@ static void p80211req_mibset_mibget(struct wlandevice *wlandev,
 				    struct p80211msg_dot11req_mibget *mib_msg,
 				    int isget)
 {
-	struct p80211itemd *mibitem = (struct p80211itemd *)mib_msg->mibattribute.data;
+	struct p80211itemd *mibitem =
+		(struct p80211itemd *)mib_msg->mibattribute.data;
 	struct p80211pstrd *pstr = (struct p80211pstrd *)mibitem->data;
 	u8 *key = mibitem->data + sizeof(struct p80211pstrd);
 

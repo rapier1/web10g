@@ -51,13 +51,13 @@ A received message can be:
    be non-zero).
 
 To send a CEC message the application has to fill in the struct
-:c:type:` cec_msg` and pass it to :ref:`ioctl CEC_TRANSMIT <CEC_TRANSMIT>`.
+:c:type:`cec_msg` and pass it to :ref:`ioctl CEC_TRANSMIT <CEC_TRANSMIT>`.
 The :ref:`ioctl CEC_TRANSMIT <CEC_TRANSMIT>` is only available if
 ``CEC_CAP_TRANSMIT`` is set. If there is no more room in the transmit
 queue, then it will return -1 and set errno to the ``EBUSY`` error code.
 The transmit queue has enough room for 18 messages (about 1 second worth
 of 2-byte messages). Note that the CEC kernel framework will also reply
-to core messages (see :ref:cec-core-processing), so it is not a good
+to core messages (see :ref:`cec-core-processing`), so it is not a good
 idea to fully fill up the transmit queue.
 
 If the file descriptor is in non-blocking mode then the transmit will
@@ -69,6 +69,18 @@ The ``sequence`` field is filled in for every transmit and this can be
 checked against the received messages to find the corresponding transmit
 result.
 
+Normally calling :ref:`ioctl CEC_TRANSMIT <CEC_TRANSMIT>` when the physical
+address is invalid (due to e.g. a disconnect) will return ``ENONET``.
+
+However, the CEC specification allows sending messages from 'Unregistered' to
+'TV' when the physical address is invalid since some TVs pull the hotplug detect
+pin of the HDMI connector low when they go into standby, or when switching to
+another input.
+
+When the hotplug detect pin goes low the EDID disappears, and thus the
+physical address, but the cable is still connected and CEC still works.
+In order to detect/wake up the device it is allowed to send poll and 'Image/Text
+View On' messages from initiator 0xf ('Unregistered') to destination 0 ('TV').
 
 .. tabularcolumns:: |p{1.0cm}|p{3.5cm}|p{13.0cm}|
 
@@ -119,7 +131,7 @@ result.
       - ``tx_status``
       - The status bits of the transmitted message. See
 	:ref:`cec-tx-status` for the possible status values. It is 0 if
-	this messages was received, not transmitted.
+	this message was received, not transmitted.
     * - __u8
       - ``msg[16]``
       - The message payload. For :ref:`ioctl CEC_TRANSMIT <CEC_TRANSMIT>` this is filled in by the
@@ -156,7 +168,7 @@ result.
       - ``tx_status``
       - The status bits of the transmitted message. See
 	:ref:`cec-tx-status` for the possible status values. It is 0 if
-	this messages was received, not transmitted.
+	this message was received, not transmitted.
     * - __u8
       - ``tx_arb_lost_cnt``
       - A counter of the number of transmit attempts that resulted in the
@@ -182,6 +194,8 @@ result.
 	supports this, otherwise it is always 0. This counter is only
 	valid if the :ref:`CEC_TX_STATUS_ERROR <CEC-TX-STATUS-ERROR>` status bit is set.
 
+
+.. tabularcolumns:: |p{6.2cm}|p{1.0cm}|p{10.3cm}|
 
 .. _cec-msg-flags:
 
@@ -217,41 +231,47 @@ result.
       - ``CEC_TX_STATUS_OK``
       - 0x01
       - The message was transmitted successfully. This is mutually
-	exclusive with :ref:`CEC_TX_STATUS_MAX_RETRIES <CEC-TX-STATUS-MAX-RETRIES>`. Other bits can still
-	be set if earlier attempts met with failure before the transmit
-	was eventually successful.
+	exclusive with :ref:`CEC_TX_STATUS_MAX_RETRIES <CEC-TX-STATUS-MAX-RETRIES>`.
+	Other bits can still be set if earlier attempts met with failure before
+	the transmit was eventually successful.
     * .. _`CEC-TX-STATUS-ARB-LOST`:
 
       - ``CEC_TX_STATUS_ARB_LOST``
       - 0x02
-      - CEC line arbitration was lost.
+      - CEC line arbitration was lost, i.e. another transmit started at the
+        same time with a higher priority. Optional status, not all hardware
+	can detect this error condition.
     * .. _`CEC-TX-STATUS-NACK`:
 
       - ``CEC_TX_STATUS_NACK``
       - 0x04
-      - Message was not acknowledged.
+      - Message was not acknowledged. Note that some hardware cannot tell apart
+        a 'Not Acknowledged' status from other error conditions, i.e. the result
+	of a transmit is just OK or FAIL. In that case this status will be
+	returned when the transmit failed.
     * .. _`CEC-TX-STATUS-LOW-DRIVE`:
 
       - ``CEC_TX_STATUS_LOW_DRIVE``
       - 0x08
       - Low drive was detected on the CEC bus. This indicates that a
 	follower detected an error on the bus and requests a
-	retransmission.
+	retransmission. Optional status, not all hardware can detect this
+	error condition.
     * .. _`CEC-TX-STATUS-ERROR`:
 
       - ``CEC_TX_STATUS_ERROR``
       - 0x10
       - Some error occurred. This is used for any errors that do not fit
-	the previous two, either because the hardware could not tell which
-	error occurred, or because the hardware tested for other
-	conditions besides those two.
+	``CEC_TX_STATUS_ARB_LOST`` or ``CEC_TX_STATUS_LOW_DRIVE``, either because
+	the hardware could not tell which error occurred, or because the hardware
+	tested for other conditions besides those two. Optional status.
     * .. _`CEC-TX-STATUS-MAX-RETRIES`:
 
       - ``CEC_TX_STATUS_MAX_RETRIES``
       - 0x20
       - The transmit failed after one or more retries. This status bit is
-	mutually exclusive with :ref:`CEC_TX_STATUS_OK <CEC-TX-STATUS-OK>`. Other bits can still
-	be set to explain which failures were seen.
+	mutually exclusive with :ref:`CEC_TX_STATUS_OK <CEC-TX-STATUS-OK>`.
+	Other bits can still be set to explain which failures were seen.
 
 
 .. tabularcolumns:: |p{5.6cm}|p{0.9cm}|p{11.0cm}|
@@ -289,3 +309,42 @@ Return Value
 On success 0 is returned, on error -1 and the ``errno`` variable is set
 appropriately. The generic error codes are described at the
 :ref:`Generic Error Codes <gen-errors>` chapter.
+
+The :ref:`ioctl CEC_RECEIVE <CEC_RECEIVE>` can return the following
+error codes:
+
+EAGAIN
+    No messages are in the receive queue, and the filehandle is in non-blocking mode.
+
+ETIMEDOUT
+    The ``timeout`` was reached while waiting for a message.
+
+ERESTARTSYS
+    The wait for a message was interrupted (e.g. by Ctrl-C).
+
+The :ref:`ioctl CEC_TRANSMIT <CEC_TRANSMIT>` can return the following
+error codes:
+
+ENOTTY
+    The ``CEC_CAP_TRANSMIT`` capability wasn't set, so this ioctl is not supported.
+
+EPERM
+    The CEC adapter is not configured, i.e. :ref:`ioctl CEC_ADAP_S_LOG_ADDRS <CEC_ADAP_S_LOG_ADDRS>`
+    has never been called.
+
+ENONET
+    The CEC adapter is not configured, i.e. :ref:`ioctl CEC_ADAP_S_LOG_ADDRS <CEC_ADAP_S_LOG_ADDRS>`
+    was called, but the physical address is invalid so no logical address was claimed.
+    An exception is made in this case for transmits from initiator 0xf ('Unregistered')
+    to destination 0 ('TV'). In that case the transmit will proceed as usual.
+
+EBUSY
+    Another filehandle is in exclusive follower or initiator mode, or the filehandle
+    is in mode ``CEC_MODE_NO_INITIATOR``. This is also returned if the transmit
+    queue is full.
+
+EINVAL
+    The contents of struct :c:type:`cec_msg` is invalid.
+
+ERESTARTSYS
+    The wait for a successful transmit was interrupted (e.g. by Ctrl-C).

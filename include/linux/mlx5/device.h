@@ -48,12 +48,16 @@
 /* helper macros */
 #define __mlx5_nullp(typ) ((struct mlx5_ifc_##typ##_bits *)0)
 #define __mlx5_bit_sz(typ, fld) sizeof(__mlx5_nullp(typ)->fld)
-#define __mlx5_bit_off(typ, fld) ((unsigned)(unsigned long)(&(__mlx5_nullp(typ)->fld)))
+#define __mlx5_bit_off(typ, fld) (offsetof(struct mlx5_ifc_##typ##_bits, fld))
+#define __mlx5_16_off(typ, fld) (__mlx5_bit_off(typ, fld) / 16)
 #define __mlx5_dw_off(typ, fld) (__mlx5_bit_off(typ, fld) / 32)
 #define __mlx5_64_off(typ, fld) (__mlx5_bit_off(typ, fld) / 64)
+#define __mlx5_16_bit_off(typ, fld) (16 - __mlx5_bit_sz(typ, fld) - (__mlx5_bit_off(typ, fld) & 0xf))
 #define __mlx5_dw_bit_off(typ, fld) (32 - __mlx5_bit_sz(typ, fld) - (__mlx5_bit_off(typ, fld) & 0x1f))
 #define __mlx5_mask(typ, fld) ((u32)((1ull << __mlx5_bit_sz(typ, fld)) - 1))
 #define __mlx5_dw_mask(typ, fld) (__mlx5_mask(typ, fld) << __mlx5_dw_bit_off(typ, fld))
+#define __mlx5_mask16(typ, fld) ((u16)((1ull << __mlx5_bit_sz(typ, fld)) - 1))
+#define __mlx5_16_mask(typ, fld) (__mlx5_mask16(typ, fld) << __mlx5_16_bit_off(typ, fld))
 #define __mlx5_st_sz_bits(typ) sizeof(struct mlx5_ifc_##typ##_bits)
 
 #define MLX5_FLD_SZ_BYTES(typ, fld) (__mlx5_bit_sz(typ, fld) / 8)
@@ -67,11 +71,17 @@
 
 /* insert a value to a struct */
 #define MLX5_SET(typ, p, fld, v) do { \
+	u32 _v = v; \
 	BUILD_BUG_ON(__mlx5_st_sz_bits(typ) % 32);             \
 	*((__be32 *)(p) + __mlx5_dw_off(typ, fld)) = \
 	cpu_to_be32((be32_to_cpu(*((__be32 *)(p) + __mlx5_dw_off(typ, fld))) & \
-		     (~__mlx5_dw_mask(typ, fld))) | (((v) & __mlx5_mask(typ, fld)) \
+		     (~__mlx5_dw_mask(typ, fld))) | (((_v) & __mlx5_mask(typ, fld)) \
 		     << __mlx5_dw_bit_off(typ, fld))); \
+} while (0)
+
+#define MLX5_ARRAY_SET(typ, p, fld, idx, v) do { \
+	BUILD_BUG_ON(__mlx5_bit_off(typ, fld) % 32); \
+	MLX5_SET(typ, p, fld[idx], v); \
 } while (0)
 
 #define MLX5_SET_TO_ONES(typ, p, fld) do { \
@@ -114,6 +124,19 @@ __mlx5_mask(typ, fld))
 	pr_debug(#fld " = 0x%llx\n", ___t); \
 	___t; \
 })
+
+#define MLX5_GET16(typ, p, fld) ((be16_to_cpu(*((__be16 *)(p) +\
+__mlx5_16_off(typ, fld))) >> __mlx5_16_bit_off(typ, fld)) & \
+__mlx5_mask16(typ, fld))
+
+#define MLX5_SET16(typ, p, fld, v) do { \
+	u16 _v = v; \
+	BUILD_BUG_ON(__mlx5_st_sz_bits(typ) % 16);             \
+	*((__be16 *)(p) + __mlx5_16_off(typ, fld)) = \
+	cpu_to_be16((be16_to_cpu(*((__be16 *)(p) + __mlx5_16_off(typ, fld))) & \
+		     (~__mlx5_16_mask(typ, fld))) | (((_v) & __mlx5_mask16(typ, fld)) \
+		     << __mlx5_16_bit_off(typ, fld))); \
+} while (0)
 
 /* Big endian getters */
 #define MLX5_GET64_BE(typ, p, fld) (*((__be64 *)(p) +\
@@ -212,10 +235,22 @@ enum {
 };
 
 enum {
-	MLX5_BF_REGS_PER_PAGE		= 4,
-	MLX5_MAX_UAR_PAGES		= 1 << 8,
-	MLX5_NON_FP_BF_REGS_PER_PAGE	= 2,
-	MLX5_MAX_UUARS	= MLX5_MAX_UAR_PAGES * MLX5_NON_FP_BF_REGS_PER_PAGE,
+	MLX5_ADAPTER_PAGE_SHIFT		= 12,
+	MLX5_ADAPTER_PAGE_SIZE		= 1 << MLX5_ADAPTER_PAGE_SHIFT,
+};
+
+enum {
+	MLX5_BFREGS_PER_UAR		= 4,
+	MLX5_MAX_UARS			= 1 << 8,
+	MLX5_NON_FP_BFREGS_PER_UAR	= 2,
+	MLX5_FP_BFREGS_PER_UAR		= MLX5_BFREGS_PER_UAR -
+					  MLX5_NON_FP_BFREGS_PER_UAR,
+	MLX5_MAX_BFREGS			= MLX5_MAX_UARS *
+					  MLX5_NON_FP_BFREGS_PER_UAR,
+	MLX5_UARS_IN_PAGE		= PAGE_SIZE / MLX5_ADAPTER_PAGE_SIZE,
+	MLX5_NON_FP_BFREGS_IN_PAGE	= MLX5_NON_FP_BFREGS_PER_UAR * MLX5_UARS_IN_PAGE,
+	MLX5_MIN_DYN_BFREGS		= 512,
+	MLX5_MAX_DYN_BFREGS		= 1024,
 };
 
 enum {
@@ -256,6 +291,7 @@ enum {
 	MLX5_EVENT_QUEUE_TYPE_QP = 0,
 	MLX5_EVENT_QUEUE_TYPE_RQ = 1,
 	MLX5_EVENT_QUEUE_TYPE_SQ = 2,
+	MLX5_EVENT_QUEUE_TYPE_DCT = 6,
 };
 
 enum mlx5_event {
@@ -278,7 +314,10 @@ enum mlx5_event {
 	MLX5_EVENT_TYPE_PORT_CHANGE	   = 0x09,
 	MLX5_EVENT_TYPE_GPIO_EVENT	   = 0x15,
 	MLX5_EVENT_TYPE_PORT_MODULE_EVENT  = 0x16,
+	MLX5_EVENT_TYPE_TEMP_WARN_EVENT    = 0x17,
 	MLX5_EVENT_TYPE_REMOTE_CONFIG	   = 0x19,
+	MLX5_EVENT_TYPE_GENERAL_EVENT	   = 0x22,
+	MLX5_EVENT_TYPE_PPS_EVENT          = 0x25,
 
 	MLX5_EVENT_TYPE_DB_BF_CONGESTION   = 0x1a,
 	MLX5_EVENT_TYPE_STALL_EVENT	   = 0x1b,
@@ -288,6 +327,15 @@ enum mlx5_event {
 
 	MLX5_EVENT_TYPE_PAGE_FAULT	   = 0xc,
 	MLX5_EVENT_TYPE_NIC_VPORT_CHANGE   = 0xd,
+
+	MLX5_EVENT_TYPE_DCT_DRAINED        = 0x1c,
+
+	MLX5_EVENT_TYPE_FPGA_ERROR         = 0x20,
+	MLX5_EVENT_TYPE_FPGA_QP_ERROR      = 0x21,
+};
+
+enum {
+	MLX5_GENERAL_SUBTYPE_DELAY_DROP_TIMEOUT = 0x1,
 };
 
 enum {
@@ -386,11 +434,6 @@ enum {
 
 enum {
 	MLX5_MAX_PAGE_SHIFT		= 31
-};
-
-enum {
-	MLX5_ADAPTER_PAGE_SHIFT		= 12,
-	MLX5_ADAPTER_PAGE_SIZE		= 1 << MLX5_ADAPTER_PAGE_SHIFT,
 };
 
 enum {
@@ -534,7 +577,9 @@ struct mlx5_eqe_page_fault {
 			__be16  wqe_index;
 			u16	reserved2;
 			__be16  packet_length;
-			u8	reserved3[12];
+			__be32  token;
+			u8	reserved4[8];
+			__be32  pftype_wq;
 		} __packed wqe;
 		struct {
 			__be32  r_key;
@@ -542,9 +587,9 @@ struct mlx5_eqe_page_fault {
 			__be16  packet_length;
 			__be32  rdma_op_len;
 			__be64  rdma_va;
+			__be32  pftype_token;
 		} __packed rdma;
 	} __packed;
-	__be32 flags_qpn;
 } __packed;
 
 struct mlx5_eqe_vport_change {
@@ -562,6 +607,32 @@ struct mlx5_eqe_port_module {
 	u8        error_type;
 } __packed;
 
+struct mlx5_eqe_pps {
+	u8		rsvd0[3];
+	u8		pin;
+	u8		rsvd1[4];
+	union {
+		struct {
+			__be32		time_sec;
+			__be32		time_nsec;
+		};
+		struct {
+			__be64		time_stamp;
+		};
+	};
+	u8		rsvd2[12];
+} __packed;
+
+struct mlx5_eqe_dct {
+	__be32  reserved[6];
+	__be32  dctn;
+};
+
+struct mlx5_eqe_temp_warning {
+	__be64 sensor_warning_msb;
+	__be64 sensor_warning_lsb;
+} __packed;
+
 union ev_data {
 	__be32				raw[7];
 	struct mlx5_eqe_cmd		cmd;
@@ -576,6 +647,9 @@ union ev_data {
 	struct mlx5_eqe_page_fault	page_fault;
 	struct mlx5_eqe_vport_change	vport_change;
 	struct mlx5_eqe_port_module	port_module;
+	struct mlx5_eqe_pps		pps;
+	struct mlx5_eqe_dct             dct;
+	struct mlx5_eqe_temp_warning	temp_warning;
 } __packed;
 
 struct mlx5_eqe {
@@ -681,7 +755,7 @@ static inline int mlx5_get_cqe_format(struct mlx5_cqe64 *cqe)
 	return (cqe->op_own >> 2) & 0x3;
 }
 
-static inline int get_cqe_lro_tcppsh(struct mlx5_cqe64 *cqe)
+static inline u8 get_cqe_lro_tcppsh(struct mlx5_cqe64 *cqe)
 {
 	return (cqe->lro_tcppsh_abort_dupack >> 6) & 1;
 }
@@ -715,6 +789,9 @@ static inline u64 get_cqe_ts(struct mlx5_cqe64 *cqe)
 
 	return (u64)lo | ((u64)hi << 32);
 }
+
+#define MLX5_MPWQE_LOG_NUM_STRIDES_BASE	(9)
+#define MLX5_MPWQE_LOG_STRIDE_SZ_BASE	(6)
 
 struct mpwrq_cqe_bc {
 	__be16	filler_consumed_strides;
@@ -761,8 +838,14 @@ enum {
 };
 
 enum {
-	CQE_RSS_HTYPE_IP	= 0x3 << 6,
-	CQE_RSS_HTYPE_L4	= 0x3 << 2,
+	CQE_RSS_HTYPE_IP	= 0x3 << 2,
+	/* cqe->rss_hash_type[3:2] - IP destination selected for hash
+	 * (00 = none,  01 = IPv4, 10 = IPv6, 11 = Reserved)
+	 */
+	CQE_RSS_HTYPE_L4	= 0x3 << 6,
+	/* cqe->rss_hash_type[7:6] - L4 destination selected for hash
+	 * (00 = none, 01 = TCP. 10 = UDP, 11 = IPSEC.SPI
+	 */
 };
 
 enum {
@@ -919,6 +1002,18 @@ enum mlx5_wol_mode {
 	MLX5_WOL_PHY_ACTIVITY   = 1 << 7,
 };
 
+enum mlx5_mpls_supported_fields {
+	MLX5_FIELD_SUPPORT_MPLS_LABEL = 1 << 0,
+	MLX5_FIELD_SUPPORT_MPLS_EXP   = 1 << 1,
+	MLX5_FIELD_SUPPORT_MPLS_S_BOS = 1 << 2,
+	MLX5_FIELD_SUPPORT_MPLS_TTL   = 1 << 3
+};
+
+enum mlx5_flex_parser_protos {
+	MLX5_FLEX_PROTO_CW_MPLS_GRE   = 1 << 4,
+	MLX5_FLEX_PROTO_CW_MPLS_UDP   = 1 << 5,
+};
+
 /* MLX5 DEV CAPs */
 
 /* TODO: EAT.ME */
@@ -934,49 +1029,80 @@ enum mlx5_cap_type {
 	MLX5_CAP_ATOMIC,
 	MLX5_CAP_ROCE,
 	MLX5_CAP_IPOIB_OFFLOADS,
-	MLX5_CAP_EOIB_OFFLOADS,
+	MLX5_CAP_IPOIB_ENHANCED_OFFLOADS,
 	MLX5_CAP_FLOW_TABLE,
 	MLX5_CAP_ESWITCH_FLOW_TABLE,
 	MLX5_CAP_ESWITCH,
 	MLX5_CAP_RESERVED,
 	MLX5_CAP_VECTOR_CALC,
 	MLX5_CAP_QOS,
+	MLX5_CAP_DEBUG,
+	MLX5_CAP_RESERVED_14,
+	MLX5_CAP_DEV_MEM,
 	/* NUM OF CAP Types */
 	MLX5_CAP_NUM
 };
 
+enum mlx5_pcam_reg_groups {
+	MLX5_PCAM_REGS_5000_TO_507F                 = 0x0,
+};
+
+enum mlx5_pcam_feature_groups {
+	MLX5_PCAM_FEATURE_ENHANCED_FEATURES         = 0x0,
+};
+
+enum mlx5_mcam_reg_groups {
+	MLX5_MCAM_REGS_FIRST_128                    = 0x0,
+};
+
+enum mlx5_mcam_feature_groups {
+	MLX5_MCAM_FEATURE_ENHANCED_FEATURES         = 0x0,
+};
+
+enum mlx5_qcam_reg_groups {
+	MLX5_QCAM_REGS_FIRST_128                    = 0x0,
+};
+
+enum mlx5_qcam_feature_groups {
+	MLX5_QCAM_FEATURE_ENHANCED_FEATURES         = 0x0,
+};
+
 /* GET Dev Caps macros */
 #define MLX5_CAP_GEN(mdev, cap) \
-	MLX5_GET(cmd_hca_cap, mdev->hca_caps_cur[MLX5_CAP_GENERAL], cap)
+	MLX5_GET(cmd_hca_cap, mdev->caps.hca_cur[MLX5_CAP_GENERAL], cap)
 
 #define MLX5_CAP_GEN_MAX(mdev, cap) \
-	MLX5_GET(cmd_hca_cap, mdev->hca_caps_max[MLX5_CAP_GENERAL], cap)
+	MLX5_GET(cmd_hca_cap, mdev->caps.hca_max[MLX5_CAP_GENERAL], cap)
 
 #define MLX5_CAP_ETH(mdev, cap) \
 	MLX5_GET(per_protocol_networking_offload_caps,\
-		 mdev->hca_caps_cur[MLX5_CAP_ETHERNET_OFFLOADS], cap)
+		 mdev->caps.hca_cur[MLX5_CAP_ETHERNET_OFFLOADS], cap)
 
 #define MLX5_CAP_ETH_MAX(mdev, cap) \
 	MLX5_GET(per_protocol_networking_offload_caps,\
-		 mdev->hca_caps_max[MLX5_CAP_ETHERNET_OFFLOADS], cap)
+		 mdev->caps.hca_max[MLX5_CAP_ETHERNET_OFFLOADS], cap)
+
+#define MLX5_CAP_IPOIB_ENHANCED(mdev, cap) \
+	MLX5_GET(per_protocol_networking_offload_caps,\
+		 mdev->caps.hca_cur[MLX5_CAP_IPOIB_ENHANCED_OFFLOADS], cap)
 
 #define MLX5_CAP_ROCE(mdev, cap) \
-	MLX5_GET(roce_cap, mdev->hca_caps_cur[MLX5_CAP_ROCE], cap)
+	MLX5_GET(roce_cap, mdev->caps.hca_cur[MLX5_CAP_ROCE], cap)
 
 #define MLX5_CAP_ROCE_MAX(mdev, cap) \
-	MLX5_GET(roce_cap, mdev->hca_caps_max[MLX5_CAP_ROCE], cap)
+	MLX5_GET(roce_cap, mdev->caps.hca_max[MLX5_CAP_ROCE], cap)
 
 #define MLX5_CAP_ATOMIC(mdev, cap) \
-	MLX5_GET(atomic_caps, mdev->hca_caps_cur[MLX5_CAP_ATOMIC], cap)
+	MLX5_GET(atomic_caps, mdev->caps.hca_cur[MLX5_CAP_ATOMIC], cap)
 
 #define MLX5_CAP_ATOMIC_MAX(mdev, cap) \
-	MLX5_GET(atomic_caps, mdev->hca_caps_max[MLX5_CAP_ATOMIC], cap)
+	MLX5_GET(atomic_caps, mdev->caps.hca_max[MLX5_CAP_ATOMIC], cap)
 
 #define MLX5_CAP_FLOWTABLE(mdev, cap) \
-	MLX5_GET(flow_table_nic_cap, mdev->hca_caps_cur[MLX5_CAP_FLOW_TABLE], cap)
+	MLX5_GET(flow_table_nic_cap, mdev->caps.hca_cur[MLX5_CAP_FLOW_TABLE], cap)
 
 #define MLX5_CAP_FLOWTABLE_MAX(mdev, cap) \
-	MLX5_GET(flow_table_nic_cap, mdev->hca_caps_max[MLX5_CAP_FLOW_TABLE], cap)
+	MLX5_GET(flow_table_nic_cap, mdev->caps.hca_max[MLX5_CAP_FLOW_TABLE], cap)
 
 #define MLX5_CAP_FLOWTABLE_NIC_RX(mdev, cap) \
 	MLX5_CAP_FLOWTABLE(mdev, flow_table_properties_nic_receive.cap)
@@ -998,11 +1124,11 @@ enum mlx5_cap_type {
 
 #define MLX5_CAP_ESW_FLOWTABLE(mdev, cap) \
 	MLX5_GET(flow_table_eswitch_cap, \
-		 mdev->hca_caps_cur[MLX5_CAP_ESWITCH_FLOW_TABLE], cap)
+		 mdev->caps.hca_cur[MLX5_CAP_ESWITCH_FLOW_TABLE], cap)
 
 #define MLX5_CAP_ESW_FLOWTABLE_MAX(mdev, cap) \
 	MLX5_GET(flow_table_eswitch_cap, \
-		 mdev->hca_caps_max[MLX5_CAP_ESWITCH_FLOW_TABLE], cap)
+		 mdev->caps.hca_max[MLX5_CAP_ESWITCH_FLOW_TABLE], cap)
 
 #define MLX5_CAP_ESW_FLOWTABLE_FDB(mdev, cap) \
 	MLX5_CAP_ESW_FLOWTABLE(mdev, flow_table_properties_nic_esw_fdb.cap)
@@ -1024,21 +1150,54 @@ enum mlx5_cap_type {
 
 #define MLX5_CAP_ESW(mdev, cap) \
 	MLX5_GET(e_switch_cap, \
-		 mdev->hca_caps_cur[MLX5_CAP_ESWITCH], cap)
+		 mdev->caps.hca_cur[MLX5_CAP_ESWITCH], cap)
 
 #define MLX5_CAP_ESW_MAX(mdev, cap) \
 	MLX5_GET(e_switch_cap, \
-		 mdev->hca_caps_max[MLX5_CAP_ESWITCH], cap)
+		 mdev->caps.hca_max[MLX5_CAP_ESWITCH], cap)
 
 #define MLX5_CAP_ODP(mdev, cap)\
-	MLX5_GET(odp_cap, mdev->hca_caps_cur[MLX5_CAP_ODP], cap)
+	MLX5_GET(odp_cap, mdev->caps.hca_cur[MLX5_CAP_ODP], cap)
 
 #define MLX5_CAP_VECTOR_CALC(mdev, cap) \
 	MLX5_GET(vector_calc_cap, \
-		 mdev->hca_caps_cur[MLX5_CAP_VECTOR_CALC], cap)
+		 mdev->caps.hca_cur[MLX5_CAP_VECTOR_CALC], cap)
 
 #define MLX5_CAP_QOS(mdev, cap)\
-	MLX5_GET(qos_cap, mdev->hca_caps_cur[MLX5_CAP_QOS], cap)
+	MLX5_GET(qos_cap, mdev->caps.hca_cur[MLX5_CAP_QOS], cap)
+
+#define MLX5_CAP_DEBUG(mdev, cap)\
+	MLX5_GET(debug_cap, mdev->caps.hca_cur[MLX5_CAP_DEBUG], cap)
+
+#define MLX5_CAP_PCAM_FEATURE(mdev, fld) \
+	MLX5_GET(pcam_reg, (mdev)->caps.pcam, feature_cap_mask.enhanced_features.fld)
+
+#define MLX5_CAP_PCAM_REG(mdev, reg) \
+	MLX5_GET(pcam_reg, (mdev)->caps.pcam, port_access_reg_cap_mask.regs_5000_to_507f.reg)
+
+#define MLX5_CAP_MCAM_REG(mdev, reg) \
+	MLX5_GET(mcam_reg, (mdev)->caps.mcam, mng_access_reg_cap_mask.access_regs.reg)
+
+#define MLX5_CAP_MCAM_FEATURE(mdev, fld) \
+	MLX5_GET(mcam_reg, (mdev)->caps.mcam, mng_feature_cap_mask.enhanced_features.fld)
+
+#define MLX5_CAP_QCAM_REG(mdev, fld) \
+	MLX5_GET(qcam_reg, (mdev)->caps.qcam, qos_access_reg_cap_mask.reg_cap.fld)
+
+#define MLX5_CAP_QCAM_FEATURE(mdev, fld) \
+	MLX5_GET(qcam_reg, (mdev)->caps.qcam, qos_feature_cap_mask.feature_cap.fld)
+
+#define MLX5_CAP_FPGA(mdev, cap) \
+	MLX5_GET(fpga_cap, (mdev)->caps.fpga, cap)
+
+#define MLX5_CAP64_FPGA(mdev, cap) \
+	MLX5_GET64(fpga_cap, (mdev)->caps.fpga, cap)
+
+#define MLX5_CAP_DEV_MEM(mdev, cap)\
+	MLX5_GET(device_mem_cap, mdev->caps.hca_cur[MLX5_CAP_DEV_MEM], cap)
+
+#define MLX5_CAP64_DEV_MEM(mdev, cap)\
+	MLX5_GET64(device_mem_cap, mdev->caps.hca_cur[MLX5_CAP_DEV_MEM], cap)
 
 enum {
 	MLX5_CMD_STAT_OK			= 0x0,
@@ -1068,7 +1227,12 @@ enum {
 	MLX5_PER_PRIORITY_COUNTERS_GROUP      = 0x10,
 	MLX5_PER_TRAFFIC_CLASS_COUNTERS_GROUP = 0x11,
 	MLX5_PHYSICAL_LAYER_COUNTERS_GROUP    = 0x12,
+	MLX5_PHYSICAL_LAYER_STATISTICAL_GROUP = 0x16,
 	MLX5_INFINIBAND_PORT_COUNTERS_GROUP   = 0x20,
+};
+
+enum {
+	MLX5_PCIE_PERFORMANCE_COUNTERS_GROUP       = 0x0,
 };
 
 static inline u16 mlx5_to_sw_pkey_sz(int pkey_sz)
@@ -1078,8 +1242,8 @@ static inline u16 mlx5_to_sw_pkey_sz(int pkey_sz)
 	return MLX5_MIN_PKEY_TABLE_SIZE << pkey_sz;
 }
 
-#define MLX5_BY_PASS_NUM_REGULAR_PRIOS 8
-#define MLX5_BY_PASS_NUM_DONT_TRAP_PRIOS 8
+#define MLX5_BY_PASS_NUM_REGULAR_PRIOS 16
+#define MLX5_BY_PASS_NUM_DONT_TRAP_PRIOS 16
 #define MLX5_BY_PASS_NUM_MULTICAST_PRIOS 1
 #define MLX5_BY_PASS_NUM_PRIOS (MLX5_BY_PASS_NUM_REGULAR_PRIOS +\
 				MLX5_BY_PASS_NUM_DONT_TRAP_PRIOS +\

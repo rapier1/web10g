@@ -17,7 +17,7 @@
 #include <linux/list.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/skbuff.h>
 #include <linux/init.h>
@@ -322,8 +322,7 @@ static int afiucv_hs_send(struct iucv_message *imsg, struct sock *sock,
 	int err, confirm_recv = 0;
 
 	memset(skb->head, 0, ETH_HLEN);
-	phs_hdr = (struct af_iucv_trans_hdr *)skb_push(skb,
-					sizeof(struct af_iucv_trans_hdr));
+	phs_hdr = skb_push(skb, sizeof(struct af_iucv_trans_hdr));
 	skb_reset_mac_header(skb);
 	skb_reset_network_header(skb);
 	skb_push(skb, ETH_HLEN);
@@ -363,7 +362,7 @@ static int afiucv_hs_send(struct iucv_message *imsg, struct sock *sock,
 		else
 			skb_trim(skb, skb->dev->mtu);
 	}
-	skb->protocol = ETH_P_AF_IUCV;
+	skb->protocol = cpu_to_be16(ETH_P_AF_IUCV);
 	nskb = skb_clone(skb, GFP_ATOMIC);
 	if (!nskb)
 		return -ENOMEM;
@@ -403,7 +402,7 @@ static void iucv_sock_destruct(struct sock *sk)
 	}
 
 	WARN_ON(atomic_read(&sk->sk_rmem_alloc));
-	WARN_ON(atomic_read(&sk->sk_wmem_alloc));
+	WARN_ON(refcount_read(&sk->sk_wmem_alloc));
 	WARN_ON(sk->sk_wmem_queued);
 	WARN_ON(sk->sk_forward_alloc);
 }
@@ -716,10 +715,8 @@ static int iucv_sock_bind(struct socket *sock, struct sockaddr *addr,
 	char uid[9];
 
 	/* Verify the input sockaddr */
-	if (!addr || addr->sa_family != AF_IUCV)
-		return -EINVAL;
-
-	if (addr_len < sizeof(struct sockaddr_iucv))
+	if (addr_len < sizeof(struct sockaddr_iucv) ||
+	    addr->sa_family != AF_IUCV)
 		return -EINVAL;
 
 	lock_sock(sk);
@@ -863,7 +860,7 @@ static int iucv_sock_connect(struct socket *sock, struct sockaddr *addr,
 	struct iucv_sock *iucv = iucv_sk(sk);
 	int err;
 
-	if (addr->sa_family != AF_IUCV || alen < sizeof(struct sockaddr_iucv))
+	if (alen < sizeof(struct sockaddr_iucv) || addr->sa_family != AF_IUCV)
 		return -EINVAL;
 
 	if (sk->sk_state != IUCV_OPEN && sk->sk_state != IUCV_BOUND)
@@ -938,7 +935,7 @@ done:
 
 /* Accept a pending connection */
 static int iucv_sock_accept(struct socket *sock, struct socket *newsock,
-			    int flags)
+			    int flags, bool kern)
 {
 	DECLARE_WAITQUEUE(wait, current);
 	struct sock *sk = sock->sk, *nsk;
@@ -992,14 +989,13 @@ done:
 }
 
 static int iucv_sock_getname(struct socket *sock, struct sockaddr *addr,
-			     int *len, int peer)
+			     int peer)
 {
 	struct sockaddr_iucv *siucv = (struct sockaddr_iucv *) addr;
 	struct sock *sk = sock->sk;
 	struct iucv_sock *iucv = iucv_sk(sk);
 
 	addr->sa_family = AF_IUCV;
-	*len = sizeof(struct sockaddr_iucv);
 
 	if (peer) {
 		memcpy(siucv->siucv_user_id, iucv->dst_user_id, 8);
@@ -1012,7 +1008,7 @@ static int iucv_sock_getname(struct socket *sock, struct sockaddr *addr,
 	memset(&siucv->siucv_addr, 0, sizeof(siucv->siucv_addr));
 	memset(&siucv->siucv_nodeid, 0, sizeof(siucv->siucv_nodeid));
 
-	return 0;
+	return sizeof(struct sockaddr_iucv);
 }
 
 /**
@@ -1477,7 +1473,7 @@ done:
 	return copied;
 }
 
-static inline unsigned int iucv_accept_poll(struct sock *parent)
+static inline __poll_t iucv_accept_poll(struct sock *parent)
 {
 	struct iucv_sock *isk, *n;
 	struct sock *sk;
@@ -1486,17 +1482,17 @@ static inline unsigned int iucv_accept_poll(struct sock *parent)
 		sk = (struct sock *) isk;
 
 		if (sk->sk_state == IUCV_CONNECTED)
-			return POLLIN | POLLRDNORM;
+			return EPOLLIN | EPOLLRDNORM;
 	}
 
 	return 0;
 }
 
-unsigned int iucv_sock_poll(struct file *file, struct socket *sock,
+__poll_t iucv_sock_poll(struct file *file, struct socket *sock,
 			    poll_table *wait)
 {
 	struct sock *sk = sock->sk;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	sock_poll_wait(file, sk_sleep(sk), wait);
 
@@ -1504,27 +1500,27 @@ unsigned int iucv_sock_poll(struct file *file, struct socket *sock,
 		return iucv_accept_poll(sk);
 
 	if (sk->sk_err || !skb_queue_empty(&sk->sk_error_queue))
-		mask |= POLLERR |
-			(sock_flag(sk, SOCK_SELECT_ERR_QUEUE) ? POLLPRI : 0);
+		mask |= EPOLLERR |
+			(sock_flag(sk, SOCK_SELECT_ERR_QUEUE) ? EPOLLPRI : 0);
 
 	if (sk->sk_shutdown & RCV_SHUTDOWN)
-		mask |= POLLRDHUP;
+		mask |= EPOLLRDHUP;
 
 	if (sk->sk_shutdown == SHUTDOWN_MASK)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 
 	if (!skb_queue_empty(&sk->sk_receive_queue) ||
 	    (sk->sk_shutdown & RCV_SHUTDOWN))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	if (sk->sk_state == IUCV_CLOSED)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 
 	if (sk->sk_state == IUCV_DISCONN)
-		mask |= POLLIN;
+		mask |= EPOLLIN;
 
 	if (sock_writeable(sk) && iucv_below_msglim(sk))
-		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
+		mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 	else
 		sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 
@@ -2436,9 +2432,11 @@ static int afiucv_iucv_init(void)
 	af_iucv_dev->driver = &af_iucv_driver;
 	err = device_register(af_iucv_dev);
 	if (err)
-		goto out_driver;
+		goto out_iucv_dev;
 	return 0;
 
+out_iucv_dev:
+	put_device(af_iucv_dev);
 out_driver:
 	driver_unregister(&af_iucv_driver);
 out_iucv:

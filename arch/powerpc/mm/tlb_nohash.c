@@ -388,7 +388,10 @@ void flush_tlb_range(struct vm_area_struct *vma, unsigned long start,
 		     unsigned long end)
 
 {
-	flush_tlb_mm(vma->vm_mm);
+	if (end - start == PAGE_SIZE && !(start & ~PAGE_MASK))
+		flush_tlb_page(vma, start);
+	else
+		flush_tlb_mm(vma->vm_mm);
 }
 EXPORT_SYMBOL(flush_tlb_range);
 
@@ -770,7 +773,7 @@ void setup_initial_memory_limit(phys_addr_t first_memblock_base,
 	 * avoid going over total available memory just in case...
 	 */
 #ifdef CONFIG_PPC_FSL_BOOK3E
-	if (mmu_has_feature(MMU_FTR_TYPE_FSL_E)) {
+	if (early_mmu_has_feature(MMU_FTR_TYPE_FSL_E)) {
 		unsigned long linear_sz;
 		unsigned int num_cams;
 

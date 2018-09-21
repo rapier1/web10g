@@ -22,14 +22,14 @@
 #include <linux/suspend.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_fb_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 
 #include "tilcdc_drv.h"
 #include "tilcdc_regs.h"
 #include "tilcdc_tfp410.h"
 #include "tilcdc_panel.h"
 #include "tilcdc_external.h"
-
-#include "drm_fb_helper.h"
 
 static LIST_HEAD(module_list);
 
@@ -66,13 +66,7 @@ static struct of_device_id tilcdc_of_match[];
 static struct drm_framebuffer *tilcdc_fb_create(struct drm_device *dev,
 		struct drm_file *file_priv, const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	return drm_fb_cma_create(dev, file_priv, mode_cmd);
-}
-
-static void tilcdc_fb_output_poll_changed(struct drm_device *dev)
-{
-	struct tilcdc_drm_private *priv = dev->dev_private;
-	drm_fbdev_cma_hotplug_event(priv->fbdev);
+	return drm_gem_fb_create(dev, file_priv, mode_cmd);
 }
 
 static int tilcdc_atomic_check(struct drm_device *dev,
@@ -109,7 +103,11 @@ static int tilcdc_commit(struct drm_device *dev,
 	if (ret)
 		return ret;
 
-	drm_atomic_helper_swap_state(state, true);
+	ret = drm_atomic_helper_swap_state(state, true);
+	if (ret) {
+		drm_atomic_helper_cleanup_planes(dev, state);
+		return ret;
+	}
 
 	/*
 	 * Everything below can be run asynchronously without the need to grab
@@ -142,7 +140,7 @@ static int tilcdc_commit(struct drm_device *dev,
 
 static const struct drm_mode_config_funcs mode_config_funcs = {
 	.fb_create = tilcdc_fb_create,
-	.output_poll_changed = tilcdc_fb_output_poll_changed,
+	.output_poll_changed = drm_fb_helper_output_poll_changed,
 	.atomic_check = tilcdc_atomic_check,
 	.atomic_commit = tilcdc_commit,
 };
@@ -194,8 +192,7 @@ static void tilcdc_fini(struct drm_device *dev)
 
 	drm_kms_helper_poll_fini(dev);
 
-	if (priv->fbdev)
-		drm_fbdev_cma_fini(priv->fbdev);
+	drm_fb_cma_fbdev_fini(dev);
 
 	drm_irq_uninstall(dev);
 	drm_mode_config_cleanup(dev);
@@ -222,7 +219,7 @@ static void tilcdc_fini(struct drm_device *dev)
 
 	pm_runtime_disable(dev->dev);
 
-	drm_dev_unref(dev);
+	drm_dev_put(dev);
 }
 
 static int tilcdc_init(struct drm_driver *ddrv, struct device *dev)
@@ -236,16 +233,13 @@ static int tilcdc_init(struct drm_driver *ddrv, struct device *dev)
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-	if (!priv) {
-		dev_err(dev, "failed to allocate private data\n");
+	if (!priv)
 		return -ENOMEM;
-	}
 
 	ddev = drm_dev_alloc(ddrv, dev);
 	if (IS_ERR(ddev))
 		return PTR_ERR(ddev);
 
-	ddev->platformdev = pdev;
 	ddev->dev_private = priv;
 	platform_set_drvdata(pdev, ddev);
 	drm_mode_config_init(ddev);
@@ -402,13 +396,9 @@ static int tilcdc_init(struct drm_driver *ddrv, struct device *dev)
 
 	drm_mode_config_reset(ddev);
 
-	priv->fbdev = drm_fbdev_cma_init(ddev, bpp,
-			ddev->mode_config.num_crtc,
-			ddev->mode_config.num_connector);
-	if (IS_ERR(priv->fbdev)) {
-		ret = PTR_ERR(priv->fbdev);
+	ret = drm_fb_cma_fbdev_init(ddev, bpp, 0);
+	if (ret)
 		goto init_failed;
-	}
 
 	drm_kms_helper_poll_init(ddev);
 
@@ -425,27 +415,11 @@ init_failed:
 	return ret;
 }
 
-static void tilcdc_lastclose(struct drm_device *dev)
-{
-	struct tilcdc_drm_private *priv = dev->dev_private;
-	drm_fbdev_cma_restore_mode(priv->fbdev);
-}
-
 static irqreturn_t tilcdc_irq(int irq, void *arg)
 {
 	struct drm_device *dev = arg;
 	struct tilcdc_drm_private *priv = dev->dev_private;
 	return tilcdc_crtc_irq(priv->crtc);
-}
-
-static int tilcdc_enable_vblank(struct drm_device *dev, unsigned int pipe)
-{
-	return 0;
-}
-
-static void tilcdc_disable_vblank(struct drm_device *dev, unsigned int pipe)
-{
-	return;
 }
 
 #if defined(CONFIG_DEBUG_FS)
@@ -507,13 +481,14 @@ static int tilcdc_mm_show(struct seq_file *m, void *arg)
 {
 	struct drm_info_node *node = (struct drm_info_node *) m->private;
 	struct drm_device *dev = node->minor->dev;
-	return drm_mm_dump_table(m, &dev->vma_offset_manager->vm_addr_space_mm);
+	struct drm_printer p = drm_seq_file_printer(m);
+	drm_mm_print(&dev->vma_offset_manager->vm_addr_space_mm, &p);
+	return 0;
 }
 
 static struct drm_info_list tilcdc_debugfs_list[] = {
 		{ "regs", tilcdc_regs_show, 0 },
 		{ "mm",   tilcdc_mm_show,   0 },
-		{ "fb",   drm_fb_cma_debugfs_show, 0 },
 };
 
 static int tilcdc_debugfs_init(struct drm_minor *minor)
@@ -537,44 +512,19 @@ static int tilcdc_debugfs_init(struct drm_minor *minor)
 
 	return ret;
 }
-
-static void tilcdc_debugfs_cleanup(struct drm_minor *minor)
-{
-	struct tilcdc_module *mod;
-	drm_debugfs_remove_files(tilcdc_debugfs_list,
-			ARRAY_SIZE(tilcdc_debugfs_list), minor);
-
-	list_for_each_entry(mod, &module_list, list)
-		if (mod->funcs->debugfs_cleanup)
-			mod->funcs->debugfs_cleanup(mod, minor);
-}
 #endif
 
-static const struct file_operations fops = {
-	.owner              = THIS_MODULE,
-	.open               = drm_open,
-	.release            = drm_release,
-	.unlocked_ioctl     = drm_ioctl,
-	.compat_ioctl       = drm_compat_ioctl,
-	.poll               = drm_poll,
-	.read               = drm_read,
-	.llseek             = no_llseek,
-	.mmap               = drm_gem_cma_mmap,
-};
+DEFINE_DRM_GEM_CMA_FOPS(fops);
 
 static struct drm_driver tilcdc_driver = {
 	.driver_features    = (DRIVER_HAVE_IRQ | DRIVER_GEM | DRIVER_MODESET |
 			       DRIVER_PRIME | DRIVER_ATOMIC),
-	.lastclose          = tilcdc_lastclose,
+	.lastclose          = drm_fb_helper_lastclose,
 	.irq_handler        = tilcdc_irq,
-	.get_vblank_counter = drm_vblank_no_hw_counter,
-	.enable_vblank      = tilcdc_enable_vblank,
-	.disable_vblank     = tilcdc_disable_vblank,
 	.gem_free_object_unlocked = drm_gem_cma_free_object,
+	.gem_print_info     = drm_gem_cma_print_info,
 	.gem_vm_ops         = &drm_gem_cma_vm_ops,
 	.dumb_create        = drm_gem_cma_dumb_create,
-	.dumb_map_offset    = drm_gem_cma_dumb_map_offset,
-	.dumb_destroy       = drm_gem_dumb_destroy,
 
 	.prime_handle_to_fd	= drm_gem_prime_handle_to_fd,
 	.prime_fd_to_handle	= drm_gem_prime_fd_to_handle,
@@ -587,7 +537,6 @@ static struct drm_driver tilcdc_driver = {
 	.gem_prime_mmap		= drm_gem_cma_prime_mmap,
 #ifdef CONFIG_DEBUG_FS
 	.debugfs_init       = tilcdc_debugfs_init,
-	.debugfs_cleanup    = tilcdc_debugfs_cleanup,
 #endif
 	.fops               = &fops,
 	.name               = "tilcdc",

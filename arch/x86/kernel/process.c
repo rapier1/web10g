@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/errno.h>
@@ -7,6 +8,10 @@
 #include <linux/prctl.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/sched/idle.h>
+#include <linux/sched/debug.h>
+#include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/init.h>
 #include <linux/export.h>
 #include <linux/pm.h>
@@ -16,7 +21,6 @@
 #include <linux/dmi.h>
 #include <linux/utsname.h>
 #include <linux/stackprotector.h>
-#include <linux/tick.h>
 #include <linux/cpuidle.h>
 #include <trace/events/power.h>
 #include <linux/hw_breakpoint.h>
@@ -32,6 +36,9 @@
 #include <asm/mce.h>
 #include <asm/vm86.h>
 #include <asm/switch_to.h>
+#include <asm/desc.h>
+#include <asm/prctl.h>
+#include <asm/spec-ctrl.h>
 
 /*
  * per-CPU TSS segments. Threads are completely 'soft' on Linux,
@@ -40,9 +47,25 @@
  * section. Since TSS's are completely CPU-local, we want them
  * on exact cacheline boundaries, to eliminate cacheline ping-pong.
  */
-__visible DEFINE_PER_CPU_SHARED_ALIGNED(struct tss_struct, cpu_tss) = {
+__visible DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_struct, cpu_tss_rw) = {
 	.x86_tss = {
-		.sp0 = TOP_OF_INIT_STACK,
+		/*
+		 * .sp0 is only used when entering ring 0 from a lower
+		 * privilege level.  Since the init task never runs anything
+		 * but ring 0 code, there is no need for a valid value here.
+		 * Poison it.
+		 */
+		.sp0 = (1UL << (BITS_PER_LONG-1)) + 1,
+
+#ifdef CONFIG_X86_64
+		/*
+		 * .sp1 is cpu_current_top_of_stack.  The init task never
+		 * runs user code, but cpu_current_top_of_stack should still
+		 * be well defined before the first context switch.
+		 */
+		.sp1 = TOP_OF_INIT_STACK,
+#endif
+
 #ifdef CONFIG_X86_32
 		.ss0 = __KERNEL_DS,
 		.ss1 = __KERNEL_CS,
@@ -58,11 +81,11 @@ __visible DEFINE_PER_CPU_SHARED_ALIGNED(struct tss_struct, cpu_tss) = {
 	  */
 	.io_bitmap		= { [0 ... IO_BITMAP_LONGS] = ~0 },
 #endif
-#ifdef CONFIG_X86_32
-	.SYSENTER_stack_canary	= STACK_END_MAGIC,
-#endif
 };
-EXPORT_PER_CPU_SYMBOL(cpu_tss);
+EXPORT_PER_CPU_SYMBOL(cpu_tss_rw);
+
+DEFINE_PER_CPU(bool, __tss_limit_invalid);
+EXPORT_PER_CPU_SYMBOL_GPL(__tss_limit_invalid);
 
 /*
  * this gets called so that we can store lazy state into memory and copy the
@@ -88,7 +111,7 @@ void exit_thread(struct task_struct *tsk)
 	struct fpu *fpu = &t->fpu;
 
 	if (bp) {
-		struct tss_struct *tss = &per_cpu(cpu_tss, get_cpu());
+		struct tss_struct *tss = &per_cpu(cpu_tss_rw, get_cpu());
 
 		t->io_bitmap_ptr = NULL;
 		clear_thread_flag(TIF_IO_BITMAP);
@@ -116,11 +139,6 @@ void flush_thread(void)
 	fpu__clear(&tsk->thread.fpu);
 }
 
-static void hard_disable_TSC(void)
-{
-	cr4_set_bits(X86_CR4_TSD);
-}
-
 void disable_TSC(void)
 {
 	preempt_disable();
@@ -129,13 +147,8 @@ void disable_TSC(void)
 		 * Must flip the CPU state synchronously with
 		 * TIF_NOTSC in the current running context.
 		 */
-		hard_disable_TSC();
+		cr4_set_bits(X86_CR4_TSD);
 	preempt_enable();
-}
-
-static void hard_enable_TSC(void)
-{
-	cr4_clear_bits(X86_CR4_TSD);
 }
 
 static void enable_TSC(void)
@@ -146,7 +159,7 @@ static void enable_TSC(void)
 		 * Must flip the CPU state synchronously with
 		 * TIF_NOTSC in the current running context.
 		 */
-		hard_enable_TSC();
+		cr4_clear_bits(X86_CR4_TSD);
 	preempt_enable();
 }
 
@@ -174,48 +187,274 @@ int set_tsc_mode(unsigned int val)
 	return 0;
 }
 
-void __switch_to_xtra(struct task_struct *prev_p, struct task_struct *next_p,
-		      struct tss_struct *tss)
+DEFINE_PER_CPU(u64, msr_misc_features_shadow);
+
+static void set_cpuid_faulting(bool on)
 {
-	struct thread_struct *prev, *next;
+	u64 msrval;
 
-	prev = &prev_p->thread;
-	next = &next_p->thread;
+	msrval = this_cpu_read(msr_misc_features_shadow);
+	msrval &= ~MSR_MISC_FEATURES_ENABLES_CPUID_FAULT;
+	msrval |= (on << MSR_MISC_FEATURES_ENABLES_CPUID_FAULT_BIT);
+	this_cpu_write(msr_misc_features_shadow, msrval);
+	wrmsrl(MSR_MISC_FEATURES_ENABLES, msrval);
+}
 
-	if (test_tsk_thread_flag(prev_p, TIF_BLOCKSTEP) ^
-	    test_tsk_thread_flag(next_p, TIF_BLOCKSTEP)) {
-		unsigned long debugctl = get_debugctlmsr();
-
-		debugctl &= ~DEBUGCTLMSR_BTF;
-		if (test_tsk_thread_flag(next_p, TIF_BLOCKSTEP))
-			debugctl |= DEBUGCTLMSR_BTF;
-
-		update_debugctlmsr(debugctl);
+static void disable_cpuid(void)
+{
+	preempt_disable();
+	if (!test_and_set_thread_flag(TIF_NOCPUID)) {
+		/*
+		 * Must flip the CPU state synchronously with
+		 * TIF_NOCPUID in the current running context.
+		 */
+		set_cpuid_faulting(true);
 	}
+	preempt_enable();
+}
 
-	if (test_tsk_thread_flag(prev_p, TIF_NOTSC) ^
-	    test_tsk_thread_flag(next_p, TIF_NOTSC)) {
-		/* prev and next are different */
-		if (test_tsk_thread_flag(next_p, TIF_NOTSC))
-			hard_disable_TSC();
-		else
-			hard_enable_TSC();
+static void enable_cpuid(void)
+{
+	preempt_disable();
+	if (test_and_clear_thread_flag(TIF_NOCPUID)) {
+		/*
+		 * Must flip the CPU state synchronously with
+		 * TIF_NOCPUID in the current running context.
+		 */
+		set_cpuid_faulting(false);
 	}
+	preempt_enable();
+}
 
-	if (test_tsk_thread_flag(next_p, TIF_IO_BITMAP)) {
+static int get_cpuid_mode(void)
+{
+	return !test_thread_flag(TIF_NOCPUID);
+}
+
+static int set_cpuid_mode(struct task_struct *task, unsigned long cpuid_enabled)
+{
+	if (!static_cpu_has(X86_FEATURE_CPUID_FAULT))
+		return -ENODEV;
+
+	if (cpuid_enabled)
+		enable_cpuid();
+	else
+		disable_cpuid();
+
+	return 0;
+}
+
+/*
+ * Called immediately after a successful exec.
+ */
+void arch_setup_new_exec(void)
+{
+	/* If cpuid was previously disabled for this task, re-enable it. */
+	if (test_thread_flag(TIF_NOCPUID))
+		enable_cpuid();
+}
+
+static inline void switch_to_bitmap(struct tss_struct *tss,
+				    struct thread_struct *prev,
+				    struct thread_struct *next,
+				    unsigned long tifp, unsigned long tifn)
+{
+	if (tifn & _TIF_IO_BITMAP) {
 		/*
 		 * Copy the relevant range of the IO bitmap.
 		 * Normally this is 128 bytes or less:
 		 */
 		memcpy(tss->io_bitmap, next->io_bitmap_ptr,
 		       max(prev->io_bitmap_max, next->io_bitmap_max));
-	} else if (test_tsk_thread_flag(prev_p, TIF_IO_BITMAP)) {
+		/*
+		 * Make sure that the TSS limit is correct for the CPU
+		 * to notice the IO bitmap.
+		 */
+		refresh_tss_limit();
+	} else if (tifp & _TIF_IO_BITMAP) {
 		/*
 		 * Clear any possible leftover bits:
 		 */
 		memset(tss->io_bitmap, 0xff, prev->io_bitmap_max);
 	}
+}
+
+#ifdef CONFIG_SMP
+
+struct ssb_state {
+	struct ssb_state	*shared_state;
+	raw_spinlock_t		lock;
+	unsigned int		disable_state;
+	unsigned long		local_state;
+};
+
+#define LSTATE_SSB	0
+
+static DEFINE_PER_CPU(struct ssb_state, ssb_state);
+
+void speculative_store_bypass_ht_init(void)
+{
+	struct ssb_state *st = this_cpu_ptr(&ssb_state);
+	unsigned int this_cpu = smp_processor_id();
+	unsigned int cpu;
+
+	st->local_state = 0;
+
+	/*
+	 * Shared state setup happens once on the first bringup
+	 * of the CPU. It's not destroyed on CPU hotunplug.
+	 */
+	if (st->shared_state)
+		return;
+
+	raw_spin_lock_init(&st->lock);
+
+	/*
+	 * Go over HT siblings and check whether one of them has set up the
+	 * shared state pointer already.
+	 */
+	for_each_cpu(cpu, topology_sibling_cpumask(this_cpu)) {
+		if (cpu == this_cpu)
+			continue;
+
+		if (!per_cpu(ssb_state, cpu).shared_state)
+			continue;
+
+		/* Link it to the state of the sibling: */
+		st->shared_state = per_cpu(ssb_state, cpu).shared_state;
+		return;
+	}
+
+	/*
+	 * First HT sibling to come up on the core.  Link shared state of
+	 * the first HT sibling to itself. The siblings on the same core
+	 * which come up later will see the shared state pointer and link
+	 * themself to the state of this CPU.
+	 */
+	st->shared_state = st;
+}
+
+/*
+ * Logic is: First HT sibling enables SSBD for both siblings in the core
+ * and last sibling to disable it, disables it for the whole core. This how
+ * MSR_SPEC_CTRL works in "hardware":
+ *
+ *  CORE_SPEC_CTRL = THREAD0_SPEC_CTRL | THREAD1_SPEC_CTRL
+ */
+static __always_inline void amd_set_core_ssb_state(unsigned long tifn)
+{
+	struct ssb_state *st = this_cpu_ptr(&ssb_state);
+	u64 msr = x86_amd_ls_cfg_base;
+
+	if (!static_cpu_has(X86_FEATURE_ZEN)) {
+		msr |= ssbd_tif_to_amd_ls_cfg(tifn);
+		wrmsrl(MSR_AMD64_LS_CFG, msr);
+		return;
+	}
+
+	if (tifn & _TIF_SSBD) {
+		/*
+		 * Since this can race with prctl(), block reentry on the
+		 * same CPU.
+		 */
+		if (__test_and_set_bit(LSTATE_SSB, &st->local_state))
+			return;
+
+		msr |= x86_amd_ls_cfg_ssbd_mask;
+
+		raw_spin_lock(&st->shared_state->lock);
+		/* First sibling enables SSBD: */
+		if (!st->shared_state->disable_state)
+			wrmsrl(MSR_AMD64_LS_CFG, msr);
+		st->shared_state->disable_state++;
+		raw_spin_unlock(&st->shared_state->lock);
+	} else {
+		if (!__test_and_clear_bit(LSTATE_SSB, &st->local_state))
+			return;
+
+		raw_spin_lock(&st->shared_state->lock);
+		st->shared_state->disable_state--;
+		if (!st->shared_state->disable_state)
+			wrmsrl(MSR_AMD64_LS_CFG, msr);
+		raw_spin_unlock(&st->shared_state->lock);
+	}
+}
+#else
+static __always_inline void amd_set_core_ssb_state(unsigned long tifn)
+{
+	u64 msr = x86_amd_ls_cfg_base | ssbd_tif_to_amd_ls_cfg(tifn);
+
+	wrmsrl(MSR_AMD64_LS_CFG, msr);
+}
+#endif
+
+static __always_inline void amd_set_ssb_virt_state(unsigned long tifn)
+{
+	/*
+	 * SSBD has the same definition in SPEC_CTRL and VIRT_SPEC_CTRL,
+	 * so ssbd_tif_to_spec_ctrl() just works.
+	 */
+	wrmsrl(MSR_AMD64_VIRT_SPEC_CTRL, ssbd_tif_to_spec_ctrl(tifn));
+}
+
+static __always_inline void intel_set_ssb_state(unsigned long tifn)
+{
+	u64 msr = x86_spec_ctrl_base | ssbd_tif_to_spec_ctrl(tifn);
+
+	wrmsrl(MSR_IA32_SPEC_CTRL, msr);
+}
+
+static __always_inline void __speculative_store_bypass_update(unsigned long tifn)
+{
+	if (static_cpu_has(X86_FEATURE_VIRT_SSBD))
+		amd_set_ssb_virt_state(tifn);
+	else if (static_cpu_has(X86_FEATURE_LS_CFG_SSBD))
+		amd_set_core_ssb_state(tifn);
+	else
+		intel_set_ssb_state(tifn);
+}
+
+void speculative_store_bypass_update(unsigned long tif)
+{
+	preempt_disable();
+	__speculative_store_bypass_update(tif);
+	preempt_enable();
+}
+
+void __switch_to_xtra(struct task_struct *prev_p, struct task_struct *next_p,
+		      struct tss_struct *tss)
+{
+	struct thread_struct *prev, *next;
+	unsigned long tifp, tifn;
+
+	prev = &prev_p->thread;
+	next = &next_p->thread;
+
+	tifn = READ_ONCE(task_thread_info(next_p)->flags);
+	tifp = READ_ONCE(task_thread_info(prev_p)->flags);
+	switch_to_bitmap(tss, prev, next, tifp, tifn);
+
 	propagate_user_return_notify(prev_p, next_p);
+
+	if ((tifp & _TIF_BLOCKSTEP || tifn & _TIF_BLOCKSTEP) &&
+	    arch_has_block_step()) {
+		unsigned long debugctl, msk;
+
+		rdmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
+		debugctl &= ~DEBUGCTLMSR_BTF;
+		msk = tifn & _TIF_BLOCKSTEP;
+		debugctl |= (msk >> TIF_BLOCKSTEP) << DEBUGCTLMSR_BTF_SHIFT;
+		wrmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
+	}
+
+	if ((tifp ^ tifn) & _TIF_NOTSC)
+		cr4_toggle_bits_irqsoff(X86_CR4_TSD);
+
+	if ((tifp ^ tifn) & _TIF_NOCPUID)
+		set_cpuid_faulting(!!(tifn & _TIF_NOCPUID));
+
+	if ((tifp ^ tifn) & _TIF_SSBD)
+		__speculative_store_bypass_update(tifn);
 }
 
 /*
@@ -275,6 +514,7 @@ bool xen_set_default_idle(void)
 	return ret;
 }
 #endif
+
 void stop_this_cpu(void *dummy)
 {
 	local_irq_disable();
@@ -285,8 +525,25 @@ void stop_this_cpu(void *dummy)
 	disable_local_APIC();
 	mcheck_cpu_clear(this_cpu_ptr(&cpu_info));
 
-	for (;;)
-		halt();
+	/*
+	 * Use wbinvd on processors that support SME. This provides support
+	 * for performing a successful kexec when going from SME inactive
+	 * to SME active (or vice-versa). The cache must be cleared so that
+	 * if there are entries with the same physical address, both with and
+	 * without the encryption bit, they don't race each other when flushed
+	 * and potentially end up with the wrong entry being committed to
+	 * memory.
+	 */
+	if (boot_cpu_has(X86_FEATURE_SME))
+		native_wbinvd();
+	for (;;) {
+		/*
+		 * Use native_halt() so that memory contents don't change
+		 * (stack usage and variables) after possibly issuing the
+		 * native_wbinvd() above.
+		 */
+		native_halt();
+	}
 }
 
 /*
@@ -465,17 +722,6 @@ unsigned long arch_randomize_brk(struct mm_struct *mm)
 }
 
 /*
- * Return saved PC of a blocked thread.
- * What is this good for? it will be always the scheduler or ret_from_fork.
- */
-unsigned long thread_saved_pc(struct task_struct *tsk)
-{
-	struct inactive_task_frame *frame =
-		(struct inactive_task_frame *) READ_ONCE(tsk->thread.sp);
-	return READ_ONCE_NOCHECK(frame->ret_addr);
-}
-
-/*
  * Called from fs/proc with a reference on @p to find the function
  * which called into schedule(). This needs to be done carefully
  * because the task might wake up and we might look at a stack
@@ -535,4 +781,17 @@ unsigned long get_wchan(struct task_struct *p)
 out:
 	put_task_stack(p);
 	return ret;
+}
+
+long do_arch_prctl_common(struct task_struct *task, int option,
+			  unsigned long cpuid_enabled)
+{
+	switch (option) {
+	case ARCH_GET_CPUID:
+		return get_cpuid_mode();
+	case ARCH_SET_CPUID:
+		return set_cpuid_mode(task, cpuid_enabled);
+	}
+
+	return -EINVAL;
 }

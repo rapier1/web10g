@@ -29,11 +29,10 @@ Optional properties:
 - vdda-pll-max-microamp : specifies max. load that can be drawn from pll supply
 - vddp-ref-clk-supply   : phandle to UFS device ref_clk pad power supply
 - vddp-ref-clk-max-microamp : specifies max. load that can be drawn from this supply
-- vddp-ref-clk-always-on : specifies if this supply needs to be kept always on
 
 Example:
 
-	ufsphy1: ufsphy@0xfc597000 {
+	ufsphy1: ufsphy@fc597000 {
 		compatible = "qcom,ufs-phy-qmp-20nm";
 		reg = <0xfc597000 0x800>;
 		reg-names = "phy_mem";
@@ -54,7 +53,7 @@ Example:
 			<&clock_gcc clk_gcc_ufs_rx_cfg_clk>;
 	};
 
-	ufshc@0xfc598000 {
+	ufshc@fc598000 {
 		...
 		phys = <&ufsphy1>;
 		phy-names = "ufsphy";

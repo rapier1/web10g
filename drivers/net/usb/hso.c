@@ -52,7 +52,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/delay.h>
@@ -76,7 +76,6 @@
 
 #define MOD_AUTHOR			"Option Wireless"
 #define MOD_DESCRIPTION			"USB High Speed Option driver"
-#define MOD_LICENSE			"GPL"
 
 #define HSO_MAX_NET_DEVICES		10
 #define HSO__MAX_MTU			2048
@@ -520,7 +519,7 @@ static ssize_t hso_sysfs_show_porttype(struct device *dev,
 
 	return sprintf(buf, "%s\n", port_name);
 }
-static DEVICE_ATTR(hsotype, S_IRUGO, hso_sysfs_show_porttype, NULL);
+static DEVICE_ATTR(hsotype, 0444, hso_sysfs_show_porttype, NULL);
 
 static struct attribute *hso_serial_dev_attrs[] = {
 	&dev_attr_hsotype.attr,
@@ -861,7 +860,6 @@ static void packetizeRx(struct hso_net *odev, unsigned char *ip_pkt,
 	unsigned short temp_bytes;
 	unsigned short buffer_offset = 0;
 	unsigned short frame_len;
-	unsigned char *tmp_rx_buf;
 
 	/* log if needed */
 	hso_dbg(0x1, "Rx %d bytes\n", count);
@@ -911,11 +909,9 @@ static void packetizeRx(struct hso_net *odev, unsigned char *ip_pkt,
 
 				/* Copy what we got so far. make room for iphdr
 				 * after tail. */
-				tmp_rx_buf =
-				    skb_put(odev->skb_rx_buf,
-					    sizeof(struct iphdr));
-				memcpy(tmp_rx_buf, (char *)&(odev->rx_ip_hdr),
-				       sizeof(struct iphdr));
+				skb_put_data(odev->skb_rx_buf,
+					     (char *)&(odev->rx_ip_hdr),
+					     sizeof(struct iphdr));
 
 				/* ETH_HLEN */
 				odev->rx_buf_size = sizeof(struct iphdr);
@@ -934,8 +930,9 @@ static void packetizeRx(struct hso_net *odev, unsigned char *ip_pkt,
 			/* Copy the rest of the bytes that are left in the
 			 * buffer into the waiting sk_buf. */
 			/* Make room for temp_bytes after tail. */
-			tmp_rx_buf = skb_put(odev->skb_rx_buf, temp_bytes);
-			memcpy(tmp_rx_buf, ip_pkt + buffer_offset, temp_bytes);
+			skb_put_data(odev->skb_rx_buf,
+				     ip_pkt + buffer_offset,
+				     temp_bytes);
 
 			odev->rx_buf_missing -= temp_bytes;
 			count -= temp_bytes;
@@ -2265,7 +2262,6 @@ static void hso_serial_common_free(struct hso_serial *serial)
 static int hso_serial_common_create(struct hso_serial *serial, int num_urbs,
 				    int rx_size, int tx_size)
 {
-	struct device *dev;
 	int minor;
 	int i;
 
@@ -2279,7 +2275,6 @@ static int hso_serial_common_create(struct hso_serial *serial, int num_urbs,
 	serial->parent->dev = tty_port_register_device_attr(&serial->port,
 			tty_drv, minor, &serial->parent->interface->dev,
 			serial->parent, hso_serial_dev_groups);
-	dev = serial->parent->dev;
 
 	/* fill in specific data for later use */
 	serial->minor = minor;
@@ -2534,13 +2529,6 @@ static struct hso_device *hso_create_net_device(struct usb_interface *interface,
 	SET_NETDEV_DEV(net, &interface->dev);
 	SET_NETDEV_DEVTYPE(net, &hso_type);
 
-	/* registering our net device */
-	result = register_netdev(net);
-	if (result) {
-		dev_err(&interface->dev, "Failed to register device\n");
-		goto exit;
-	}
-
 	/* start allocating */
 	for (i = 0; i < MUX_BULK_RX_BUF_COUNT; i++) {
 		hso_net->mux_bulk_rx_urb_pool[i] = usb_alloc_urb(0, GFP_KERNEL);
@@ -2559,6 +2547,13 @@ static struct hso_device *hso_create_net_device(struct usb_interface *interface,
 		goto exit;
 
 	add_net_device(hso_dev);
+
+	/* registering our net device */
+	result = register_netdev(net);
+	if (result) {
+		dev_err(&interface->dev, "Failed to register device\n");
+		goto exit;
+	}
 
 	hso_log_port(hso_dev);
 
@@ -3279,9 +3274,9 @@ static void __exit hso_exit(void)
 	pr_info("unloaded\n");
 
 	tty_unregister_driver(tty_drv);
-	put_tty_driver(tty_drv);
 	/* deregister the usb driver */
 	usb_deregister(&hso_driver);
+	put_tty_driver(tty_drv);
 }
 
 /* Module definitions */
@@ -3290,16 +3285,16 @@ module_exit(hso_exit);
 
 MODULE_AUTHOR(MOD_AUTHOR);
 MODULE_DESCRIPTION(MOD_DESCRIPTION);
-MODULE_LICENSE(MOD_LICENSE);
+MODULE_LICENSE("GPL");
 
 /* change the debug level (eg: insmod hso.ko debug=0x04) */
 MODULE_PARM_DESC(debug, "debug level mask [0x01 | 0x02 | 0x04 | 0x08 | 0x10]");
-module_param(debug, int, S_IRUGO | S_IWUSR);
+module_param(debug, int, 0644);
 
 /* set the major tty number (eg: insmod hso.ko tty_major=245) */
 MODULE_PARM_DESC(tty_major, "Set the major tty number");
-module_param(tty_major, int, S_IRUGO | S_IWUSR);
+module_param(tty_major, int, 0644);
 
 /* disable network interface (eg: insmod hso.ko disable_net=1) */
 MODULE_PARM_DESC(disable_net, "Disable the network interface");
-module_param(disable_net, int, S_IRUGO | S_IWUSR);
+module_param(disable_net, int, 0644);

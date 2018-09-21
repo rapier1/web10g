@@ -18,9 +18,9 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/i2c.h>
-#include <linux/i2c/pcf857x.h>
+#include <linux/platform_data/pcf857x.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
@@ -46,7 +46,6 @@ static const struct i2c_device_id pcf857x_id[] = {
 	{ "pca9675", 16 },
 	{ "max7328", 8 },
 	{ "max7329", 8 },
-	{ "tca9554", 8 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pcf857x_id);
@@ -66,7 +65,6 @@ static const struct of_device_id pcf857x_of_table[] = {
 	{ .compatible = "nxp,pca9675" },
 	{ .compatible = "maxim,max7328" },
 	{ .compatible = "maxim,max7329" },
-	{ .compatible = "ti,tca9554" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, pcf857x_of_table);
@@ -198,7 +196,7 @@ static irqreturn_t pcf857x_irq(int irq, void *data)
 	mutex_unlock(&gpio->lock);
 
 	for_each_set_bit(i, &change, gpio->chip.ngpio)
-		handle_nested_irq(irq_find_mapping(gpio->chip.irqdomain, i));
+		handle_nested_irq(irq_find_mapping(gpio->chip.irq.domain, i));
 
 	return IRQ_HANDLED;
 }

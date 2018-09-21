@@ -225,7 +225,7 @@ static void xlp_gpio_generic_handler(struct irq_desc *desc)
 
 		if (gpio_stat & BIT(gpio % XLP_GPIO_REGSZ))
 			generic_handle_irq(irq_find_mapping(
-						priv->chip.irqdomain, gpio));
+						priv->chip.irq.domain, gpio));
 	}
 	chained_irq_exit(irqchip, desc);
 }
@@ -322,14 +322,7 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 		return irq;
 
 	if (pdev->dev.of_node) {
-		const struct of_device_id *of_id;
-
-		of_id = of_match_device(xlp_gpio_of_ids, &pdev->dev);
-		if (!of_id) {
-			dev_err(&pdev->dev, "Unable to match OF ID\n");
-			return -ENODEV;
-		}
-		soc_type = (uintptr_t) of_id->data;
+		soc_type = (uintptr_t)of_device_get_match_data(&pdev->dev);
 	} else {
 		const struct acpi_device_id *acpi_id;
 
@@ -404,7 +397,9 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 
 	/* XLP(MIPS) has fixed range for GPIO IRQs, Vulcan(ARM64) does not */
 	if (soc_type != GPIO_VARIANT_VULCAN) {
-		irq_base = irq_alloc_descs(-1, XLP_GPIO_IRQ_BASE, gc->ngpio, 0);
+		irq_base = devm_irq_alloc_descs(&pdev->dev, -1,
+						XLP_GPIO_IRQ_BASE,
+						gc->ngpio, 0);
 		if (irq_base < 0) {
 			dev_err(&pdev->dev, "Failed to allocate IRQ numbers\n");
 			return irq_base;
@@ -415,7 +410,7 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 
 	err = gpiochip_add_data(gc, priv);
 	if (err < 0)
-		goto out_free_desc;
+		return err;
 
 	err = gpiochip_irqchip_add(gc, &xlp_gpio_irq_chip, irq_base,
 				handle_level_irq, IRQ_TYPE_NONE);
@@ -433,14 +428,13 @@ static int xlp_gpio_probe(struct platform_device *pdev)
 
 out_gpio_remove:
 	gpiochip_remove(gc);
-out_free_desc:
-	irq_free_descs(irq_base, gc->ngpio);
 	return err;
 }
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id xlp_gpio_acpi_match[] = {
 	{ "BRCM9006", GPIO_VARIANT_VULCAN },
+	{ "CAV9006",  GPIO_VARIANT_VULCAN },
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, xlp_gpio_acpi_match);

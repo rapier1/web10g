@@ -60,11 +60,11 @@ static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 static struct platform_device *platform_devices[SNDRV_CARDS]; 
 static int device_count;
 
-module_param_array(index, int, NULL, S_IRUGO);
+module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for " CARD_NAME " soundcard.");
-module_param_array(id, charp, NULL, S_IRUGO);
+module_param_array(id, charp, NULL, 0444);
 MODULE_PARM_DESC(id, "ID string for " CARD_NAME " soundcard.");
-module_param_array(enable, bool, NULL, S_IRUGO);
+module_param_array(enable, bool, NULL, 0444);
 MODULE_PARM_DESC(enable, "Enable " CARD_NAME " soundcard.");
 
 MODULE_AUTHOR("Levent Guendogdu, Tobias Gehrig, Matthias Koenig");
@@ -546,13 +546,13 @@ static void snd_portman_midi_output_trigger(struct snd_rawmidi_substream *substr
 	spin_unlock_irqrestore(&pm->reg_lock, flags);
 }
 
-static struct snd_rawmidi_ops snd_portman_midi_output = {
+static const struct snd_rawmidi_ops snd_portman_midi_output = {
 	.open =		snd_portman_midi_open,
 	.close =	snd_portman_midi_close,
 	.trigger =	snd_portman_midi_output_trigger,
 };
 
-static struct snd_rawmidi_ops snd_portman_midi_input = {
+static const struct snd_rawmidi_ops snd_portman_midi_input = {
 	.open =		snd_portman_midi_open,
 	.close =	snd_portman_midi_close,
 	.trigger =	snd_portman_midi_input_trigger,

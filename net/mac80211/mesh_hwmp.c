@@ -16,6 +16,7 @@
 #define TEST_FRAME_LEN	8192
 #define MAX_METRIC	0xffffffff
 #define ARITH_SHIFT	8
+#define LINK_FAIL_THRESH 95
 
 #define MAX_PREQ_QUEUE_LEN	64
 
@@ -110,8 +111,8 @@ static int mesh_path_sel_frame_tx(enum mpath_frame_type action, u8 flags,
 	struct sk_buff *skb;
 	struct ieee80211_mgmt *mgmt;
 	u8 *pos, ie_len;
-	int hdr_len = offsetof(struct ieee80211_mgmt, u.action.u.mesh_action) +
-		      sizeof(mgmt->u.action.u.mesh_action);
+	int hdr_len = offsetofend(struct ieee80211_mgmt,
+				  u.action.u.mesh_action);
 
 	skb = dev_alloc_skb(local->tx_headroom +
 			    hdr_len +
@@ -119,8 +120,7 @@ static int mesh_path_sel_frame_tx(enum mpath_frame_type action, u8 flags,
 	if (!skb)
 		return -1;
 	skb_reserve(skb, local->tx_headroom);
-	mgmt = (struct ieee80211_mgmt *) skb_put(skb, hdr_len);
-	memset(mgmt, 0, hdr_len);
+	mgmt = skb_put_zero(skb, hdr_len);
 	mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
 					  IEEE80211_STYPE_ACTION);
 
@@ -242,8 +242,8 @@ int mesh_path_error_tx(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
 	struct ieee80211_mgmt *mgmt;
 	u8 *pos, ie_len;
-	int hdr_len = offsetof(struct ieee80211_mgmt, u.action.u.mesh_action) +
-		      sizeof(mgmt->u.action.u.mesh_action);
+	int hdr_len = offsetofend(struct ieee80211_mgmt,
+				  u.action.u.mesh_action);
 
 	if (time_before(jiffies, ifmsh->next_perr))
 		return -EAGAIN;
@@ -256,8 +256,7 @@ int mesh_path_error_tx(struct ieee80211_sub_if_data *sdata,
 	if (!skb)
 		return -1;
 	skb_reserve(skb, local->tx_headroom + sdata->encrypt_headroom);
-	mgmt = (struct ieee80211_mgmt *) skb_put(skb, hdr_len);
-	memset(mgmt, 0, hdr_len);
+	mgmt = skb_put_zero(skb, hdr_len);
 	mgmt->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT |
 					  IEEE80211_STYPE_ACTION);
 
@@ -307,10 +306,12 @@ void ieee80211s_update_metric(struct ieee80211_local *local,
 
 	failed = !(txinfo->flags & IEEE80211_TX_STAT_ACK);
 
-	/* moving average, scaled to 100 */
-	sta->mesh->fail_avg =
-		((80 * sta->mesh->fail_avg + 5) / 100 + 20 * failed);
-	if (sta->mesh->fail_avg > 95)
+	/* moving average, scaled to 100.
+	 * feed failure as 100 and success as 0
+	 */
+	ewma_mesh_fail_avg_add(&sta->mesh->fail_avg, failed * 100);
+	if (ewma_mesh_fail_avg_read(&sta->mesh->fail_avg) >
+			LINK_FAIL_THRESH)
 		mesh_plink_broken(sta);
 }
 
@@ -325,6 +326,8 @@ static u32 airtime_link_metric_get(struct ieee80211_local *local,
 	int rate, err;
 	u32 tx_time, estimated_retx;
 	u64 result;
+	unsigned long fail_avg =
+		ewma_mesh_fail_avg_read(&sta->mesh->fail_avg);
 
 	/* Try to get rate based on HW/SW RC algorithm.
 	 * Rate is returned in units of Kbps, correct this
@@ -336,7 +339,7 @@ static u32 airtime_link_metric_get(struct ieee80211_local *local,
 	if (rate) {
 		err = 0;
 	} else {
-		if (sta->mesh->fail_avg >= 100)
+		if (fail_avg > LINK_FAIL_THRESH)
 			return MAX_METRIC;
 
 		sta_set_rate_info_tx(sta, &sta->tx_stats.last_rate, &rinfo);
@@ -344,7 +347,7 @@ static u32 airtime_link_metric_get(struct ieee80211_local *local,
 		if (WARN_ON(!rate))
 			return MAX_METRIC;
 
-		err = (sta->mesh->fail_avg << ARITH_SHIFT) / 100;
+		err = (fail_avg << ARITH_SHIFT) / 100;
 	}
 
 	/* bitrate is in units of 100 Kbps, while we need rate in units of
@@ -484,6 +487,9 @@ static u32 hwmp_route_info_get(struct ieee80211_sub_if_data *sdata,
 					  ?  mpath->exp_time : exp_time;
 			mesh_path_activate(mpath);
 			spin_unlock_bh(&mpath->state_lock);
+			ewma_mesh_fail_avg_init(&sta->mesh->fail_avg);
+			/* init it at a low value - 0 start is tricky */
+			ewma_mesh_fail_avg_add(&sta->mesh->fail_avg, 1);
 			mesh_path_tx_pending(mpath);
 			/* draft says preq_id should be saved to, but there does
 			 * not seem to be any use for it, skipping by now
@@ -522,6 +528,9 @@ static u32 hwmp_route_info_get(struct ieee80211_sub_if_data *sdata,
 					  ?  mpath->exp_time : exp_time;
 			mesh_path_activate(mpath);
 			spin_unlock_bh(&mpath->state_lock);
+			ewma_mesh_fail_avg_init(&sta->mesh->fail_avg);
+			/* init it at a low value - 0 start is tricky */
+			ewma_mesh_fail_avg_add(&sta->mesh->fail_avg, 1);
 			mesh_path_tx_pending(mpath);
 		} else
 			spin_unlock_bh(&mpath->state_lock);
@@ -788,7 +797,7 @@ static void hwmp_rann_frame_process(struct ieee80211_sub_if_data *sdata,
 	struct mesh_path *mpath;
 	u8 ttl, flags, hopcount;
 	const u8 *orig_addr;
-	u32 orig_sn, metric, metric_txsta, interval;
+	u32 orig_sn, new_metric, orig_metric, last_hop_metric, interval;
 	bool root_is_gate;
 
 	ttl = rann->rann_ttl;
@@ -799,7 +808,7 @@ static void hwmp_rann_frame_process(struct ieee80211_sub_if_data *sdata,
 	interval = le32_to_cpu(rann->rann_interval);
 	hopcount = rann->rann_hopcount;
 	hopcount++;
-	metric = le32_to_cpu(rann->rann_metric);
+	orig_metric = le32_to_cpu(rann->rann_metric);
 
 	/*  Ignore our own RANNs */
 	if (ether_addr_equal(orig_addr, sdata->vif.addr))
@@ -816,7 +825,10 @@ static void hwmp_rann_frame_process(struct ieee80211_sub_if_data *sdata,
 		return;
 	}
 
-	metric_txsta = airtime_link_metric_get(local, sta);
+	last_hop_metric = airtime_link_metric_get(local, sta);
+	new_metric = orig_metric + last_hop_metric;
+	if (new_metric < orig_metric)
+		new_metric = MAX_METRIC;
 
 	mpath = mesh_path_lookup(sdata, orig_addr);
 	if (!mpath) {
@@ -829,7 +841,7 @@ static void hwmp_rann_frame_process(struct ieee80211_sub_if_data *sdata,
 	}
 
 	if (!(SN_LT(mpath->sn, orig_sn)) &&
-	    !(mpath->sn == orig_sn && metric < mpath->rann_metric)) {
+	    !(mpath->sn == orig_sn && new_metric < mpath->rann_metric)) {
 		rcu_read_unlock();
 		return;
 	}
@@ -847,7 +859,7 @@ static void hwmp_rann_frame_process(struct ieee80211_sub_if_data *sdata,
 	}
 
 	mpath->sn = orig_sn;
-	mpath->rann_metric = metric + metric_txsta;
+	mpath->rann_metric = new_metric;
 	mpath->is_root = true;
 	/* Recording RANNs sender address to send individually
 	 * addressed PREQs destined for root mesh STA */
@@ -867,7 +879,7 @@ static void hwmp_rann_frame_process(struct ieee80211_sub_if_data *sdata,
 		mesh_path_sel_frame_tx(MPATH_RANN, flags, orig_addr,
 				       orig_sn, 0, NULL, 0, broadcast_addr,
 				       hopcount, ttl, interval,
-				       metric + metric_txsta, 0, sdata);
+				       new_metric, 0, sdata);
 	}
 
 	rcu_read_unlock();
@@ -1185,9 +1197,9 @@ endlookup:
 	return err;
 }
 
-void mesh_path_timer(unsigned long data)
+void mesh_path_timer(struct timer_list *t)
 {
-	struct mesh_path *mpath = (void *) data;
+	struct mesh_path *mpath = from_timer(mpath, t, timer);
 	struct ieee80211_sub_if_data *sdata = mpath->sdata;
 	int ret;
 
@@ -1238,6 +1250,7 @@ void mesh_path_tx_root_frame(struct ieee80211_sub_if_data *sdata)
 		break;
 	case IEEE80211_PROACTIVE_PREQ_WITH_PREP:
 		flags |= IEEE80211_PREQ_PROACTIVE_PREP_FLAG;
+		/* fall through */
 	case IEEE80211_PROACTIVE_PREQ_NO_PREP:
 		interval = ifmsh->mshcfg.dot11MeshHWMPactivePathToRootTimeout;
 		target_flags |= IEEE80211_PREQ_TO_FLAG |

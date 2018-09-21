@@ -604,8 +604,7 @@ static void rtl8821ae_dm_find_minimum_rssi(struct ieee80211_hw *hw)
 	if ((mac->link_state < MAC80211_LINKED) &&
 	    (rtlpriv->dm.entry_min_undec_sm_pwdb == 0)) {
 		rtl_dm_dig->min_undec_pwdb_for_dm = 0;
-		RT_TRACE(rtlpriv, COMP_BB_POWERSAVING, DBG_LOUD,
-			 "Not connected to any\n");
+		pr_debug("rtl8821ae: Not connected to any AP\n");
 	}
 	if (mac->link_state >= MAC80211_LINKED) {
 		if (mac->opmode == NL80211_IFTYPE_AP ||
@@ -1476,7 +1475,7 @@ void rtl8812ae_dm_txpwr_track_set_pwr(struct ieee80211_hw *hw,
 		}
 	} else if (method == MIX_MODE) {
 		RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-			 "pDM_Odm->DefaultOfdmIndex=%d, pDM_Odm->Aboslute_OFDMSwingIdx[RFPath]=%d, RF_Path = %d\n",
+			 "pDM_Odm->DefaultOfdmIndex=%d, pDM_Odm->Absolute_OFDMSwingIdx[RFPath]=%d, RF_Path = %d\n",
 			 rtldm->default_ofdm_index,
 			 rtldm->absolute_ofdm_swing_idx[rf_path],
 			 rf_path);
@@ -1751,7 +1750,7 @@ void rtl8812ae_dm_txpower_tracking_callback_thermalmeter(
 			/*Record delta swing for mix mode power tracking*/
 
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-				 "******Temp is higher and pDM_Odm->Aboslute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
+				 "******Temp is higher and pDM_Odm->Absolute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
 			rtldm->absolute_ofdm_swing_idx[RF90_PATH_A]);
 
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
@@ -1767,7 +1766,7 @@ void rtl8812ae_dm_txpower_tracking_callback_thermalmeter(
 			/*Record delta swing for mix mode power tracking*/
 
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-				 "******Temp is higher and pDM_Odm->Aboslute_OFDMSwingIdx[ODM_RF_PATH_B] = %d\n",
+				 "******Temp is higher and pDM_Odm->Absolute_OFDMSwingIdx[ODM_RF_PATH_B] = %d\n",
 				 rtldm->absolute_ofdm_swing_idx[RF90_PATH_B]);
 		} else {
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
@@ -1783,7 +1782,7 @@ void rtl8812ae_dm_txpower_tracking_callback_thermalmeter(
 				-1 * delta_swing_table_idx_tdown_a[delta];
 			/* Record delta swing for mix mode power tracking*/
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-				 "******Temp is lower and pDM_Odm->Aboslute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
+				 "******Temp is lower and pDM_Odm->Absolute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
 				 rtldm->absolute_ofdm_swing_idx[RF90_PATH_A]);
 
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
@@ -1800,7 +1799,7 @@ void rtl8812ae_dm_txpower_tracking_callback_thermalmeter(
 			/*Record delta swing for mix mode power tracking*/
 
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-				 "******Temp is lower and pDM_Odm->Aboslute_OFDMSwingIdx[ODM_RF_PATH_B] = %d\n",
+				 "******Temp is lower and pDM_Odm->Absolute_OFDMSwingIdx[ODM_RF_PATH_B] = %d\n",
 				 rtldm->absolute_ofdm_swing_idx[RF90_PATH_B]);
 		}
 
@@ -2116,7 +2115,7 @@ void rtl8821ae_dm_txpwr_track_set_pwr(struct ieee80211_hw *hw,
 		}
 	} else if (method == MIX_MODE) {
 		RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-			 "pDM_Odm->DefaultOfdmIndex=%d,pDM_Odm->Aboslute_OFDMSwingIdx[RFPath]=%d, RF_Path = %d\n",
+			 "pDM_Odm->DefaultOfdmIndex=%d,pDM_Odm->Absolute_OFDMSwingIdx[RFPath]=%d, RF_Path = %d\n",
 			 rtldm->default_ofdm_index,
 			 rtldm->absolute_ofdm_swing_idx[rf_path],
 			 rf_path);
@@ -2330,7 +2329,7 @@ void rtl8821ae_dm_txpower_tracking_callback_thermalmeter(
 			/*Record delta swing for mix mode power tracking*/
 
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-				 "******Temp is higher and pDM_Odm->Aboslute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
+				 "******Temp is higher and pDM_Odm->Absolute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
 				 rtldm->absolute_ofdm_swing_idx[RF90_PATH_A]);
 		} else {
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
@@ -2346,7 +2345,7 @@ void rtl8821ae_dm_txpower_tracking_callback_thermalmeter(
 				-1 * delta_swing_table_idx_tdown_a[delta];
 			/* Record delta swing for mix mode power tracking*/
 			RT_TRACE(rtlpriv, COMP_POWER_TRACKING, DBG_LOUD,
-				 "******Temp is lower and pDM_Odm->Aboslute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
+				 "******Temp is lower and pDM_Odm->Absolute_OFDMSwingIdx[ODM_RF_PATH_A] = %d\n",
 				 rtldm->absolute_ofdm_swing_idx[RF90_PATH_A]);
 		}
 
@@ -2593,7 +2592,7 @@ static void rtl8821ae_dm_refresh_rate_adaptive_mask(struct ieee80211_hw *hw)
 			sta = rtl_find_sta(hw, mac->bssid);
 			if (sta)
 				rtlpriv->cfg->ops->update_rate_tbl(hw,
-						sta, p_ra->ratr_state);
+						sta, p_ra->ratr_state, true);
 			rcu_read_unlock();
 
 			p_ra->pre_ratr_state = p_ra->ratr_state;
@@ -2643,7 +2642,7 @@ static void rtl8821ae_dm_edca_choose_traffic_idx(
 		if (cur_tx_bytes > (cur_rx_bytes*4)) {
 			*pb_is_cur_rdl_state = false;
 			RT_TRACE(rtlpriv, COMP_TURBO, DBG_LOUD,
-				 "Uplink Traffic\n ");
+				 "Uplink Traffic\n");
 		} else {
 			*pb_is_cur_rdl_state = true;
 			RT_TRACE(rtlpriv, COMP_TURBO, DBG_LOUD,

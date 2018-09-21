@@ -21,11 +21,13 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "libbpf.h"
+#include <bpf/bpf.h>
 #include "bpf_util.h"
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
-#define offsetof(TYPE, MEMBER)	((size_t)&((TYPE *)0)->MEMBER)
+#ifndef offsetof
+# define offsetof(TYPE, MEMBER)	((size_t)&((TYPE *)0)->MEMBER)
+#endif
 #define container_of(ptr, type, member) ({			\
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);	\
 	(type *)( (char *)__mptr - offsetof(type,member) );})

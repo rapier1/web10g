@@ -17,6 +17,7 @@
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/pci.h>
@@ -30,12 +31,13 @@
 #include <linux/io.h>
 #include <linux/gfp.h>
 #include <linux/atomic.h>
+#include <linux/dma-direct.h>
 #include <asm/mtrr.h>
 #include <asm/pgtable.h>
 #include <asm/proto.h>
 #include <asm/iommu.h>
 #include <asm/gart.h>
-#include <asm/cacheflush.h>
+#include <asm/set_memory.h>
 #include <asm/swiotlb.h>
 #include <asm/dma.h>
 #include <asm/amd_nb.h>
@@ -478,30 +480,21 @@ static void *
 gart_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_addr,
 		    gfp_t flag, unsigned long attrs)
 {
-	dma_addr_t paddr;
-	unsigned long align_mask;
-	struct page *page;
+	void *vaddr;
 
-	if (force_iommu && !(flag & GFP_DMA)) {
-		flag &= ~(__GFP_DMA | __GFP_HIGHMEM | __GFP_DMA32);
-		page = alloc_pages(flag | __GFP_ZERO, get_order(size));
-		if (!page)
-			return NULL;
+	vaddr = dma_direct_alloc(dev, size, dma_addr, flag, attrs);
+	if (!vaddr ||
+	    !force_iommu || dev->coherent_dma_mask <= DMA_BIT_MASK(24))
+		return vaddr;
 
-		align_mask = (1UL << get_order(size)) - 1;
-		paddr = dma_map_area(dev, page_to_phys(page), size,
-				     DMA_BIDIRECTIONAL, align_mask);
-
-		flush_gart();
-		if (paddr != bad_dma_addr) {
-			*dma_addr = paddr;
-			return page_address(page);
-		}
-		__free_pages(page, get_order(size));
-	} else
-		return dma_generic_alloc_coherent(dev, size, dma_addr, flag,
-						  attrs);
-
+	*dma_addr = dma_map_area(dev, virt_to_phys(vaddr), size,
+			DMA_BIDIRECTIONAL, (1UL << get_order(size)) - 1);
+	flush_gart();
+	if (unlikely(*dma_addr == bad_dma_addr))
+		goto out_free;
+	return vaddr;
+out_free:
+	dma_direct_free(dev, size, vaddr, *dma_addr, attrs);
 	return NULL;
 }
 
@@ -511,7 +504,7 @@ gart_free_coherent(struct device *dev, size_t size, void *vaddr,
 		   dma_addr_t dma_addr, unsigned long attrs)
 {
 	gart_unmap_page(dev, dma_addr, size, DMA_BIDIRECTIONAL, 0);
-	dma_generic_free_coherent(dev, size, vaddr, dma_addr, attrs);
+	dma_direct_free(dev, size, vaddr, dma_addr, attrs);
 }
 
 static int gart_mapping_error(struct device *dev, dma_addr_t dma_addr)
@@ -695,7 +688,7 @@ static __init int init_amd_gatt(struct agp_kern_info *info)
 	return -1;
 }
 
-static struct dma_map_ops gart_dma_ops = {
+static const struct dma_map_ops gart_dma_ops = {
 	.map_sg				= gart_map_sg,
 	.unmap_sg			= gart_unmap_sg,
 	.map_page			= gart_map_page,
@@ -703,6 +696,7 @@ static struct dma_map_ops gart_dma_ops = {
 	.alloc				= gart_alloc_coherent,
 	.free				= gart_free_coherent,
 	.mapping_error			= gart_mapping_error,
+	.dma_supported			= dma_direct_supported,
 };
 
 static void gart_iommu_shutdown(void)

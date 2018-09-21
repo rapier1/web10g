@@ -19,6 +19,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/iio/buffer.h>
+#include <linux/iio/common/cros_ec_sensors_core.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/kfifo_buf.h>
 #include <linux/iio/trigger_consumer.h>
@@ -30,8 +31,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
-
-#include "cros_ec_sensors_core.h"
 
 #define CROS_EC_SENSORS_MAX_CHANNELS 4
 
@@ -61,7 +60,7 @@ static int cros_ec_sensors_read(struct iio_dev *indio_dev,
 		ret = st->core.read_ec_sensors_data(indio_dev, 1 << idx, &data);
 		if (ret < 0)
 			break;
-
+		ret = IIO_VAL_INT;
 		*val = data;
 		break;
 	case IIO_CHAN_INFO_CALIBBIAS:
@@ -76,7 +75,7 @@ static int cros_ec_sensors_read(struct iio_dev *indio_dev,
 		for (i = CROS_EC_SENSOR_X; i < CROS_EC_SENSOR_MAX_AXIS; i++)
 			st->core.calib[i] =
 				st->core.resp->sensor_offset.offset[i];
-
+		ret = IIO_VAL_INT;
 		*val = st->core.calib[idx];
 		break;
 	case IIO_CHAN_INFO_SCALE:
@@ -185,14 +184,12 @@ static int cros_ec_sensors_write(struct iio_dev *indio_dev,
 static const struct iio_info ec_sensors_info = {
 	.read_raw = &cros_ec_sensors_read,
 	.write_raw = &cros_ec_sensors_write,
-	.driver_module = THIS_MODULE,
 };
 
 static int cros_ec_sensors_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct cros_ec_dev *ec_dev = dev_get_drvdata(dev->parent);
-	struct cros_ec_device *ec_device;
 	struct iio_dev *indio_dev;
 	struct cros_ec_sensors_state *state;
 	struct iio_chan_spec *channel;
@@ -202,7 +199,6 @@ static int cros_ec_sensors_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "No CROS EC device found.\n");
 		return -EINVAL;
 	}
-	ec_device = ec_dev->ec_dev;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*state));
 	if (!indio_dev)
@@ -267,31 +263,12 @@ static int cros_ec_sensors_probe(struct platform_device *pdev)
 	else
 		state->core.read_ec_sensors_data = cros_ec_sensors_read_cmd;
 
-	ret = iio_triggered_buffer_setup(indio_dev, NULL,
-					 cros_ec_sensors_capture, NULL);
+	ret = devm_iio_triggered_buffer_setup(dev, indio_dev, NULL,
+			cros_ec_sensors_capture, NULL);
 	if (ret)
 		return ret;
 
-	ret = iio_device_register(indio_dev);
-	if (ret)
-		goto error_uninit_buffer;
-
-	return 0;
-
-error_uninit_buffer:
-	iio_triggered_buffer_cleanup(indio_dev);
-
-	return ret;
-}
-
-static int cros_ec_sensors_remove(struct platform_device *pdev)
-{
-	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
-
-	iio_device_unregister(indio_dev);
-	iio_triggered_buffer_cleanup(indio_dev);
-
-	return 0;
+	return devm_iio_device_register(dev, indio_dev);
 }
 
 static const struct platform_device_id cros_ec_sensors_ids[] = {
@@ -311,9 +288,9 @@ MODULE_DEVICE_TABLE(platform, cros_ec_sensors_ids);
 static struct platform_driver cros_ec_sensors_platform_driver = {
 	.driver = {
 		.name	= "cros-ec-sensors",
+		.pm	= &cros_ec_sensors_pm_ops,
 	},
 	.probe		= cros_ec_sensors_probe,
-	.remove		= cros_ec_sensors_remove,
 	.id_table	= cros_ec_sensors_ids,
 };
 module_platform_driver(cros_ec_sensors_platform_driver);

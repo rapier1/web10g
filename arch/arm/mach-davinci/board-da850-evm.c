@@ -18,6 +18,7 @@
 #include <linux/gpio/machine.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/leds.h>
 #include <linux/i2c.h>
 #include <linux/platform_data/at24.h>
 #include <linux/platform_data/pca953x.h>
@@ -25,7 +26,7 @@
 #include <linux/input/tps6507x-ts.h>
 #include <linux/mfd/tps6507x.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
 #include <linux/platform_device.h>
@@ -243,6 +244,7 @@ static struct davinci_aemif_timing da850_evm_nandflash_timing = {
 };
 
 static struct davinci_nand_pdata da850_evm_nandflash_data = {
+	.core_chipsel	= 1,
 	.parts		= da850_evm_nandflash_partition,
 	.nr_parts	= ARRAY_SIZE(da850_evm_nandflash_partition),
 	.ecc_mode	= NAND_ECC_HW,
@@ -762,12 +764,17 @@ static const short da850_evm_mcasp_pins[] __initconst = {
 	-1
 };
 
+#define DA850_MMCSD_CD_PIN		GPIO_TO_PIN(4, 0)
+#define DA850_MMCSD_WP_PIN		GPIO_TO_PIN(4, 1)
+
 static struct gpiod_lookup_table mmc_gpios_table = {
 	.dev_id = "da830-mmc.0",
 	.table = {
 		/* gpio chip 2 contains gpio range 64-95 */
-		GPIO_LOOKUP("davinci_gpio.2", 0, "cd", GPIO_ACTIVE_LOW),
-		GPIO_LOOKUP("davinci_gpio.2", 1, "wp", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("davinci_gpio.0", DA850_MMCSD_CD_PIN, "cd",
+			    GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("davinci_gpio.0", DA850_MMCSD_WP_PIN, "wp",
+			    GPIO_ACTIVE_HIGH),
 	},
 };
 
@@ -797,11 +804,11 @@ static int da850_lcd_hw_init(void)
 {
 	int status;
 
-	status = gpio_request(DA850_LCD_BL_PIN, "lcd bl\n");
+	status = gpio_request(DA850_LCD_BL_PIN, "lcd bl");
 	if (status < 0)
 		return status;
 
-	status = gpio_request(DA850_LCD_PWR_PIN, "lcd pwr\n");
+	status = gpio_request(DA850_LCD_PWR_PIN, "lcd pwr");
 	if (status < 0) {
 		gpio_free(DA850_LCD_BL_PIN);
 		return status;
@@ -827,6 +834,9 @@ static struct regulator_consumer_supply fixed_supplies[] = {
 
 	/* Baseboard 1.8V: 5V -> TPS73701DCQ -> 1.8V */
 	REGULATOR_SUPPLY("DVDD", "1-0018"),
+
+	/* UI card 3.3V: 5V -> TPS73701DCQ -> 3.3V */
+	REGULATOR_SUPPLY("vcc", "1-0020"),
 };
 
 /* TPS65070 voltage regulator support */
@@ -1162,7 +1172,7 @@ static struct tvp514x_platform_data tvp5146_pdata = {
 
 #define TVP514X_STD_ALL (V4L2_STD_NTSC | V4L2_STD_PAL)
 
-static const struct vpif_input da850_ch0_inputs[] = {
+static struct vpif_input da850_ch0_inputs[] = {
 	{
 		.input = {
 			.index = 0,
@@ -1177,7 +1187,7 @@ static const struct vpif_input da850_ch0_inputs[] = {
 	},
 };
 
-static const struct vpif_input da850_ch1_inputs[] = {
+static struct vpif_input da850_ch1_inputs[] = {
 	{
 		.input = {
 			.index = 0,
@@ -1212,6 +1222,7 @@ static struct vpif_subdev_info da850_vpif_capture_sdev_info[] = {
 static struct vpif_capture_config da850_vpif_capture_config = {
 	.subdev_info = da850_vpif_capture_sdev_info,
 	.subdev_count = ARRAY_SIZE(da850_vpif_capture_sdev_info),
+	.i2c_adapter_id = 1,
 	.chan_config[0] = {
 		.inputs = da850_ch0_inputs,
 		.input_count = ARRAY_SIZE(da850_ch0_inputs),
@@ -1289,6 +1300,7 @@ static struct vpif_display_config da850_vpif_display_config = {
 		.output_count = ARRAY_SIZE(da850_ch0_outputs),
 	},
 	.card_name    = "DA850/OMAP-L138 Video Display",
+	.i2c_adapter_id = 1,
 };
 
 static __init void da850_vpif_init(void)
@@ -1327,10 +1339,6 @@ static __init void da850_vpif_init(void) {}
 static __init void da850_evm_init(void)
 {
 	int ret;
-
-	ret = da8xx_register_cfgchip();
-	if (ret)
-		pr_warn("%s: CFGCHIP registration failed: %d\n", __func__, ret);
 
 	ret = da850_register_gpio();
 	if (ret)
@@ -1475,10 +1483,9 @@ MACHINE_START(DAVINCI_DA850_EVM, "DaVinci DA850/OMAP-L138/AM18x EVM")
 	.atag_offset	= 0x100,
 	.map_io		= da850_evm_map_io,
 	.init_irq	= cp_intc_init,
-	.init_time	= davinci_timer_init,
+	.init_time	= da850_init_time,
 	.init_machine	= da850_evm_init,
 	.init_late	= davinci_init_late,
 	.dma_zone_size	= SZ_128M,
-	.restart	= da8xx_restart,
 	.reserve	= da8xx_rproc_reserve_cma,
 MACHINE_END

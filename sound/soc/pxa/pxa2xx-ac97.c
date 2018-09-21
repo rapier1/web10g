@@ -27,25 +27,43 @@
 #include <mach/regs-ac97.h>
 #include <mach/audio.h>
 
-#include "pxa2xx-ac97.h"
-
 static void pxa2xx_ac97_warm_reset(struct snd_ac97 *ac97)
 {
-	pxa2xx_ac97_try_warm_reset(ac97);
+	pxa2xx_ac97_try_warm_reset();
 
-	pxa2xx_ac97_finish_reset(ac97);
+	pxa2xx_ac97_finish_reset();
 }
 
 static void pxa2xx_ac97_cold_reset(struct snd_ac97 *ac97)
 {
-	pxa2xx_ac97_try_cold_reset(ac97);
+	pxa2xx_ac97_try_cold_reset();
 
-	pxa2xx_ac97_finish_reset(ac97);
+	pxa2xx_ac97_finish_reset();
+}
+
+static unsigned short pxa2xx_ac97_legacy_read(struct snd_ac97 *ac97,
+					      unsigned short reg)
+{
+	int ret;
+
+	ret = pxa2xx_ac97_read(ac97->num, reg);
+	if (ret < 0)
+		return 0;
+	else
+		return (unsigned short)(ret & 0xffff);
+}
+
+static void pxa2xx_ac97_legacy_write(struct snd_ac97 *ac97,
+				     unsigned short reg, unsigned short val)
+{
+	int ret;
+
+	ret = pxa2xx_ac97_write(ac97->num, reg, val);
 }
 
 static struct snd_ac97_bus_ops pxa2xx_ac97_ops = {
-	.read	= pxa2xx_ac97_read,
-	.write	= pxa2xx_ac97_write,
+	.read	= pxa2xx_ac97_legacy_read,
+	.write	= pxa2xx_ac97_legacy_write,
 	.warm_reset	= pxa2xx_ac97_warm_reset,
 	.reset	= pxa2xx_ac97_cold_reset,
 };
@@ -142,9 +160,8 @@ static int pxa2xx_ac97_mic_startup(struct snd_pcm_substream *substream,
 {
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		return -ENODEV;
-	else
-		snd_soc_dai_set_dma_data(cpu_dai, substream,
-					 &pxa2xx_ac97_pcm_mic_mono_in);
+	snd_soc_dai_set_dma_data(cpu_dai, substream,
+				 &pxa2xx_ac97_pcm_mic_mono_in);
 
 	return 0;
 }

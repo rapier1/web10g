@@ -18,6 +18,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
+#include <linux/of_graph.h>
 #include <linux/of_irq.h>
 #include <linux/sh_dma.h>
 #include <linux/workqueue.h>
@@ -73,6 +74,7 @@ enum rsnd_reg {
 	RSND_REG_SCU_SYS_INT_EN0,
 	RSND_REG_SCU_SYS_INT_EN1,
 	RSND_REG_CMD_CTRL,
+	RSND_REG_CMD_BUSIF_MODE,
 	RSND_REG_CMD_BUSIF_DALIGN,
 	RSND_REG_CMD_ROUTE_SLCT,
 	RSND_REG_CMDOUT_TIMSEL,
@@ -169,6 +171,8 @@ enum rsnd_reg {
 	RSND_REG_SSI_SYS_STATUS5,
 	RSND_REG_SSI_SYS_STATUS6,
 	RSND_REG_SSI_SYS_STATUS7,
+	RSND_REG_HDMI0_SEL,
+	RSND_REG_HDMI1_SEL,
 
 	/* SSI */
 	RSND_REG_SSICR,
@@ -204,6 +208,7 @@ void rsnd_bset(struct rsnd_priv *priv, struct rsnd_mod *mod, enum rsnd_reg reg,
 		    u32 mask, u32 data);
 u32 rsnd_get_adinr_bit(struct rsnd_mod *mod, struct rsnd_dai_stream *io);
 u32 rsnd_get_dalign(struct rsnd_mod *mod, struct rsnd_dai_stream *io);
+u32 rsnd_get_busif_shift(struct rsnd_dai_stream *io, struct rsnd_mod *mod);
 
 /*
  *	R-Car DMA
@@ -266,6 +271,9 @@ struct rsnd_mod_ops {
 			 struct rsnd_dai_stream *io,
 			 struct snd_pcm_substream *substream,
 			 struct snd_pcm_hw_params *hw_params);
+	int (*pointer)(struct rsnd_mod *mod,
+		       struct rsnd_dai_stream *io,
+		       snd_pcm_uframes_t *pointer);
 	int (*fallback)(struct rsnd_mod *mod,
 			struct rsnd_dai_stream *io,
 			struct rsnd_priv *priv);
@@ -303,6 +311,7 @@ struct rsnd_mod {
  * H	0: pcm_new
  * H	0: fallback
  * H	0: hw_params
+ * H	0: pointer
  */
 #define __rsnd_mod_shift_nolock_start	0
 #define __rsnd_mod_shift_nolock_stop	0
@@ -316,6 +325,7 @@ struct rsnd_mod {
 #define __rsnd_mod_shift_pcm_new	28 /* always called */
 #define __rsnd_mod_shift_fallback	28 /* always called */
 #define __rsnd_mod_shift_hw_params	28 /* always called */
+#define __rsnd_mod_shift_pointer	28 /* always called */
 
 #define __rsnd_mod_add_probe		0
 #define __rsnd_mod_add_remove		0
@@ -329,6 +339,7 @@ struct rsnd_mod {
 #define __rsnd_mod_add_pcm_new		0
 #define __rsnd_mod_add_fallback		0
 #define __rsnd_mod_add_hw_params	0
+#define __rsnd_mod_add_pointer		0
 
 #define __rsnd_mod_call_probe		0
 #define __rsnd_mod_call_remove		0
@@ -340,11 +351,13 @@ struct rsnd_mod {
 #define __rsnd_mod_call_pcm_new		0
 #define __rsnd_mod_call_fallback	0
 #define __rsnd_mod_call_hw_params	0
+#define __rsnd_mod_call_pointer		0
 #define __rsnd_mod_call_nolock_start	0
 #define __rsnd_mod_call_nolock_stop	1
 
-#define rsnd_mod_to_priv(mod) ((mod)->priv)
-#define rsnd_mod_id(mod) ((mod) ? (mod)->id : -1)
+#define rsnd_mod_to_priv(mod)	((mod)->priv)
+#define rsnd_mod_name(mod)	((mod)->ops->name)
+#define rsnd_mod_id(mod)	((mod)->id)
 #define rsnd_mod_power_on(mod)	clk_enable((mod)->clk)
 #define rsnd_mod_power_off(mod)	clk_disable((mod)->clk)
 #define rsnd_mod_get(ip)	(&(ip)->mod)
@@ -359,7 +372,6 @@ int rsnd_mod_init(struct rsnd_priv *priv,
 		  enum rsnd_mod_type type,
 		  int id);
 void rsnd_mod_quit(struct rsnd_mod *mod);
-char *rsnd_mod_name(struct rsnd_mod *mod);
 struct dma_chan *rsnd_mod_dma_req(struct rsnd_dai_stream *io,
 				  struct rsnd_mod *mod);
 void rsnd_mod_interrupt(struct rsnd_mod *mod,
@@ -374,10 +386,10 @@ struct rsnd_mod *rsnd_mod_next(int *iterator,
 			       int array_size);
 #define for_each_rsnd_mod(iterator, pos, io)				\
 	for (iterator = 0;						\
-	     (pos = rsnd_mod_next(&iterator, io, NULL, 0));)
+	     (pos = rsnd_mod_next(&iterator, io, NULL, 0)); iterator++)
 #define for_each_rsnd_mod_arrays(iterator, pos, io, array, size)	\
 	for (iterator = 0;						\
-	     (pos = rsnd_mod_next(&iterator, io, array, size));)
+	     (pos = rsnd_mod_next(&iterator, io, array, size)); iterator++)
 #define for_each_rsnd_mod_array(iterator, pos, io, array)		\
 	for_each_rsnd_mod_arrays(iterator, pos, io, array, ARRAY_SIZE(array))
 
@@ -387,14 +399,18 @@ void rsnd_parse_connect_common(struct rsnd_dai *rdai,
 		struct device_node *playback,
 		struct device_node *capture);
 
-void rsnd_set_slot(struct rsnd_dai *rdai,
-		   int slots, int slots_total);
-int rsnd_get_slot(struct rsnd_dai_stream *io);
-int rsnd_get_slot_num(struct rsnd_dai_stream *io);
-
-int rsnd_runtime_channel_original(struct rsnd_dai_stream *io);
-int rsnd_runtime_channel_after_ctu(struct rsnd_dai_stream *io);
-int rsnd_runtime_channel_for_ssi(struct rsnd_dai_stream *io);
+#define rsnd_runtime_channel_original(io) \
+	rsnd_runtime_channel_original_with_params(io, NULL)
+int rsnd_runtime_channel_original_with_params(struct rsnd_dai_stream *io,
+				struct snd_pcm_hw_params *params);
+#define rsnd_runtime_channel_after_ctu(io)			\
+	rsnd_runtime_channel_after_ctu_with_params(io, NULL)
+int rsnd_runtime_channel_after_ctu_with_params(struct rsnd_dai_stream *io,
+				struct snd_pcm_hw_params *params);
+#define rsnd_runtime_channel_for_ssi(io) \
+	rsnd_runtime_channel_for_ssi_with_params(io, NULL)
+int rsnd_runtime_channel_for_ssi_with_params(struct rsnd_dai_stream *io,
+				 struct snd_pcm_hw_params *params);
 int rsnd_runtime_is_ssi_multi(struct rsnd_dai_stream *io);
 int rsnd_runtime_is_ssi_tdm(struct rsnd_dai_stream *io);
 
@@ -418,13 +434,9 @@ struct rsnd_dai_stream {
 	char name[RSND_DAI_NAME_SIZE];
 	struct snd_pcm_substream *substream;
 	struct rsnd_mod *mod[RSND_MOD_MAX];
-	struct rsnd_dai_path_info *info; /* rcar_snd.h */
 	struct rsnd_dai *rdai;
+	struct device *dmac_dev; /* for IPMMU */
 	u32 parent_ssi_status;
-	int byte_pos;
-	int period_pos;
-	int byte_per_period;
-	int next_period_byte;
 };
 #define rsnd_io_to_mod(io, i)	((i) < RSND_MOD_MAX ? (io)->mod[(i)] : NULL)
 #define rsnd_io_to_mod_ssi(io)	rsnd_io_to_mod((io), RSND_MOD_SSI)
@@ -447,9 +459,10 @@ struct rsnd_dai {
 	struct rsnd_dai_stream playback;
 	struct rsnd_dai_stream capture;
 	struct rsnd_priv *priv;
+	struct snd_pcm_hw_constraint_list constraint;
 
-	int slots;
-	int slots_num;
+	int max_channels;	/* 2ch - 16ch */
+	int ssi_lane;		/* 1lane - 4lane */
 
 	unsigned int clk_master:1;
 	unsigned int bit_clk_inv:1;
@@ -469,13 +482,24 @@ struct rsnd_dai {
 
 struct rsnd_dai *rsnd_rdai_get(struct rsnd_priv *priv, int id);
 
-bool rsnd_dai_pointer_update(struct rsnd_dai_stream *io, int cnt);
+#define rsnd_rdai_channels_set(rdai, max_channels) \
+	rsnd_rdai_channels_ctrl(rdai, max_channels)
+#define rsnd_rdai_channels_get(rdai) \
+	rsnd_rdai_channels_ctrl(rdai, 0)
+int rsnd_rdai_channels_ctrl(struct rsnd_dai *rdai,
+			    int max_channels);
+
+#define rsnd_rdai_ssi_lane_set(rdai, ssi_lane) \
+	rsnd_rdai_ssi_lane_ctrl(rdai, ssi_lane)
+#define rsnd_rdai_ssi_lane_get(rdai) \
+	rsnd_rdai_ssi_lane_ctrl(rdai, 0)
+int rsnd_rdai_ssi_lane_ctrl(struct rsnd_dai *rdai,
+			    int ssi_lane);
+
 void rsnd_dai_period_elapsed(struct rsnd_dai_stream *io);
-int rsnd_dai_pointer_offset(struct rsnd_dai_stream *io, int additional);
 int rsnd_dai_connect(struct rsnd_mod *mod,
 		     struct rsnd_dai_stream *io,
 		     enum rsnd_mod_type type);
-#define rsnd_dai_of_node(priv) rsnd_parse_of_node(priv, RSND_NODE_DAI)
 
 /*
  *	R-Car Gen1/Gen2
@@ -489,6 +513,7 @@ phys_addr_t rsnd_gen_get_phy_addr(struct rsnd_priv *priv, int reg_id);
 /*
  *	R-Car ADG
  */
+int rsnd_adg_clk_query(struct rsnd_priv *priv, unsigned int rate);
 int rsnd_adg_ssi_clk_stop(struct rsnd_mod *mod);
 int rsnd_adg_ssi_clk_try_start(struct rsnd_mod *mod, unsigned int rate);
 int rsnd_adg_probe(struct rsnd_priv *priv);
@@ -514,6 +539,7 @@ struct rsnd_priv {
 #define RSND_GEN_MASK	(0xF << 0)
 #define RSND_GEN1	(1 << 0)
 #define RSND_GEN2	(2 << 0)
+#define RSND_GEN3	(3 << 0)
 
 	/*
 	 * below value will be filled on rsnd_gen_probe()
@@ -585,6 +611,11 @@ struct rsnd_priv {
 
 #define rsnd_is_gen1(priv)	(((priv)->flags & RSND_GEN_MASK) == RSND_GEN1)
 #define rsnd_is_gen2(priv)	(((priv)->flags & RSND_GEN_MASK) == RSND_GEN2)
+#define rsnd_is_gen3(priv)	(((priv)->flags & RSND_GEN_MASK) == RSND_GEN3)
+
+#define rsnd_flags_has(p, f) ((p)->flags & (f))
+#define rsnd_flags_set(p, f) ((p)->flags |= (f))
+#define rsnd_flags_del(p, f) ((p)->flags &= ~(f))
 
 /*
  *	rsnd_kctrl
@@ -594,10 +625,12 @@ struct rsnd_kctrl_cfg {
 	unsigned int size;
 	u32 *val;
 	const char * const *texts;
+	int (*accept)(struct rsnd_dai_stream *io);
 	void (*update)(struct rsnd_dai_stream *io, struct rsnd_mod *mod);
 	struct rsnd_dai_stream *io;
 	struct snd_card *card;
 	struct snd_kcontrol *kctrl;
+	struct rsnd_mod *mod;
 };
 
 #define RSND_MAX_CHANNELS	8
@@ -610,36 +643,42 @@ struct rsnd_kctrl_cfg_s {
 	struct rsnd_kctrl_cfg cfg;
 	u32 val;
 };
+#define rsnd_kctrl_size(x)	((x).cfg.size)
+#define rsnd_kctrl_max(x)	((x).cfg.max)
+#define rsnd_kctrl_valm(x, i)	((x).val[i])	/* = (x).cfg.val[i] */
+#define rsnd_kctrl_vals(x)	((x).val)	/* = (x).cfg.val[0] */
 
-void _rsnd_kctrl_remove(struct rsnd_kctrl_cfg *cfg);
-#define rsnd_kctrl_remove(_cfg)	_rsnd_kctrl_remove(&((_cfg).cfg))
+int rsnd_kctrl_accept_anytime(struct rsnd_dai_stream *io);
+int rsnd_kctrl_accept_runtime(struct rsnd_dai_stream *io);
+struct rsnd_kctrl_cfg *rsnd_kctrl_init_m(struct rsnd_kctrl_cfg_m *cfg);
+struct rsnd_kctrl_cfg *rsnd_kctrl_init_s(struct rsnd_kctrl_cfg_s *cfg);
+int rsnd_kctrl_new(struct rsnd_mod *mod,
+		   struct rsnd_dai_stream *io,
+		   struct snd_soc_pcm_runtime *rtd,
+		   const unsigned char *name,
+		   int (*accept)(struct rsnd_dai_stream *io),
+		   void (*update)(struct rsnd_dai_stream *io,
+				  struct rsnd_mod *mod),
+		   struct rsnd_kctrl_cfg *cfg,
+		   const char * const *texts,
+		   int size,
+		   u32 max);
 
-int rsnd_kctrl_new_m(struct rsnd_mod *mod,
-		     struct rsnd_dai_stream *io,
-		     struct snd_soc_pcm_runtime *rtd,
-		     const unsigned char *name,
-		     void (*update)(struct rsnd_dai_stream *io,
-				    struct rsnd_mod *mod),
-		     struct rsnd_kctrl_cfg_m *_cfg,
-		     int ch_size,
-		     u32 max);
-int rsnd_kctrl_new_s(struct rsnd_mod *mod,
-		     struct rsnd_dai_stream *io,
-		     struct snd_soc_pcm_runtime *rtd,
-		     const unsigned char *name,
-		     void (*update)(struct rsnd_dai_stream *io,
-				    struct rsnd_mod *mod),
-		     struct rsnd_kctrl_cfg_s *_cfg,
-		     u32 max);
-int rsnd_kctrl_new_e(struct rsnd_mod *mod,
-		     struct rsnd_dai_stream *io,
-		     struct snd_soc_pcm_runtime *rtd,
-		     const unsigned char *name,
-		     struct rsnd_kctrl_cfg_s *_cfg,
-		     void (*update)(struct rsnd_dai_stream *io,
-				    struct rsnd_mod *mod),
-		     const char * const *texts,
-		     u32 max);
+#define rsnd_kctrl_new_m(mod, io, rtd, name, accept, update, cfg, size, max) \
+	rsnd_kctrl_new(mod, io, rtd, name, accept, update, rsnd_kctrl_init_m(cfg), \
+		       NULL, size, max)
+
+#define rsnd_kctrl_new_s(mod, io, rtd, name, accept, update, cfg, max)	\
+	rsnd_kctrl_new(mod, io, rtd, name, accept, update, rsnd_kctrl_init_s(cfg), \
+		       NULL, 1, max)
+
+#define rsnd_kctrl_new_e(mod, io, rtd, name, accept, update, cfg, texts, size) \
+	rsnd_kctrl_new(mod, io, rtd, name, accept, update, rsnd_kctrl_init_s(cfg), \
+		       texts, 1, size)
+
+extern const char * const volume_ramp_rate[];
+#define VOLUME_RAMP_MAX_DVC	(0x17 + 1)
+#define VOLUME_RAMP_MAX_MIX	(0x0a + 1)
 
 /*
  *	R-Car SSI
@@ -651,6 +690,13 @@ int rsnd_ssi_is_dma_mode(struct rsnd_mod *mod);
 int rsnd_ssi_use_busif(struct rsnd_dai_stream *io);
 u32 rsnd_ssi_multi_slaves_runtime(struct rsnd_dai_stream *io);
 
+#define RSND_SSI_HDMI_PORT0	0xf0
+#define RSND_SSI_HDMI_PORT1	0xf1
+int rsnd_ssi_hdmi_port(struct rsnd_dai_stream *io);
+void rsnd_ssi_parse_hdmi_connection(struct rsnd_priv *priv,
+				    struct device_node *endpoint,
+				    int dai_i);
+
 #define rsnd_ssi_is_pin_sharing(io)	\
 	__rsnd_ssi_is_pin_sharing(rsnd_io_to_mod_ssi(io))
 int __rsnd_ssi_is_pin_sharing(struct rsnd_mod *mod);
@@ -659,6 +705,8 @@ int __rsnd_ssi_is_pin_sharing(struct rsnd_mod *mod);
 void rsnd_parse_connect_ssi(struct rsnd_dai *rdai,
 			    struct device_node *playback,
 			    struct device_node *capture);
+unsigned int rsnd_ssi_clk_query(struct rsnd_priv *priv,
+		       int param1, int param2, int *idx);
 
 /*
  *	R-Car SSIU
@@ -730,10 +778,9 @@ struct rsnd_mod *rsnd_dvc_mod_get(struct rsnd_priv *priv, int id);
 int rsnd_cmd_probe(struct rsnd_priv *priv);
 void rsnd_cmd_remove(struct rsnd_priv *priv);
 int rsnd_cmd_attach(struct rsnd_dai_stream *io, int id);
-struct rsnd_mod *rsnd_cmd_mod_get(struct rsnd_priv *priv, int id);
 
-#ifdef DEBUG
 void rsnd_mod_make_sure(struct rsnd_mod *mod, enum rsnd_mod_type type);
+#ifdef DEBUG
 #define rsnd_mod_confirm_ssi(mssi)	rsnd_mod_make_sure(mssi, RSND_MOD_SSI)
 #define rsnd_mod_confirm_src(msrc)	rsnd_mod_make_sure(msrc, RSND_MOD_SRC)
 #define rsnd_mod_confirm_dvc(mdvc)	rsnd_mod_make_sure(mdvc, RSND_MOD_DVC)
@@ -742,5 +789,25 @@ void rsnd_mod_make_sure(struct rsnd_mod *mod, enum rsnd_mod_type type);
 #define rsnd_mod_confirm_src(msrc)
 #define rsnd_mod_confirm_dvc(mdvc)
 #endif
+
+/*
+ * If you don't need interrupt status debug message,
+ * define RSND_DEBUG_NO_IRQ_STATUS as 1 on top of src.c/ssi.c
+ *
+ * #define RSND_DEBUG_NO_IRQ_STATUS 1
+ */
+#define rsnd_dbg_irq_status(dev, param...)		\
+	if (!IS_BUILTIN(RSND_DEBUG_NO_IRQ_STATUS))	\
+		dev_dbg(dev, param)
+
+/*
+ * If you don't need rsnd_dai_call debug message,
+ * define RSND_DEBUG_NO_DAI_CALL as 1 on top of core.c
+ *
+ * #define RSND_DEBUG_NO_DAI_CALL 1
+ */
+#define rsnd_dbg_dai_call(dev, param...)		\
+	if (!IS_BUILTIN(RSND_DEBUG_NO_DAI_CALL))	\
+		dev_dbg(dev, param)
 
 #endif

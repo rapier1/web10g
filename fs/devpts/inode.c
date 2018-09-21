@@ -133,37 +133,98 @@ static inline struct pts_fs_info *DEVPTS_SB(struct super_block *sb)
 	return sb->s_fs_info;
 }
 
+static int devpts_ptmx_path(struct path *path)
+{
+	struct super_block *sb;
+	int err;
+
+	/* Is a devpts filesystem at "pts" in the same directory? */
+	err = path_pts(path);
+	if (err)
+		return err;
+
+	/* Is the path the root of a devpts filesystem? */
+	sb = path->mnt->mnt_sb;
+	if ((sb->s_magic != DEVPTS_SUPER_MAGIC) ||
+	    (path->mnt->mnt_root != sb->s_root))
+		return -ENODEV;
+
+	return 0;
+}
+
+/*
+ * Try to find a suitable devpts filesystem. We support the following
+ * scenarios:
+ * - The ptmx device node is located in the same directory as the devpts
+ *   mount where the pts device nodes are located.
+ *   This is e.g. the case when calling open on the /dev/pts/ptmx device
+ *   node when the devpts filesystem is mounted at /dev/pts.
+ * - The ptmx device node is located outside the devpts filesystem mount
+ *   where the pts device nodes are located. For example, the ptmx device
+ *   is a symlink, separate device node, or bind-mount.
+ *   A supported scenario is bind-mounting /dev/pts/ptmx to /dev/ptmx and
+ *   then calling open on /dev/ptmx. In this case a suitable pts
+ *   subdirectory can be found in the common parent directory /dev of the
+ *   devpts mount and the ptmx bind-mount, after resolving the /dev/ptmx
+ *   bind-mount.
+ *   If no suitable pts subdirectory can be found this function will fail.
+ *   This is e.g. the case when bind-mounting /dev/pts/ptmx to /ptmx.
+ */
+struct vfsmount *devpts_mntget(struct file *filp, struct pts_fs_info *fsi)
+{
+	struct path path;
+	int err = 0;
+
+	path = filp->f_path;
+	path_get(&path);
+
+	/* Walk upward while the start point is a bind mount of
+	 * a single file.
+	 */
+	while (path.mnt->mnt_root == path.dentry)
+		if (follow_up(&path) == 0)
+			break;
+
+	/* devpts_ptmx_path() finds a devpts fs or returns an error. */
+	if ((path.mnt->mnt_sb->s_magic != DEVPTS_SUPER_MAGIC) ||
+	    (DEVPTS_SB(path.mnt->mnt_sb) != fsi))
+		err = devpts_ptmx_path(&path);
+	dput(path.dentry);
+	if (!err) {
+		if (DEVPTS_SB(path.mnt->mnt_sb) == fsi)
+			return path.mnt;
+
+		err = -ENODEV;
+	}
+
+	mntput(path.mnt);
+	return ERR_PTR(err);
+}
+
 struct pts_fs_info *devpts_acquire(struct file *filp)
 {
 	struct pts_fs_info *result;
 	struct path path;
 	struct super_block *sb;
-	int err;
 
 	path = filp->f_path;
 	path_get(&path);
 
 	/* Has the devpts filesystem already been found? */
-	sb = path.mnt->mnt_sb;
-	if (sb->s_magic != DEVPTS_SUPER_MAGIC) {
-		/* Is a devpts filesystem at "pts" in the same directory? */
-		err = path_pts(&path);
+	if (path.mnt->mnt_sb->s_magic != DEVPTS_SUPER_MAGIC) {
+		int err;
+
+		err = devpts_ptmx_path(&path);
 		if (err) {
 			result = ERR_PTR(err);
 			goto out;
 		}
-
-		/* Is the path the root of a devpts filesystem? */
-		result = ERR_PTR(-ENODEV);
-		sb = path.mnt->mnt_sb;
-		if ((sb->s_magic != DEVPTS_SUPER_MAGIC) ||
-		    (path.mnt->mnt_root != sb->s_root))
-			goto out;
 	}
 
 	/*
 	 * pty code needs to hold extra references in case of last /dev/tty close
 	 */
+	sb = path.mnt->mnt_sb;
 	atomic_inc(&sb->s_active);
 	result = DEVPTS_SB(sb);
 

@@ -16,21 +16,12 @@
  * General Public License for more details.
  */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
-#include <linux/bitops.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/soc/ti/knav_qmss.h>
-#include <linux/platform_device.h>
-#include <linux/dma-mapping.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/module.h>
 #include <linux/of_address.h>
-#include <linux/firmware.h>
+#include <linux/soc/ti/knav_qmss.h>
 
 #include "knav_qmss.h"
 
@@ -414,8 +405,8 @@ static int knav_acc_init_queue(struct knav_range_info *range,
 {
 	unsigned id = kq->id - range->queue_base;
 
-	kq->descs = devm_kzalloc(range->kdev->dev,
-				 ACC_DESCS_MAX * sizeof(u32), GFP_KERNEL);
+	kq->descs = devm_kcalloc(range->kdev->dev,
+				 ACC_DESCS_MAX, sizeof(u32), GFP_KERNEL);
 	if (!kq->descs)
 		return -ENOMEM;
 
@@ -561,7 +552,7 @@ int knav_init_acc_range(struct knav_device *kdev,
 	info->list_size = list_size;
 	mem_size   = PAGE_ALIGN(list_size * 2);
 	info->mem_size  = mem_size;
-	range->acc = devm_kzalloc(kdev->dev, channels * sizeof(*range->acc),
+	range->acc = devm_kcalloc(kdev->dev, channels, sizeof(*range->acc),
 				  GFP_KERNEL);
 	if (!range->acc)
 		return -ENOMEM;

@@ -168,6 +168,8 @@
 #define DEV_DB_NON_PERSISTENT	0
 #define DEV_DB_PERSISTENT	1
 
+#define QL4_ISP_REG_DISCONNECT 0xffffffffU
+
 #define COPY_ISID(dst_isid, src_isid) {			\
 	int i, j;					\
 	for (i = 0, j = ISID_SIZE - 1; i < ISID_SIZE;)	\
@@ -408,9 +410,6 @@ struct qla4_8xxx_legacy_intr_set {
 };
 
 /* MSI-X Support */
-
-#define QLA_MSIX_DEFAULT	0
-#define QLA_MSIX_RSP_Q		1
 #define QLA_MSIX_ENTRIES	2
 
 /*

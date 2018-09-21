@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2012 Alexander Block.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License v2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/bsearch.h>
@@ -26,10 +13,11 @@
 #include <linux/radix-tree.h>
 #include <linux/vmalloc.h>
 #include <linux/string.h>
+#include <linux/compat.h>
+#include <linux/crc32c.h>
 
 #include "send.h"
 #include "backref.h"
-#include "hash.h"
 #include "locking.h"
 #include "disk-io.h"
 #include "btrfs_inode.h"
@@ -111,6 +99,7 @@ struct send_ctx {
 	u64 cur_inode_mode;
 	u64 cur_inode_rdev;
 	u64 cur_inode_last_extent;
+	u64 cur_inode_next_write_offset;
 
 	u64 send_progress;
 
@@ -246,6 +235,7 @@ struct orphan_dir_info {
 	struct rb_node node;
 	u64 ino;
 	u64 gen;
+	u64 last_dir_index_offset;
 };
 
 struct name_cache_entry {
@@ -269,6 +259,7 @@ struct name_cache_entry {
 	char name[];
 };
 
+__cold
 static void inconsistent_snapshot_error(struct send_ctx *sctx,
 					enum btrfs_compare_tree_result result,
 					const char *what)
@@ -539,33 +530,23 @@ static struct btrfs_path *alloc_path_for_send(void)
 static int write_buf(struct file *filp, const void *buf, u32 len, loff_t *off)
 {
 	int ret;
-	mm_segment_t old_fs;
 	u32 pos = 0;
 
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-
 	while (pos < len) {
-		ret = vfs_write(filp, (__force const char __user *)buf + pos,
-				len - pos, off);
+		ret = kernel_write(filp, buf + pos, len - pos, off);
 		/* TODO handle that correctly */
 		/*if (ret == -ERESTARTSYS) {
 			continue;
 		}*/
 		if (ret < 0)
-			goto out;
+			return ret;
 		if (ret == 0) {
-			ret = -EIO;
-			goto out;
+			return -EIO;
 		}
 		pos += ret;
 	}
 
-	ret = 0;
-
-out:
-	set_fs(old_fs);
-	return ret;
+	return 0;
 }
 
 static int tlv_put(struct send_ctx *sctx, u16 attr, const void *data, int len)
@@ -620,9 +601,9 @@ static int tlv_put_btrfs_timespec(struct send_ctx *sctx, u16 attr,
 }
 
 
-#define TLV_PUT(sctx, attrtype, attrlen, data) \
+#define TLV_PUT(sctx, attrtype, data, attrlen) \
 	do { \
-		ret = tlv_put(sctx, attrtype, attrlen, data); \
+		ret = tlv_put(sctx, attrtype, data, attrlen); \
 		if (ret < 0) \
 			goto tlv_put_failure; \
 	} while (0)
@@ -704,7 +685,7 @@ static int send_cmd(struct send_ctx *sctx)
 	hdr->len = cpu_to_le32(sctx->send_size - sizeof(*hdr));
 	hdr->crc = 0;
 
-	crc = btrfs_crc32c(0, (unsigned char *)sctx->send_buf, sctx->send_size);
+	crc = crc32c(0, (unsigned char *)sctx->send_buf, sctx->send_size);
 	hdr->crc = cpu_to_le32(crc);
 
 	ret = write_buf(sctx->send_filp, sctx->send_buf, sctx->send_size,
@@ -1002,7 +983,6 @@ typedef int (*iterate_dir_item_t)(int num, struct btrfs_key *di_key,
  * path must point to the dir item when called.
  */
 static int iterate_dir_item(struct btrfs_root *root, struct btrfs_path *path,
-			    struct btrfs_key *found_key,
 			    iterate_dir_item_t iterate, void *ctx)
 {
 	int ret = 0;
@@ -1083,7 +1063,7 @@ static int iterate_dir_item(struct btrfs_root *root, struct btrfs_path *path,
 				buf = tmp;
 			}
 			if (!buf) {
-				buf = vmalloc(buf_len);
+				buf = kvmalloc(buf_len, GFP_KERNEL);
 				if (!buf) {
 					ret = -ENOMEM;
 					goto out;
@@ -1275,12 +1255,6 @@ static int __iterate_backrefs(u64 ino, u64 offset, u64 root, void *ctx_)
 		 */
 		if (ino >= bctx->cur_objectid)
 			return 0;
-#if 0
-		if (ino > bctx->cur_objectid)
-			return 0;
-		if (offset + bctx->extent_len > bctx->cur_offset)
-			return 0;
-#endif
 	}
 
 	bctx->found++;
@@ -1433,7 +1407,7 @@ static int find_extent_clone(struct send_ctx *sctx,
 		extent_item_pos = 0;
 	ret = iterate_extent_inodes(fs_info, found_key.objectid,
 				    extent_item_pos, 1, __iterate_backrefs,
-				    backref_ctx);
+				    backref_ctx, false);
 
 	if (ret < 0)
 		goto out;
@@ -1681,6 +1655,9 @@ static int is_inode_existent(struct send_ctx *sctx, u64 ino, u64 gen)
 {
 	int ret;
 
+	if (ino == BTRFS_FIRST_FREE_OBJECTID)
+		return 1;
+
 	ret = get_cur_inode_state(sctx, ino, gen);
 	if (ret < 0)
 		goto out;
@@ -1847,7 +1824,7 @@ out:
  */
 static int will_overwrite_ref(struct send_ctx *sctx, u64 dir, u64 dir_gen,
 			      const char *name, int name_len,
-			      u64 *who_ino, u64 *who_gen)
+			      u64 *who_ino, u64 *who_gen, u64 *who_mode)
 {
 	int ret = 0;
 	u64 gen;
@@ -1866,7 +1843,7 @@ static int will_overwrite_ref(struct send_ctx *sctx, u64 dir, u64 dir_gen,
 	 * not deleted and then re-created, if it was then we have no overwrite
 	 * and we can just unlink this entry.
 	 */
-	if (sctx->parent_root) {
+	if (sctx->parent_root && dir != BTRFS_FIRST_FREE_OBJECTID) {
 		ret = get_inode_info(sctx->parent_root, dir, NULL, &gen, NULL,
 				     NULL, NULL, NULL);
 		if (ret < 0 && ret != -ENOENT)
@@ -1896,7 +1873,7 @@ static int will_overwrite_ref(struct send_ctx *sctx, u64 dir, u64 dir_gen,
 	if (other_inode > sctx->send_progress ||
 	    is_waiting_for_move(sctx, other_inode)) {
 		ret = get_inode_info(sctx->parent_root, other_inode, NULL,
-				who_gen, NULL, NULL, NULL, NULL);
+				who_gen, who_mode, NULL, NULL, NULL);
 		if (ret < 0)
 			goto out;
 
@@ -1933,6 +1910,19 @@ static int did_overwrite_ref(struct send_ctx *sctx,
 	ret = is_inode_existent(sctx, dir, dir_gen);
 	if (ret <= 0)
 		goto out;
+
+	if (dir != BTRFS_FIRST_FREE_OBJECTID) {
+		ret = get_inode_info(sctx->send_root, dir, NULL, &gen, NULL,
+				     NULL, NULL, NULL);
+		if (ret < 0 && ret != -ENOENT)
+			goto out;
+		if (ret) {
+			ret = 0;
+			goto out;
+		}
+		if (gen != dir_gen)
+			goto out;
+	}
 
 	/* check if the ref was overwritten by another ref */
 	ret = lookup_dir_item_inode(sctx->send_root, dir, name, name_len,
@@ -2618,7 +2608,7 @@ static int send_create_inode(struct send_ctx *sctx, u64 ino)
 	} else {
 		btrfs_warn(sctx->send_root->fs_info, "unexpected inode type %o",
 				(int)(mode & S_IFMT));
-		ret = -ENOTSUPP;
+		ret = -EOPNOTSUPP;
 		goto out;
 	}
 
@@ -2753,14 +2743,19 @@ out:
 
 struct recorded_ref {
 	struct list_head list;
-	char *dir_path;
 	char *name;
 	struct fs_path *full_path;
 	u64 dir;
 	u64 dir_gen;
-	int dir_path_len;
 	int name_len;
 };
+
+static void set_ref_path(struct recorded_ref *ref, struct fs_path *path)
+{
+	ref->full_path = path;
+	ref->name = (char *)kbasename(ref->full_path->start);
+	ref->name_len = ref->full_path->end - ref->name;
+}
 
 /*
  * We need to process new refs before deleted refs, but compare_tree gives us
@@ -2778,17 +2773,7 @@ static int __record_ref(struct list_head *head, u64 dir,
 
 	ref->dir = dir;
 	ref->dir_gen = dir_gen;
-	ref->full_path = path;
-
-	ref->name = (char *)kbasename(ref->full_path->start);
-	ref->name_len = ref->full_path->end - ref->name;
-	ref->dir_path = ref->full_path->start;
-	if (ref->name == ref->full_path->start)
-		ref->dir_path_len = 0;
-	else
-		ref->dir_path_len = ref->full_path->end -
-				ref->full_path->start - 1 - ref->name_len;
-
+	set_ref_path(ref, path);
 	list_add_tail(&ref->list, head);
 	return 0;
 }
@@ -2860,12 +2845,6 @@ add_orphan_dir_info(struct send_ctx *sctx, u64 dir_ino)
 	struct rb_node *parent = NULL;
 	struct orphan_dir_info *entry, *odi;
 
-	odi = kmalloc(sizeof(*odi), GFP_KERNEL);
-	if (!odi)
-		return ERR_PTR(-ENOMEM);
-	odi->ino = dir_ino;
-	odi->gen = 0;
-
 	while (*p) {
 		parent = *p;
 		entry = rb_entry(parent, struct orphan_dir_info, node);
@@ -2874,10 +2853,16 @@ add_orphan_dir_info(struct send_ctx *sctx, u64 dir_ino)
 		} else if (dir_ino > entry->ino) {
 			p = &(*p)->rb_right;
 		} else {
-			kfree(odi);
 			return entry;
 		}
 	}
+
+	odi = kmalloc(sizeof(*odi), GFP_KERNEL);
+	if (!odi)
+		return ERR_PTR(-ENOMEM);
+	odi->ino = dir_ino;
+	odi->gen = 0;
+	odi->last_dir_index_offset = 0;
 
 	rb_link_node(&odi->node, parent, p);
 	rb_insert_color(&odi->node, &sctx->orphan_dirs);
@@ -2933,6 +2918,7 @@ static int can_rmdir(struct send_ctx *sctx, u64 dir, u64 dir_gen,
 	struct btrfs_key found_key;
 	struct btrfs_key loc;
 	struct btrfs_dir_item *di;
+	struct orphan_dir_info *odi = NULL;
 
 	/*
 	 * Don't try to rmdir the top/root subvolume dir.
@@ -2947,6 +2933,11 @@ static int can_rmdir(struct send_ctx *sctx, u64 dir, u64 dir_gen,
 	key.objectid = dir;
 	key.type = BTRFS_DIR_INDEX_KEY;
 	key.offset = 0;
+
+	odi = get_orphan_dir_info(sctx, dir);
+	if (odi)
+		key.offset = odi->last_dir_index_offset;
+
 	ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
 	if (ret < 0)
 		goto out;
@@ -2974,30 +2965,33 @@ static int can_rmdir(struct send_ctx *sctx, u64 dir, u64 dir_gen,
 
 		dm = get_waiting_dir_move(sctx, loc.objectid);
 		if (dm) {
-			struct orphan_dir_info *odi;
-
 			odi = add_orphan_dir_info(sctx, dir);
 			if (IS_ERR(odi)) {
 				ret = PTR_ERR(odi);
 				goto out;
 			}
 			odi->gen = dir_gen;
+			odi->last_dir_index_offset = found_key.offset;
 			dm->rmdir_ino = dir;
 			ret = 0;
 			goto out;
 		}
 
 		if (loc.objectid > send_progress) {
-			struct orphan_dir_info *odi;
-
-			odi = get_orphan_dir_info(sctx, dir);
-			free_orphan_dir_info(sctx, odi);
+			odi = add_orphan_dir_info(sctx, dir);
+			if (IS_ERR(odi)) {
+				ret = PTR_ERR(odi);
+				goto out;
+			}
+			odi->gen = dir_gen;
+			odi->last_dir_index_offset = found_key.offset;
 			ret = 0;
 			goto out;
 		}
 
 		path->slots[0]++;
 	}
+	free_orphan_dir_info(sctx, odi);
 
 	ret = 1;
 
@@ -3275,13 +3269,16 @@ static int apply_dir_move(struct send_ctx *sctx, struct pending_dir_move *pm)
 
 	if (rmdir_ino) {
 		struct orphan_dir_info *odi;
+		u64 gen;
 
 		odi = get_orphan_dir_info(sctx, rmdir_ino);
 		if (!odi) {
 			/* already deleted */
 			goto finish;
 		}
-		ret = can_rmdir(sctx, rmdir_ino, odi->gen, sctx->cur_ino);
+		gen = odi->gen;
+
+		ret = can_rmdir(sctx, rmdir_ino, gen, sctx->cur_ino);
 		if (ret < 0)
 			goto out;
 		if (!ret)
@@ -3292,13 +3289,12 @@ static int apply_dir_move(struct send_ctx *sctx, struct pending_dir_move *pm)
 			ret = -ENOMEM;
 			goto out;
 		}
-		ret = get_cur_path(sctx, rmdir_ino, odi->gen, name);
+		ret = get_cur_path(sctx, rmdir_ino, gen, name);
 		if (ret < 0)
 			goto out;
 		ret = send_rmdir(sctx, name);
 		if (ret < 0)
 			goto out;
-		free_orphan_dir_info(sctx, odi);
 	}
 
 finish:
@@ -3520,7 +3516,40 @@ out:
 }
 
 /*
- * Check if ino ino1 is an ancestor of inode ino2 in the given root.
+ * Check if inode ino2, or any of its ancestors, is inode ino1.
+ * Return 1 if true, 0 if false and < 0 on error.
+ */
+static int check_ino_in_path(struct btrfs_root *root,
+			     const u64 ino1,
+			     const u64 ino1_gen,
+			     const u64 ino2,
+			     const u64 ino2_gen,
+			     struct fs_path *fs_path)
+{
+	u64 ino = ino2;
+
+	if (ino1 == ino2)
+		return ino1_gen == ino2_gen;
+
+	while (ino > BTRFS_FIRST_FREE_OBJECTID) {
+		u64 parent;
+		u64 parent_gen;
+		int ret;
+
+		fs_path_reset(fs_path);
+		ret = get_first_ref(root, ino, &parent, &parent_gen, fs_path);
+		if (ret < 0)
+			return ret;
+		if (parent == ino1)
+			return parent_gen == ino1_gen;
+		ino = parent;
+	}
+	return 0;
+}
+
+/*
+ * Check if ino ino1 is an ancestor of inode ino2 in the given root for any
+ * possible path (in case ino2 is not a directory and has multiple hard links).
  * Return 1 if true, 0 if false and < 0 on error.
  */
 static int is_ancestor(struct btrfs_root *root,
@@ -3529,25 +3558,93 @@ static int is_ancestor(struct btrfs_root *root,
 		       const u64 ino2,
 		       struct fs_path *fs_path)
 {
-	u64 ino = ino2;
+	bool free_fs_path = false;
+	int ret = 0;
+	struct btrfs_path *path = NULL;
+	struct btrfs_key key;
 
-	while (ino > BTRFS_FIRST_FREE_OBJECTID) {
-		int ret;
-		u64 parent;
-		u64 parent_gen;
-
-		fs_path_reset(fs_path);
-		ret = get_first_ref(root, ino, &parent, &parent_gen, fs_path);
-		if (ret < 0) {
-			if (ret == -ENOENT && ino == ino2)
-				ret = 0;
-			return ret;
-		}
-		if (parent == ino1)
-			return parent_gen == ino1_gen ? 1 : 0;
-		ino = parent;
+	if (!fs_path) {
+		fs_path = fs_path_alloc();
+		if (!fs_path)
+			return -ENOMEM;
+		free_fs_path = true;
 	}
-	return 0;
+
+	path = alloc_path_for_send();
+	if (!path) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	key.objectid = ino2;
+	key.type = BTRFS_INODE_REF_KEY;
+	key.offset = 0;
+
+	ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
+	if (ret < 0)
+		goto out;
+
+	while (true) {
+		struct extent_buffer *leaf = path->nodes[0];
+		int slot = path->slots[0];
+		u32 cur_offset = 0;
+		u32 item_size;
+
+		if (slot >= btrfs_header_nritems(leaf)) {
+			ret = btrfs_next_leaf(root, path);
+			if (ret < 0)
+				goto out;
+			if (ret > 0)
+				break;
+			continue;
+		}
+
+		btrfs_item_key_to_cpu(leaf, &key, slot);
+		if (key.objectid != ino2)
+			break;
+		if (key.type != BTRFS_INODE_REF_KEY &&
+		    key.type != BTRFS_INODE_EXTREF_KEY)
+			break;
+
+		item_size = btrfs_item_size_nr(leaf, slot);
+		while (cur_offset < item_size) {
+			u64 parent;
+			u64 parent_gen;
+
+			if (key.type == BTRFS_INODE_EXTREF_KEY) {
+				unsigned long ptr;
+				struct btrfs_inode_extref *extref;
+
+				ptr = btrfs_item_ptr_offset(leaf, slot);
+				extref = (struct btrfs_inode_extref *)
+					(ptr + cur_offset);
+				parent = btrfs_inode_extref_parent(leaf,
+								   extref);
+				cur_offset += sizeof(*extref);
+				cur_offset += btrfs_inode_extref_name_len(leaf,
+								  extref);
+			} else {
+				parent = key.offset;
+				cur_offset = item_size;
+			}
+
+			ret = get_inode_info(root, parent, NULL, &parent_gen,
+					     NULL, NULL, NULL, NULL);
+			if (ret < 0)
+				goto out;
+			ret = check_ino_in_path(root, ino1, ino1_gen,
+						parent, parent_gen, fs_path);
+			if (ret)
+				goto out;
+		}
+		path->slots[0]++;
+	}
+	ret = 0;
+ out:
+	btrfs_free_path(path);
+	if (free_fs_path)
+		fs_path_free(fs_path);
+	return ret;
 }
 
 static int wait_for_parent_move(struct send_ctx *sctx,
@@ -3556,6 +3653,7 @@ static int wait_for_parent_move(struct send_ctx *sctx,
 {
 	int ret = 0;
 	u64 ino = parent_ref->dir;
+	u64 ino_gen = parent_ref->dir_gen;
 	u64 parent_ino_before, parent_ino_after;
 	struct fs_path *path_before = NULL;
 	struct fs_path *path_after = NULL;
@@ -3576,6 +3674,8 @@ static int wait_for_parent_move(struct send_ctx *sctx,
 	 * at get_cur_path()).
 	 */
 	while (ino > BTRFS_FIRST_FREE_OBJECTID) {
+		u64 parent_ino_after_gen;
+
 		if (is_waiting_for_move(sctx, ino)) {
 			/*
 			 * If the current inode is an ancestor of ino in the
@@ -3598,7 +3698,7 @@ static int wait_for_parent_move(struct send_ctx *sctx,
 		fs_path_reset(path_after);
 
 		ret = get_first_ref(sctx->send_root, ino, &parent_ino_after,
-				    NULL, path_after);
+				    &parent_ino_after_gen, path_after);
 		if (ret < 0)
 			goto out;
 		ret = get_first_ref(sctx->parent_root, ino, &parent_ino_before,
@@ -3615,10 +3715,20 @@ static int wait_for_parent_move(struct send_ctx *sctx,
 		if (ino > sctx->cur_ino &&
 		    (parent_ino_before != parent_ino_after || len1 != len2 ||
 		     memcmp(path_before->start, path_after->start, len1))) {
-			ret = 1;
-			break;
+			u64 parent_ino_gen;
+
+			ret = get_inode_info(sctx->parent_root, ino, NULL,
+					     &parent_ino_gen, NULL, NULL, NULL,
+					     NULL);
+			if (ret < 0)
+				goto out;
+			if (ino_gen == parent_ino_gen) {
+				ret = 1;
+				break;
+			}
 		}
 		ino = parent_ino_after;
+		ino_gen = parent_ino_after_gen;
 	}
 
 out:
@@ -3640,6 +3750,36 @@ out:
 	return ret;
 }
 
+static int update_ref_path(struct send_ctx *sctx, struct recorded_ref *ref)
+{
+	int ret;
+	struct fs_path *new_path;
+
+	/*
+	 * Our reference's name member points to its full_path member string, so
+	 * we use here a new path.
+	 */
+	new_path = fs_path_alloc();
+	if (!new_path)
+		return -ENOMEM;
+
+	ret = get_cur_path(sctx, ref->dir, ref->dir_gen, new_path);
+	if (ret < 0) {
+		fs_path_free(new_path);
+		return ret;
+	}
+	ret = fs_path_add(new_path, ref->name, ref->name_len);
+	if (ret < 0) {
+		fs_path_free(new_path);
+		return ret;
+	}
+
+	fs_path_free(ref->full_path);
+	set_ref_path(ref, new_path);
+
+	return 0;
+}
+
 /*
  * This does all the move/link/unlink/rmdir magic.
  */
@@ -3653,10 +3793,13 @@ static int process_recorded_refs(struct send_ctx *sctx, int *pending_move)
 	struct fs_path *valid_path = NULL;
 	u64 ow_inode = 0;
 	u64 ow_gen;
+	u64 ow_mode;
 	int did_overwrite = 0;
 	int is_orphan = 0;
 	u64 last_dir_ino_rm = 0;
 	bool can_rename = true;
+	bool orphanized_dir = false;
+	bool orphanized_ancestor = false;
 
 	btrfs_debug(fs_info, "process_recorded_refs %llu", sctx->cur_ino);
 
@@ -3754,7 +3897,7 @@ static int process_recorded_refs(struct send_ctx *sctx, int *pending_move)
 		 */
 		ret = will_overwrite_ref(sctx, cur->dir, cur->dir_gen,
 				cur->name, cur->name_len,
-				&ow_inode, &ow_gen);
+				&ow_inode, &ow_gen, &ow_mode);
 		if (ret < 0)
 			goto out;
 		if (ret) {
@@ -3771,6 +3914,8 @@ static int process_recorded_refs(struct send_ctx *sctx, int *pending_move)
 						cur->full_path);
 				if (ret < 0)
 					goto out;
+				if (S_ISDIR(ow_mode))
+					orphanized_dir = true;
 
 				/*
 				 * If ow_inode has its rename operation delayed
@@ -3808,9 +3953,16 @@ static int process_recorded_refs(struct send_ctx *sctx, int *pending_move)
 				 * might contain the pre-orphanization name of
 				 * ow_inode, which is no longer valid.
 				 */
-				fs_path_reset(valid_path);
-				ret = get_cur_path(sctx, sctx->cur_ino,
-					   sctx->cur_inode_gen, valid_path);
+				ret = is_ancestor(sctx->parent_root,
+						  ow_inode, ow_gen,
+						  sctx->cur_ino, NULL);
+				if (ret > 0) {
+					orphanized_ancestor = true;
+					fs_path_reset(valid_path);
+					ret = get_cur_path(sctx, sctx->cur_ino,
+							   sctx->cur_inode_gen,
+							   valid_path);
+				}
 				if (ret < 0)
 					goto out;
 			} else {
@@ -3869,6 +4021,18 @@ static int process_recorded_refs(struct send_ctx *sctx, int *pending_move)
 				if (ret < 0)
 					goto out;
 			} else {
+				/*
+				 * We might have previously orphanized an inode
+				 * which is an ancestor of our current inode,
+				 * so our reference's full path, which was
+				 * computed before any such orphanizations, must
+				 * be updated.
+				 */
+				if (orphanized_dir) {
+					ret = update_ref_path(sctx, cur);
+					if (ret < 0)
+						goto out;
+				}
 				ret = send_link(sctx, cur->full_path,
 						valid_path);
 				if (ret < 0)
@@ -3931,6 +4095,18 @@ static int process_recorded_refs(struct send_ctx *sctx, int *pending_move)
 			if (ret < 0)
 				goto out;
 			if (!ret) {
+				/*
+				 * If we orphanized any ancestor before, we need
+				 * to recompute the full path for deleted names,
+				 * since any such path was computed before we
+				 * processed any references and orphanized any
+				 * ancestor inode.
+				 */
+				if (orphanized_ancestor) {
+					ret = update_ref_path(sctx, cur);
+					if (ret < 0)
+						goto out;
+				}
 				ret = send_unlink(sctx, cur->full_path);
 				if (ret < 0)
 					goto out;
@@ -4007,8 +4183,8 @@ out:
 	return ret;
 }
 
-static int record_ref(struct btrfs_root *root, int num, u64 dir, int index,
-		      struct fs_path *name, void *ctx, struct list_head *refs)
+static int record_ref(struct btrfs_root *root, u64 dir, struct fs_path *name,
+		      void *ctx, struct list_head *refs)
 {
 	int ret = 0;
 	struct send_ctx *sctx = ctx;
@@ -4044,8 +4220,7 @@ static int __record_new_ref(int num, u64 dir, int index,
 			    void *ctx)
 {
 	struct send_ctx *sctx = ctx;
-	return record_ref(sctx->send_root, num, dir, index, name,
-			  ctx, &sctx->new_refs);
+	return record_ref(sctx->send_root, dir, name, ctx, &sctx->new_refs);
 }
 
 
@@ -4054,8 +4229,8 @@ static int __record_deleted_ref(int num, u64 dir, int index,
 				void *ctx)
 {
 	struct send_ctx *sctx = ctx;
-	return record_ref(sctx->parent_root, num, dir, index, name,
-			  ctx, &sctx->deleted_refs);
+	return record_ref(sctx->parent_root, dir, name, ctx,
+			  &sctx->deleted_refs);
 }
 
 static int record_new_ref(struct send_ctx *sctx)
@@ -4399,7 +4574,7 @@ static int process_new_xattr(struct send_ctx *sctx)
 	int ret = 0;
 
 	ret = iterate_dir_item(sctx->send_root, sctx->left_path,
-			       sctx->cmp_key, __process_new_xattr, sctx);
+			       __process_new_xattr, sctx);
 
 	return ret;
 }
@@ -4407,7 +4582,7 @@ static int process_new_xattr(struct send_ctx *sctx)
 static int process_deleted_xattr(struct send_ctx *sctx)
 {
 	return iterate_dir_item(sctx->parent_root, sctx->right_path,
-				sctx->cmp_key, __process_deleted_xattr, sctx);
+				__process_deleted_xattr, sctx);
 }
 
 struct find_xattr_ctx {
@@ -4452,7 +4627,7 @@ static int find_xattr(struct btrfs_root *root,
 	ctx.found_data = NULL;
 	ctx.found_data_len = 0;
 
-	ret = iterate_dir_item(root, path, key, __find_xattr, &ctx);
+	ret = iterate_dir_item(root, path, __find_xattr, &ctx);
 	if (ret < 0)
 		return ret;
 
@@ -4522,11 +4697,11 @@ static int process_changed_xattr(struct send_ctx *sctx)
 	int ret = 0;
 
 	ret = iterate_dir_item(sctx->send_root, sctx->left_path,
-			sctx->cmp_key, __process_changed_new_xattr, sctx);
+			__process_changed_new_xattr, sctx);
 	if (ret < 0)
 		goto out;
 	ret = iterate_dir_item(sctx->parent_root, sctx->right_path,
-			sctx->cmp_key, __process_changed_deleted_xattr, sctx);
+			__process_changed_deleted_xattr, sctx);
 
 out:
 	return ret;
@@ -4576,8 +4751,7 @@ static int process_all_new_xattrs(struct send_ctx *sctx)
 			goto out;
 		}
 
-		ret = iterate_dir_item(root, path, &found_key,
-				       __process_new_xattr, sctx);
+		ret = iterate_dir_item(root, path, __process_new_xattr, sctx);
 		if (ret < 0)
 			goto out;
 
@@ -4624,16 +4798,27 @@ static ssize_t fill_read_buf(struct send_ctx *sctx, u64 offset, u32 len)
 	/* initial readahead */
 	memset(&sctx->ra, 0, sizeof(struct file_ra_state));
 	file_ra_state_init(&sctx->ra, inode->i_mapping);
-	btrfs_force_ra(inode->i_mapping, &sctx->ra, NULL, index,
-		       last_index - index + 1);
 
 	while (index <= last_index) {
 		unsigned cur_len = min_t(unsigned, len,
 					 PAGE_SIZE - pg_offset);
-		page = find_or_create_page(inode->i_mapping, index, GFP_KERNEL);
+
+		page = find_lock_page(inode->i_mapping, index);
 		if (!page) {
-			ret = -ENOMEM;
-			break;
+			page_cache_sync_readahead(inode->i_mapping, &sctx->ra,
+				NULL, index, last_index + 1 - index);
+
+			page = find_or_create_page(inode->i_mapping, index,
+					GFP_KERNEL);
+			if (!page) {
+				ret = -ENOMEM;
+				break;
+			}
+		}
+
+		if (PageReadahead(page)) {
+			page_cache_async_readahead(inode->i_mapping, &sctx->ra,
+				NULL, page, index, last_index + 1 - index);
 		}
 
 		if (!PageUptodate(page)) {
@@ -4821,6 +5006,9 @@ static int send_hole(struct send_ctx *sctx, u64 end)
 	u64 len;
 	int ret = 0;
 
+	if (sctx->flags & BTRFS_SEND_FLAG_NO_FILE_DATA)
+		return send_update_extent(sctx, offset, end - offset);
+
 	p = fs_path_alloc();
 	if (!p)
 		return -ENOMEM;
@@ -4842,6 +5030,7 @@ static int send_hole(struct send_ctx *sctx, u64 end)
 			break;
 		offset += len;
 	}
+	sctx->cur_inode_next_write_offset = offset;
 tlv_put_failure:
 	fs_path_free(p);
 	return ret;
@@ -4882,6 +5071,25 @@ static int clone_range(struct send_ctx *sctx,
 	struct btrfs_path *path;
 	struct btrfs_key key;
 	int ret;
+
+	/*
+	 * Prevent cloning from a zero offset with a length matching the sector
+	 * size because in some scenarios this will make the receiver fail.
+	 *
+	 * For example, if in the source filesystem the extent at offset 0
+	 * has a length of sectorsize and it was written using direct IO, then
+	 * it can never be an inline extent (even if compression is enabled).
+	 * Then this extent can be cloned in the original filesystem to a non
+	 * zero file offset, but it may not be possible to clone in the
+	 * destination filesystem because it can be inlined due to compression
+	 * on the destination filesystem (as the receiver's write operations are
+	 * always done using buffered IO). The same happens when the original
+	 * filesystem does not have compression enabled but the destination
+	 * filesystem has.
+	 */
+	if (clone_root->offset == 0 &&
+	    len == sctx->send_root->fs_info->sectorsize)
+		return send_extent_data(sctx, offset, len);
 
 	path = alloc_path_for_send();
 	if (!path)
@@ -5040,6 +5248,10 @@ static int send_write_or_clone(struct send_ctx *sctx,
 		len = btrfs_file_extent_num_bytes(path->nodes[0], ei);
 	}
 
+	if (offset >= sctx->cur_inode_size) {
+		ret = 0;
+		goto out;
+	}
 	if (offset + len > sctx->cur_inode_size)
 		len = sctx->cur_inode_size - offset;
 	if (len == 0) {
@@ -5058,6 +5270,7 @@ static int send_write_or_clone(struct send_ctx *sctx,
 	} else {
 		ret = send_extent_data(sctx, offset, len);
 	}
+	sctx->cur_inode_next_write_offset = offset + len;
 out:
 	return ret;
 }
@@ -5155,15 +5368,18 @@ static int is_extent_unchanged(struct send_ctx *sctx,
 	while (key.offset < ekey->offset + left_len) {
 		ei = btrfs_item_ptr(eb, slot, struct btrfs_file_extent_item);
 		right_type = btrfs_file_extent_type(eb, ei);
-		if (right_type != BTRFS_FILE_EXTENT_REG) {
+		if (right_type != BTRFS_FILE_EXTENT_REG &&
+		    right_type != BTRFS_FILE_EXTENT_INLINE) {
 			ret = 0;
 			goto out;
 		}
 
-		right_disknr = btrfs_file_extent_disk_bytenr(eb, ei);
-		right_len = btrfs_file_extent_num_bytes(eb, ei);
-		right_offset = btrfs_file_extent_offset(eb, ei);
-		right_gen = btrfs_file_extent_generation(eb, ei);
+		if (right_type == BTRFS_FILE_EXTENT_INLINE) {
+			right_len = btrfs_file_extent_inline_len(eb, slot, ei);
+			right_len = PAGE_ALIGN(right_len);
+		} else {
+			right_len = btrfs_file_extent_num_bytes(eb, ei);
+		}
 
 		/*
 		 * Are we at extent 8? If yes, we know the extent is changed.
@@ -5174,6 +5390,23 @@ static int is_extent_unchanged(struct send_ctx *sctx,
 			ret = (left_disknr) ? 0 : 1;
 			goto out;
 		}
+
+		/*
+		 * We just wanted to see if when we have an inline extent, what
+		 * follows it is a regular extent (wanted to check the above
+		 * condition for inline extents too). This should normally not
+		 * happen but it's possible for example when we have an inline
+		 * compressed extent representing data with a size matching
+		 * the page size (currently the same as sector size).
+		 */
+		if (right_type == BTRFS_FILE_EXTENT_INLINE) {
+			ret = 0;
+			goto out;
+		}
+
+		right_disknr = btrfs_file_extent_disk_bytenr(eb, ei);
+		right_offset = btrfs_file_extent_offset(eb, ei);
+		right_gen = btrfs_file_extent_generation(eb, ei);
 
 		left_offset_fixed = left_offset;
 		if (key.offset < ekey->offset) {
@@ -5277,6 +5510,81 @@ out:
 	return ret;
 }
 
+static int range_is_hole_in_parent(struct send_ctx *sctx,
+				   const u64 start,
+				   const u64 end)
+{
+	struct btrfs_path *path;
+	struct btrfs_key key;
+	struct btrfs_root *root = sctx->parent_root;
+	u64 search_start = start;
+	int ret;
+
+	path = alloc_path_for_send();
+	if (!path)
+		return -ENOMEM;
+
+	key.objectid = sctx->cur_ino;
+	key.type = BTRFS_EXTENT_DATA_KEY;
+	key.offset = search_start;
+	ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
+	if (ret < 0)
+		goto out;
+	if (ret > 0 && path->slots[0] > 0)
+		path->slots[0]--;
+
+	while (search_start < end) {
+		struct extent_buffer *leaf = path->nodes[0];
+		int slot = path->slots[0];
+		struct btrfs_file_extent_item *fi;
+		u64 extent_end;
+
+		if (slot >= btrfs_header_nritems(leaf)) {
+			ret = btrfs_next_leaf(root, path);
+			if (ret < 0)
+				goto out;
+			else if (ret > 0)
+				break;
+			continue;
+		}
+
+		btrfs_item_key_to_cpu(leaf, &key, slot);
+		if (key.objectid < sctx->cur_ino ||
+		    key.type < BTRFS_EXTENT_DATA_KEY)
+			goto next;
+		if (key.objectid > sctx->cur_ino ||
+		    key.type > BTRFS_EXTENT_DATA_KEY ||
+		    key.offset >= end)
+			break;
+
+		fi = btrfs_item_ptr(leaf, slot, struct btrfs_file_extent_item);
+		if (btrfs_file_extent_type(leaf, fi) ==
+		    BTRFS_FILE_EXTENT_INLINE) {
+			u64 size = btrfs_file_extent_inline_len(leaf, slot, fi);
+
+			extent_end = ALIGN(key.offset + size,
+					   root->fs_info->sectorsize);
+		} else {
+			extent_end = key.offset +
+				btrfs_file_extent_num_bytes(leaf, fi);
+		}
+		if (extent_end <= start)
+			goto next;
+		if (btrfs_file_extent_disk_bytenr(leaf, fi) == 0) {
+			search_start = extent_end;
+			goto next;
+		}
+		ret = 0;
+		goto out;
+next:
+		path->slots[0]++;
+	}
+	ret = 1;
+out:
+	btrfs_free_path(path);
+	return ret;
+}
+
 static int maybe_send_hole(struct send_ctx *sctx, struct btrfs_path *path,
 			   struct btrfs_key *key)
 {
@@ -5321,8 +5629,17 @@ static int maybe_send_hole(struct send_ctx *sctx, struct btrfs_path *path,
 			return ret;
 	}
 
-	if (sctx->cur_inode_last_extent < key->offset)
-		ret = send_hole(sctx, key->offset);
+	if (sctx->cur_inode_last_extent < key->offset) {
+		ret = range_is_hole_in_parent(sctx,
+					      sctx->cur_inode_last_extent,
+					      key->offset);
+		if (ret < 0)
+			return ret;
+		else if (ret == 0)
+			ret = send_hole(sctx, key->offset);
+		else
+			ret = 0;
+	}
 	sctx->cur_inode_last_extent = extent_end;
 	return ret;
 }
@@ -5478,6 +5795,7 @@ static int finish_inode_if_needed(struct send_ctx *sctx, int at_end)
 	u64 right_gid;
 	int need_chmod = 0;
 	int need_chown = 0;
+	int need_truncate = 1;
 	int pending_move = 0;
 	int refs_processed = 0;
 
@@ -5515,9 +5833,13 @@ static int finish_inode_if_needed(struct send_ctx *sctx, int at_end)
 		need_chown = 1;
 		if (!S_ISLNK(sctx->cur_inode_mode))
 			need_chmod = 1;
+		if (sctx->cur_inode_next_write_offset == sctx->cur_inode_size)
+			need_truncate = 0;
 	} else {
+		u64 old_size;
+
 		ret = get_inode_info(sctx->parent_root, sctx->cur_ino,
-				NULL, NULL, &right_mode, &right_uid,
+				&old_size, NULL, &right_mode, &right_uid,
 				&right_gid, NULL);
 		if (ret < 0)
 			goto out;
@@ -5526,6 +5848,10 @@ static int finish_inode_if_needed(struct send_ctx *sctx, int at_end)
 			need_chown = 1;
 		if (!S_ISLNK(sctx->cur_inode_mode) && left_mode != right_mode)
 			need_chmod = 1;
+		if ((old_size == sctx->cur_inode_size) ||
+		    (sctx->cur_inode_size > old_size &&
+		     sctx->cur_inode_next_write_offset == sctx->cur_inode_size))
+			need_truncate = 0;
 	}
 
 	if (S_ISREG(sctx->cur_inode_mode)) {
@@ -5544,10 +5870,13 @@ static int finish_inode_if_needed(struct send_ctx *sctx, int at_end)
 					goto out;
 			}
 		}
-		ret = send_truncate(sctx, sctx->cur_ino, sctx->cur_inode_gen,
-				sctx->cur_inode_size);
-		if (ret < 0)
-			goto out;
+		if (need_truncate) {
+			ret = send_truncate(sctx, sctx->cur_ino,
+					    sctx->cur_inode_gen,
+					    sctx->cur_inode_size);
+			if (ret < 0)
+				goto out;
+		}
 	}
 
 	if (need_chown) {
@@ -5601,6 +5930,7 @@ static int changed_inode(struct send_ctx *sctx,
 	sctx->cur_ino = key->objectid;
 	sctx->cur_inode_new_gen = 0;
 	sctx->cur_inode_last_extent = (u64)-1;
+	sctx->cur_inode_next_write_offset = 0;
 
 	/*
 	 * Set send_progress to current inode. This will tell all get_cur_xxx
@@ -5940,9 +6270,7 @@ out:
  * Updates compare related fields in sctx and simply forwards to the actual
  * changed_xxx functions.
  */
-static int changed_cb(struct btrfs_root *left_root,
-		      struct btrfs_root *right_root,
-		      struct btrfs_path *left_path,
+static int changed_cb(struct btrfs_path *left_path,
 		      struct btrfs_path *right_path,
 		      struct btrfs_key *key,
 		      enum btrfs_compare_tree_result result,
@@ -6024,8 +6352,8 @@ static int full_send_tree(struct send_ctx *sctx)
 		slot = path->slots[0];
 		btrfs_item_key_to_cpu(eb, &found_key, slot);
 
-		ret = changed_cb(send_root, NULL, path, NULL,
-				&found_key, BTRFS_COMPARE_TREE_NEW, sctx);
+		ret = changed_cb(path, NULL, &found_key,
+				 BTRFS_COMPARE_TREE_NEW, sctx);
 		if (ret < 0)
 			goto out;
 
@@ -6138,18 +6466,17 @@ static void btrfs_root_dec_send_in_progress(struct btrfs_root* root)
 	 */
 	if (root->send_in_progress < 0)
 		btrfs_err(root->fs_info,
-			  "send_in_progres unbalanced %d root %llu",
+			  "send_in_progress unbalanced %d root %llu",
 			  root->send_in_progress, root->root_key.objectid);
 	spin_unlock(&root->root_item_lock);
 }
 
-long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
+long btrfs_ioctl_send(struct file *mnt_file, struct btrfs_ioctl_send_args *arg)
 {
 	int ret = 0;
 	struct btrfs_root *send_root = BTRFS_I(file_inode(mnt_file))->root;
 	struct btrfs_fs_info *fs_info = send_root->fs_info;
 	struct btrfs_root *clone_root;
-	struct btrfs_ioctl_send_args *arg = NULL;
 	struct btrfs_key key;
 	struct send_ctx *sctx = NULL;
 	u32 i;
@@ -6185,15 +6512,13 @@ long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
 		goto out;
 	}
 
-	arg = memdup_user(arg_, sizeof(*arg));
-	if (IS_ERR(arg)) {
-		ret = PTR_ERR(arg);
-		arg = NULL;
-		goto out;
-	}
-
+	/*
+	 * Check that we don't overflow at later allocations, we request
+	 * clone_sources_count + 1 items, and compare to unsigned long inside
+	 * access_ok.
+	 */
 	if (arg->clone_sources_count >
-	    ULLONG_MAX / sizeof(*arg->clone_sources)) {
+	    ULONG_MAX / sizeof(struct clone_root) - 1) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -6242,22 +6567,16 @@ long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
 	sctx->clone_roots_cnt = arg->clone_sources_count;
 
 	sctx->send_max_size = BTRFS_SEND_BUF_SIZE;
-	sctx->send_buf = kmalloc(sctx->send_max_size, GFP_KERNEL | __GFP_NOWARN);
+	sctx->send_buf = kvmalloc(sctx->send_max_size, GFP_KERNEL);
 	if (!sctx->send_buf) {
-		sctx->send_buf = vmalloc(sctx->send_max_size);
-		if (!sctx->send_buf) {
-			ret = -ENOMEM;
-			goto out;
-		}
+		ret = -ENOMEM;
+		goto out;
 	}
 
-	sctx->read_buf = kmalloc(BTRFS_SEND_READ_SIZE, GFP_KERNEL | __GFP_NOWARN);
+	sctx->read_buf = kvmalloc(BTRFS_SEND_READ_SIZE, GFP_KERNEL);
 	if (!sctx->read_buf) {
-		sctx->read_buf = vmalloc(BTRFS_SEND_READ_SIZE);
-		if (!sctx->read_buf) {
-			ret = -ENOMEM;
-			goto out;
-		}
+		ret = -ENOMEM;
+		goto out;
 	}
 
 	sctx->pending_dir_moves = RB_ROOT;
@@ -6266,25 +6585,19 @@ long btrfs_ioctl_send(struct file *mnt_file, void __user *arg_)
 
 	alloc_size = sizeof(struct clone_root) * (arg->clone_sources_count + 1);
 
-	sctx->clone_roots = kzalloc(alloc_size, GFP_KERNEL | __GFP_NOWARN);
+	sctx->clone_roots = kzalloc(alloc_size, GFP_KERNEL);
 	if (!sctx->clone_roots) {
-		sctx->clone_roots = vzalloc(alloc_size);
-		if (!sctx->clone_roots) {
-			ret = -ENOMEM;
-			goto out;
-		}
+		ret = -ENOMEM;
+		goto out;
 	}
 
 	alloc_size = arg->clone_sources_count * sizeof(*arg->clone_sources);
 
 	if (arg->clone_sources_count) {
-		clone_sources_tmp = kmalloc(alloc_size, GFP_KERNEL | __GFP_NOWARN);
+		clone_sources_tmp = kvmalloc(alloc_size, GFP_KERNEL);
 		if (!clone_sources_tmp) {
-			clone_sources_tmp = vmalloc(alloc_size);
-			if (!clone_sources_tmp) {
-				ret = -ENOMEM;
-				goto out;
-			}
+			ret = -ENOMEM;
+			goto out;
 		}
 
 		ret = copy_from_user(clone_sources_tmp, arg->clone_sources,
@@ -6439,7 +6752,6 @@ out:
 	if (sctx && !IS_ERR_OR_NULL(sctx->parent_root))
 		btrfs_root_dec_send_in_progress(sctx->parent_root);
 
-	kfree(arg);
 	kvfree(clone_sources_tmp);
 
 	if (sctx) {

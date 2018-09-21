@@ -142,32 +142,28 @@ void rt2x00mac_tx(struct ieee80211_hw *hw,
 	if (!rt2x00dev->ops->hw->set_rts_threshold &&
 	    (tx_info->control.rates[0].flags & (IEEE80211_TX_RC_USE_RTS_CTS |
 						IEEE80211_TX_RC_USE_CTS_PROTECT))) {
-		if (rt2x00queue_available(queue) <= 1)
-			goto exit_fail;
+		if (rt2x00queue_available(queue) <= 1) {
+			/*
+			 * Recheck for full queue under lock to avoid race
+			 * conditions with rt2x00lib_txdone().
+			 */
+			spin_lock(&queue->tx_lock);
+			if (rt2x00queue_threshold(queue))
+				rt2x00queue_pause_queue(queue);
+			spin_unlock(&queue->tx_lock);
+
+			goto exit_free_skb;
+		}
 
 		if (rt2x00mac_tx_rts_cts(rt2x00dev, queue, skb))
-			goto exit_fail;
+			goto exit_free_skb;
 	}
 
 	if (unlikely(rt2x00queue_write_tx_frame(queue, skb, control->sta, false)))
-		goto exit_fail;
-
-	/*
-	 * Pausing queue has to be serialized with rt2x00lib_txdone(). Note
-	 * we should not use spin_lock_bh variant as bottom halve was already
-	 * disabled before ieee80211_xmit() call.
-	 */
-	spin_lock(&queue->tx_lock);
-	if (rt2x00queue_threshold(queue))
-		rt2x00queue_pause_queue(queue);
-	spin_unlock(&queue->tx_lock);
+		goto exit_free_skb;
 
 	return;
 
- exit_fail:
-	spin_lock(&queue->tx_lock);
-	rt2x00queue_pause_queue(queue);
-	spin_unlock(&queue->tx_lock);
  exit_free_skb:
 	ieee80211_free_txskb(hw, skb);
 }
@@ -320,6 +316,9 @@ int rt2x00mac_config(struct ieee80211_hw *hw, u32 changed)
 	 */
 	rt2x00queue_stop_queue(rt2x00dev->rx);
 
+	/* Do not race with with link tuner. */
+	mutex_lock(&rt2x00dev->conf_mutex);
+
 	/*
 	 * When we've just turned on the radio, we want to reprogram
 	 * everything to ensure a consistent state
@@ -334,6 +333,8 @@ int rt2x00mac_config(struct ieee80211_hw *hw, u32 changed)
 	 * have been made since the last configuration change.
 	 */
 	rt2x00lib_config_antenna(rt2x00dev, rt2x00dev->default_ant);
+
+	mutex_unlock(&rt2x00dev->conf_mutex);
 
 	/* Turn RX back on */
 	rt2x00queue_start_queue(rt2x00dev->rx);
@@ -539,9 +540,8 @@ int rt2x00mac_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			 struct ieee80211_sta *sta)
 {
 	struct rt2x00_dev *rt2x00dev = hw->priv;
-	struct rt2x00_sta *sta_priv = sta_to_rt2x00_sta(sta);
 
-	return rt2x00dev->ops->lib->sta_remove(rt2x00dev, sta_priv->wcid);
+	return rt2x00dev->ops->lib->sta_remove(rt2x00dev, sta);
 }
 EXPORT_SYMBOL_GPL(rt2x00mac_sta_remove);
 

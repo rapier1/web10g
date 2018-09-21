@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  bootmem - A boot-time physical memory allocator and configurator
  *
@@ -53,7 +54,7 @@ early_param("bootmem_debug", bootmem_debug_setup);
 
 static unsigned long __init bootmap_bytes(unsigned long pages)
 {
-	unsigned long bytes = DIV_ROUND_UP(pages, 8);
+	unsigned long bytes = DIV_ROUND_UP(pages, BITS_PER_BYTE);
 
 	return ALIGN(bytes, sizeof(long));
 }
@@ -409,7 +410,7 @@ void __init free_bootmem_node(pg_data_t *pgdat, unsigned long physaddr,
 
 /**
  * free_bootmem - mark a page range as usable
- * @addr: starting physical address of the range
+ * @physaddr: starting physical address of the range
  * @size: size of the range in bytes
  *
  * Partial pages will be considered reserved and left as they are.

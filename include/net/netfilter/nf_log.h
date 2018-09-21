@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NF_LOG_H
 #define _NF_LOG_H
 
@@ -50,6 +51,9 @@ struct nf_logger {
 	nf_logfn 		*logfn;
 	struct module		*me;
 };
+
+/* sysctl_nf_log_all_netns - allow LOG target in all network namespaces */
+extern int sysctl_nf_log_all_netns;
 
 /* Function to register/unregister log function. */
 int nf_log_register(u_int8_t pf, struct nf_logger *logger);

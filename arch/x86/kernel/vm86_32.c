@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (C) 1994  Linus Torvalds
  *
@@ -35,6 +36,7 @@
 #include <linux/interrupt.h>
 #include <linux/syscalls.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <linux/kernel.h>
 #include <linux/signal.h>
 #include <linux/string.h>
@@ -53,6 +55,7 @@
 #include <asm/irq.h>
 #include <asm/traps.h>
 #include <asm/vm86.h>
+#include <asm/switch_to.h>
 
 /*
  * Known problems:
@@ -92,7 +95,6 @@
 
 void save_v86_state(struct kernel_vm86_regs *regs, int retval)
 {
-	struct tss_struct *tss;
 	struct task_struct *tsk = current;
 	struct vm86plus_struct __user *user;
 	struct vm86 *vm86 = current->thread.vm86;
@@ -144,12 +146,13 @@ void save_v86_state(struct kernel_vm86_regs *regs, int retval)
 		do_exit(SIGSEGV);
 	}
 
-	tss = &per_cpu(cpu_tss, get_cpu());
+	preempt_disable();
 	tsk->thread.sp0 = vm86->saved_sp0;
 	tsk->thread.sysenter_cs = __KERNEL_CS;
-	load_sp0(tss, &tsk->thread);
+	update_sp0(tsk);
+	refresh_sysenter_cs(&tsk->thread);
 	vm86->saved_sp0 = 0;
-	put_cpu();
+	preempt_enable();
 
 	memcpy(&regs->pt, &vm86->regs32, sizeof(struct pt_regs));
 
@@ -163,6 +166,7 @@ static void mark_screen_rdonly(struct mm_struct *mm)
 	struct vm_area_struct *vma;
 	spinlock_t *ptl;
 	pgd_t *pgd;
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 	pte_t *pte;
@@ -172,7 +176,10 @@ static void mark_screen_rdonly(struct mm_struct *mm)
 	pgd = pgd_offset(mm, 0xA0000);
 	if (pgd_none_or_clear_bad(pgd))
 		goto out;
-	pud = pud_offset(pgd, 0xA0000);
+	p4d = p4d_offset(pgd, 0xA0000);
+	if (p4d_none_or_clear_bad(p4d))
+		goto out;
+	pud = pud_offset(p4d, 0xA0000);
 	if (pud_none_or_clear_bad(pud))
 		goto out;
 	pmd = pmd_offset(pud, 0xA0000);
@@ -192,7 +199,7 @@ static void mark_screen_rdonly(struct mm_struct *mm)
 	pte_unmap_unlock(pte, ptl);
 out:
 	up_write(&mm->mmap_sem);
-	flush_tlb();
+	flush_tlb_mm_range(mm, 0xA0000, 0xA0000 + 32*PAGE_SIZE, 0UL);
 }
 
 
@@ -231,7 +238,6 @@ SYSCALL_DEFINE2(vm86, unsigned long, cmd, unsigned long, arg)
 
 static long do_sys_vm86(struct vm86plus_struct __user *user_vm86, bool plus)
 {
-	struct tss_struct *tss;
 	struct task_struct *tsk = current;
 	struct vm86 *vm86 = tsk->thread.vm86;
 	struct kernel_vm86_regs vm86regs;
@@ -359,15 +365,17 @@ static long do_sys_vm86(struct vm86plus_struct __user *user_vm86, bool plus)
 	vm86->saved_sp0 = tsk->thread.sp0;
 	lazy_save_gs(vm86->regs32.gs);
 
-	tss = &per_cpu(cpu_tss, get_cpu());
 	/* make room for real-mode segments */
+	preempt_disable();
 	tsk->thread.sp0 += 16;
 
-	if (static_cpu_has(X86_FEATURE_SEP))
+	if (static_cpu_has(X86_FEATURE_SEP)) {
 		tsk->thread.sysenter_cs = 0;
+		refresh_sysenter_cs(&tsk->thread);
+	}
 
-	load_sp0(tss, &tsk->thread);
-	put_cpu();
+	update_sp0(tsk);
+	preempt_enable();
 
 	if (vm86->flags & VM86_SCREEN_BITMAP)
 		mark_screen_rdonly(tsk->mm);
@@ -719,7 +727,8 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 	return;
 
 check_vip:
-	if (VEFLAGS & X86_EFLAGS_VIP) {
+	if ((VEFLAGS & (X86_EFLAGS_VIP | X86_EFLAGS_VIF)) ==
+	    (X86_EFLAGS_VIP | X86_EFLAGS_VIF)) {
 		save_v86_state(regs, VM86_STI);
 		return;
 	}

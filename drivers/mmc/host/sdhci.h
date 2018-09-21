@@ -17,6 +17,8 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/io.h>
+#include <linux/leds.h>
+#include <linux/interrupt.h>
 
 #include <linux/mmc/host.h>
 
@@ -132,6 +134,7 @@
 #define  SDHCI_INT_CARD_REMOVE	0x00000080
 #define  SDHCI_INT_CARD_INT	0x00000100
 #define  SDHCI_INT_RETUNE	0x00001000
+#define  SDHCI_INT_CQE		0x00004000
 #define  SDHCI_INT_ERROR	0x00008000
 #define  SDHCI_INT_TIMEOUT	0x00010000
 #define  SDHCI_INT_CRC		0x00020000
@@ -155,6 +158,13 @@
 		SDHCI_INT_DATA_END_BIT | SDHCI_INT_ADMA_ERROR | \
 		SDHCI_INT_BLK_GAP)
 #define SDHCI_INT_ALL_MASK	((unsigned int)-1)
+
+#define SDHCI_CQE_INT_ERR_MASK ( \
+	SDHCI_INT_ADMA_ERROR | SDHCI_INT_BUS_POWER | SDHCI_INT_DATA_END_BIT | \
+	SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_TIMEOUT | SDHCI_INT_INDEX | \
+	SDHCI_INT_END_BIT | SDHCI_INT_CRC | SDHCI_INT_TIMEOUT)
+
+#define SDHCI_CQE_INT_MASK (SDHCI_CQE_INT_ERR_MASK | SDHCI_INT_CQE)
 
 #define SDHCI_ACMD12_ERR	0x3C
 
@@ -322,6 +332,14 @@ struct sdhci_adma2_64_desc {
 /* Allow for a a command request and a data request at the same time */
 #define SDHCI_MAX_MRQS		2
 
+/*
+ * 48bit command and 136 bit response in 100KHz clock could take upto 2.48ms.
+ * However since the start time of the command, the time between
+ * command and response, and the time between response and start of data is
+ * not known, set the command transfer time to 10ms.
+ */
+#define MMC_CMD_TRANSFER_TIME	(10 * NSEC_PER_MSEC) /* max 10 ms */
+
 enum sdhci_cookie {
 	COOKIE_UNMAPPED,
 	COOKIE_PRE_MAPPED,	/* mapped by sdhci_pre_req() */
@@ -425,9 +443,19 @@ struct sdhci_host {
 #define SDHCI_QUIRK2_ACMD23_BROKEN			(1<<14)
 /* Broken Clock divider zero in controller */
 #define SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN		(1<<15)
+/* Controller has CRC in 136 bit Command Response */
+#define SDHCI_QUIRK2_RSP_136_HAS_CRC			(1<<16)
+/*
+ * Disable HW timeout if the requested timeout is more than the maximum
+ * obtainable timeout.
+ */
+#define SDHCI_QUIRK2_DISABLE_HW_TIMEOUT			(1<<17)
 
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
+	char *bounce_buffer;	/* For packing SDMA reads/writes */
+	dma_addr_t bounce_addr;
+	unsigned int bounce_buffer_size;
 
 	const struct sdhci_ops *ops;	/* Low level hw interface */
 
@@ -472,6 +500,7 @@ struct sdhci_host {
 	bool bus_on;		/* Bus power prevents runtime suspend */
 	bool preset_enabled;	/* Preset is enabled */
 	bool pending_reset;	/* Cmd/data reset is pending */
+	bool irq_wake_enabled;	/* IRQ wakeup is enabled */
 
 	struct mmc_request *mrqs_done[SDHCI_MAX_MRQS];	/* Requests done */
 	struct mmc_command *cmd;	/* Current command */
@@ -516,6 +545,10 @@ struct sdhci_host {
 	/* cached registers */
 	u32			ier;
 
+	bool			cqe_on;		/* CQE is operating */
+	u32			cqe_ier;	/* CQE interrupt mask */
+	u32			cqe_err_ier;	/* CQE error interrupt mask */
+
 	wait_queue_head_t	buf_ready_int;	/* Waitqueue for Buffer Read Ready interrupt */
 	unsigned int		tuning_done;	/* Condition flag set when CMD19 succeeds */
 
@@ -524,6 +557,13 @@ struct sdhci_host {
 #define SDHCI_TUNING_MODE_1	0
 #define SDHCI_TUNING_MODE_2	1
 #define SDHCI_TUNING_MODE_3	2
+	/* Delay (ms) between tuning commands */
+	int			tuning_delay;
+
+	/* Host SDMA buffer boundary. */
+	u32			sdma_boundary;
+
+	u64			data_timeout;
 
 	unsigned long private[0] ____cacheline_aligned;
 };
@@ -542,9 +582,12 @@ struct sdhci_ops {
 	void	(*set_power)(struct sdhci_host *host, unsigned char mode,
 			     unsigned short vdd);
 
+	u32		(*irq)(struct sdhci_host *host, u32 intmask);
+
 	int		(*enable_dma)(struct sdhci_host *host);
 	unsigned int	(*get_max_clock)(struct sdhci_host *host);
 	unsigned int	(*get_min_clock)(struct sdhci_host *host);
+	/* get_timeout_clock should return clk rate in unit of Hz */
 	unsigned int	(*get_timeout_clock)(struct sdhci_host *host);
 	unsigned int	(*get_max_timeout_count)(struct sdhci_host *host);
 	void		(*set_timeout)(struct sdhci_host *host,
@@ -560,10 +603,6 @@ struct sdhci_ops {
 	void    (*adma_workaround)(struct sdhci_host *host, u32 intmask);
 	void    (*card_event)(struct sdhci_host *host);
 	void	(*voltage_switch)(struct sdhci_host *host);
-	int	(*select_drive_strength)(struct sdhci_host *host,
-					 struct mmc_card *card,
-					 unsigned int max_dtr, int host_drv,
-					 int card_drv, int *drv_type);
 };
 
 #ifdef CONFIG_MMC_SDHCI_IO_ACCESSORS
@@ -650,24 +689,23 @@ static inline u8 sdhci_readb(struct sdhci_host *host, int reg)
 
 #endif /* CONFIG_MMC_SDHCI_IO_ACCESSORS */
 
-extern struct sdhci_host *sdhci_alloc_host(struct device *dev,
-	size_t priv_size);
-extern void sdhci_free_host(struct sdhci_host *host);
+struct sdhci_host *sdhci_alloc_host(struct device *dev, size_t priv_size);
+void sdhci_free_host(struct sdhci_host *host);
 
 static inline void *sdhci_priv(struct sdhci_host *host)
 {
 	return host->private;
 }
 
-extern void sdhci_card_detect(struct sdhci_host *host);
-extern void __sdhci_read_caps(struct sdhci_host *host, u16 *ver, u32 *caps,
-			      u32 *caps1);
-extern int sdhci_setup_host(struct sdhci_host *host);
-extern int __sdhci_add_host(struct sdhci_host *host);
-extern int sdhci_add_host(struct sdhci_host *host);
-extern void sdhci_remove_host(struct sdhci_host *host, int dead);
-extern void sdhci_send_command(struct sdhci_host *host,
-				struct mmc_command *cmd);
+void sdhci_card_detect(struct sdhci_host *host);
+void __sdhci_read_caps(struct sdhci_host *host, u16 *ver, u32 *caps,
+		       u32 *caps1);
+int sdhci_setup_host(struct sdhci_host *host);
+void sdhci_cleanup_host(struct sdhci_host *host);
+int __sdhci_add_host(struct sdhci_host *host);
+int sdhci_add_host(struct sdhci_host *host);
+void sdhci_remove_host(struct sdhci_host *host, int dead);
+void sdhci_send_command(struct sdhci_host *host, struct mmc_command *cmd);
 
 static inline void sdhci_read_caps(struct sdhci_host *host)
 {
@@ -691,13 +729,23 @@ void sdhci_set_bus_width(struct sdhci_host *host, int width);
 void sdhci_reset(struct sdhci_host *host, u8 mask);
 void sdhci_set_uhs_signaling(struct sdhci_host *host, unsigned timing);
 int sdhci_execute_tuning(struct mmc_host *mmc, u32 opcode);
+void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios);
+int sdhci_start_signal_voltage_switch(struct mmc_host *mmc,
+				      struct mmc_ios *ios);
+void sdhci_enable_sdio_irq(struct mmc_host *mmc, int enable);
 
 #ifdef CONFIG_PM
-extern int sdhci_suspend_host(struct sdhci_host *host);
-extern int sdhci_resume_host(struct sdhci_host *host);
-extern void sdhci_enable_irq_wakeups(struct sdhci_host *host);
-extern int sdhci_runtime_suspend_host(struct sdhci_host *host);
-extern int sdhci_runtime_resume_host(struct sdhci_host *host);
+int sdhci_suspend_host(struct sdhci_host *host);
+int sdhci_resume_host(struct sdhci_host *host);
+int sdhci_runtime_suspend_host(struct sdhci_host *host);
+int sdhci_runtime_resume_host(struct sdhci_host *host);
 #endif
+
+void sdhci_cqe_enable(struct mmc_host *mmc);
+void sdhci_cqe_disable(struct mmc_host *mmc, bool recovery);
+bool sdhci_cqe_irq(struct sdhci_host *host, u32 intmask, int *cmd_error,
+		   int *data_error);
+
+void sdhci_dumpregs(struct sdhci_host *host);
 
 #endif /* __SDHCI_HW_H */

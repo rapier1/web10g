@@ -1,22 +1,5 @@
-/* Intel(R) Ethernet Switch Host Interface Driver
- * Copyright(c) 2013 - 2016 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * The full GNU General Public License is included in this distribution in
- * the file called "COPYING".
- *
- * Contact Information:
- * e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- */
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 2013 - 2018 Intel Corporation. */
 
 #include <linux/types.h>
 #include <linux/module.h>
@@ -28,13 +11,13 @@
 
 #include "fm10k.h"
 
-#define DRV_VERSION	"0.21.2-k"
+#define DRV_VERSION	"0.23.4-k"
 #define DRV_SUMMARY	"Intel(R) Ethernet Switch Host Interface Driver"
 const char fm10k_driver_version[] = DRV_VERSION;
 char fm10k_driver_name[] = "fm10k";
 static const char fm10k_driver_string[] = DRV_SUMMARY;
 static const char fm10k_copyright[] =
-	"Copyright (c) 2013 - 2016 Intel Corporation.";
+	"Copyright(c) 2013 - 2018 Intel Corporation.";
 
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION(DRV_SUMMARY);
@@ -251,6 +234,7 @@ static bool fm10k_can_reuse_rx_page(struct fm10k_rx_buffer *rx_buffer,
 /**
  * fm10k_add_rx_frag - Add contents of Rx buffer to sk_buff
  * @rx_buffer: buffer containing page to add
+ * @size: packet size from rx_desc
  * @rx_desc: descriptor containing length of buffer written by hardware
  * @skb: sk_buff to place the data into
  *
@@ -263,12 +247,12 @@ static bool fm10k_can_reuse_rx_page(struct fm10k_rx_buffer *rx_buffer,
  * true if the buffer can be reused by the interface.
  **/
 static bool fm10k_add_rx_frag(struct fm10k_rx_buffer *rx_buffer,
+			      unsigned int size,
 			      union fm10k_rx_desc *rx_desc,
 			      struct sk_buff *skb)
 {
 	struct page *page = rx_buffer->page;
 	unsigned char *va = page_address(page) + rx_buffer->page_offset;
-	unsigned int size = le16_to_cpu(rx_desc->w.length);
 #if (PAGE_SIZE < 8192)
 	unsigned int truesize = FM10K_RX_BUFSZ;
 #else
@@ -314,6 +298,7 @@ static struct sk_buff *fm10k_fetch_rx_buffer(struct fm10k_ring *rx_ring,
 					     union fm10k_rx_desc *rx_desc,
 					     struct sk_buff *skb)
 {
+	unsigned int size = le16_to_cpu(rx_desc->w.length);
 	struct fm10k_rx_buffer *rx_buffer;
 	struct page *page;
 
@@ -350,11 +335,11 @@ static struct sk_buff *fm10k_fetch_rx_buffer(struct fm10k_ring *rx_ring,
 	dma_sync_single_range_for_cpu(rx_ring->dev,
 				      rx_buffer->dma,
 				      rx_buffer->page_offset,
-				      FM10K_RX_BUFSZ,
+				      size,
 				      DMA_FROM_DEVICE);
 
 	/* pull page into skb */
-	if (fm10k_add_rx_frag(rx_buffer, rx_desc, skb)) {
+	if (fm10k_add_rx_frag(rx_buffer, size, rx_desc, skb)) {
 		/* hand second half of page back to the ring */
 		fm10k_reuse_rx_page(rx_ring, rx_buffer);
 	} else {
@@ -442,15 +427,14 @@ static void fm10k_type_trans(struct fm10k_ring *rx_ring,
 			l2_accel = NULL;
 	}
 
-	skb->protocol = eth_type_trans(skb, dev);
-
+	/* Record Rx queue, or update macvlan statistics */
 	if (!l2_accel)
-		return;
+		skb_record_rx_queue(skb, rx_ring->queue_index);
+	else
+		macvlan_count_rx(netdev_priv(dev), skb->len + ETH_HLEN, true,
+				 false);
 
-	/* update MACVLAN statistics */
-	macvlan_count_rx(netdev_priv(dev), skb->len + ETH_HLEN, 1,
-			 !!(rx_desc->w.hdr_info &
-			    cpu_to_le16(FM10K_RXD_HDR_INFO_XC_MASK)));
+	skb->protocol = eth_type_trans(skb, dev);
 }
 
 /**
@@ -473,9 +457,9 @@ static unsigned int fm10k_process_skb_fields(struct fm10k_ring *rx_ring,
 
 	fm10k_rx_checksum(rx_ring, rx_desc, skb);
 
-	FM10K_CB(skb)->fi.w.vlan = rx_desc->w.vlan;
+	FM10K_CB(skb)->tstamp = rx_desc->q.timestamp;
 
-	skb_record_rx_queue(skb, rx_ring->queue_index);
+	FM10K_CB(skb)->fi.w.vlan = rx_desc->w.vlan;
 
 	FM10K_CB(skb)->fi.d.glort = rx_desc->d.glort;
 
@@ -802,9 +786,10 @@ static int fm10k_tso(struct fm10k_ring *tx_ring,
 	tx_desc->mss = cpu_to_le16(skb_shinfo(skb)->gso_size);
 
 	return 1;
+
 err_vxlan:
 	tx_ring->netdev->features &= ~NETIF_F_GSO_UDP_TUNNEL;
-	if (!net_ratelimit())
+	if (net_ratelimit())
 		netdev_err(tx_ring->netdev,
 			   "TSO requested for unsupported tunnel, disabling offload\n");
 	return -1;
@@ -872,6 +857,7 @@ static void fm10k_tx_csum(struct fm10k_ring *tx_ring,
 	case IPPROTO_GRE:
 		if (skb->encapsulation)
 			break;
+		/* fall through */
 	default:
 		if (unlikely(net_ratelimit())) {
 			dev_warn(tx_ring->dev,
@@ -1171,13 +1157,13 @@ bool fm10k_check_tx_hang(struct fm10k_ring *tx_ring)
 		/* update completed stats and continue */
 		tx_ring->tx_stats.tx_done_old = tx_done;
 		/* reset the countdown */
-		clear_bit(__FM10K_HANG_CHECK_ARMED, &tx_ring->state);
+		clear_bit(__FM10K_HANG_CHECK_ARMED, tx_ring->state);
 
 		return false;
 	}
 
 	/* make sure it is true for two checks in a row */
-	return test_and_set_bit(__FM10K_HANG_CHECK_ARMED, &tx_ring->state);
+	return test_and_set_bit(__FM10K_HANG_CHECK_ARMED, tx_ring->state);
 }
 
 /**
@@ -1187,9 +1173,9 @@ bool fm10k_check_tx_hang(struct fm10k_ring *tx_ring)
 void fm10k_tx_timeout_reset(struct fm10k_intfc *interface)
 {
 	/* Do the reset outside of interrupt context */
-	if (!test_bit(__FM10K_DOWN, &interface->state)) {
+	if (!test_bit(__FM10K_DOWN, interface->state)) {
 		interface->tx_timeout_count++;
-		interface->flags |= FM10K_FLAG_RESET_REQUESTED;
+		set_bit(FM10K_FLAG_RESET_REQUESTED, interface->flags);
 		fm10k_service_event_schedule(interface);
 	}
 }
@@ -1210,7 +1196,7 @@ static bool fm10k_clean_tx_irq(struct fm10k_q_vector *q_vector,
 	unsigned int budget = q_vector->tx.work_limit;
 	unsigned int i = tx_ring->next_to_clean;
 
-	if (test_bit(__FM10K_DOWN, &interface->state))
+	if (test_bit(__FM10K_DOWN, interface->state))
 		return true;
 
 	tx_buffer = &tx_ring->tx_buffer[i];
@@ -1225,7 +1211,7 @@ static bool fm10k_clean_tx_irq(struct fm10k_q_vector *q_vector,
 			break;
 
 		/* prevent any other reads prior to eop_desc */
-		read_barrier_depends();
+		smp_rmb();
 
 		/* if DD is not set pending work has not been completed */
 		if (!(eop_desc->flags & FM10K_TXD_FLAG_DONE))
@@ -1340,7 +1326,7 @@ static bool fm10k_clean_tx_irq(struct fm10k_q_vector *q_vector,
 		smp_mb();
 		if (__netif_subqueue_stopped(tx_ring->netdev,
 					     tx_ring->queue_index) &&
-		    !test_bit(__FM10K_DOWN, &interface->state)) {
+		    !test_bit(__FM10K_DOWN, interface->state)) {
 			netif_wake_subqueue(tx_ring->netdev,
 					    tx_ring->queue_index);
 			++tx_ring->tx_stats.restart_queue;

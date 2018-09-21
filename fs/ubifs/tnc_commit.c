@@ -57,6 +57,8 @@ static int make_idx_node(struct ubifs_info *c, struct ubifs_idx_node *idx,
 			ubifs_dump_znode(c, znode);
 			if (zbr->znode)
 				ubifs_dump_znode(c, zbr->znode);
+
+			return -EINVAL;
 		}
 	}
 	ubifs_prepare_node(c, idx, len, 0);
@@ -364,7 +366,8 @@ static int layout_in_gaps(struct ubifs_info *c, int cnt)
 
 	dbg_gc("%d znodes to write", cnt);
 
-	c->gap_lebs = kmalloc(sizeof(int) * (c->lst.idx_lebs + 1), GFP_NOFS);
+	c->gap_lebs = kmalloc_array(c->lst.idx_lebs + 1, sizeof(int),
+				    GFP_NOFS);
 	if (!c->gap_lebs)
 		return -ENOMEM;
 
@@ -672,7 +675,7 @@ static int alloc_idx_lebs(struct ubifs_info *c, int cnt)
 	dbg_cmt("need about %d empty LEBS for TNC commit", leb_cnt);
 	if (!leb_cnt)
 		return 0;
-	c->ilebs = kmalloc(leb_cnt * sizeof(int), GFP_NOFS);
+	c->ilebs = kmalloc_array(leb_cnt, sizeof(int), GFP_NOFS);
 	if (!c->ilebs)
 		return -ENOMEM;
 	for (i = 0; i < leb_cnt; i++) {
@@ -859,6 +862,8 @@ static int write_index(struct ubifs_info *c)
 				ubifs_dump_znode(c, znode);
 				if (zbr->znode)
 					ubifs_dump_znode(c, zbr->znode);
+
+				return -EINVAL;
 			}
 		}
 		len = ubifs_idx_node_sz(c, znode->child_cnt);

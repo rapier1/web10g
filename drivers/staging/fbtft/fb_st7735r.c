@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * FB driver for the ST7735R LCD Controller
  *
  * Copyright (C) 2013 Noralf Tronnes
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -25,7 +16,7 @@
 #define DEFAULT_GAMMA   "0F 1A 0F 18 2F 28 20 22 1F 1B 23 37 00 07 02 10\n" \
 			"0F 1B 0F 17 33 2C 29 2E 30 30 39 3F 00 07 03 10"
 
-static s16 default_init_sequence[] = {
+static const s16 default_init_sequence[] = {
 	-1, MIPI_DCS_SOFT_RESET,
 	-2, 150,                               /* delay */
 
@@ -143,7 +134,7 @@ static int set_var(struct fbtft_par *par)
  * VRF0N VOS0N PK0N PK1N PK2N PK3N PK4N PK5N PK6N PK7N PK8N PK9N SELV0N SELV1N SELV62N SELV63N
  */
 #define CURVE(num, idx)  curves[num * par->gamma.num_values + idx]
-static int set_gamma(struct fbtft_par *par, unsigned long *curves)
+static int set_gamma(struct fbtft_par *par, u32 *curves)
 {
 	int i, j;
 

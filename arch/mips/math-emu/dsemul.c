@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/err.h>
 #include <linux/slab.h>
+#include <linux/mm_types.h>
+#include <linux/sched/task.h>
 
 #include <asm/branch.h>
 #include <asm/cacheflush.h>

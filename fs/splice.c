@@ -33,6 +33,8 @@
 #include <linux/gfp.h>
 #include <linux/socket.h>
 #include <linux/compat.h>
+#include <linux/sched/signal.h>
+
 #include "internal.h"
 
 /*
@@ -245,25 +247,21 @@ ssize_t add_to_pipe(struct pipe_inode_info *pipe, struct pipe_buffer *buf)
 }
 EXPORT_SYMBOL(add_to_pipe);
 
-void spd_release_page(struct splice_pipe_desc *spd, unsigned int i)
-{
-	put_page(spd->pages[i]);
-}
-
 /*
  * Check if we need to grow the arrays holding pages and partial page
  * descriptions.
  */
 int splice_grow_spd(const struct pipe_inode_info *pipe, struct splice_pipe_desc *spd)
 {
-	unsigned int buffers = ACCESS_ONCE(pipe->buffers);
+	unsigned int buffers = READ_ONCE(pipe->buffers);
 
 	spd->nr_pages_max = buffers;
 	if (buffers <= PIPE_DEF_BUFFERS)
 		return 0;
 
-	spd->pages = kmalloc(buffers * sizeof(struct page *), GFP_KERNEL);
-	spd->partial = kmalloc(buffers * sizeof(struct partial_page), GFP_KERNEL);
+	spd->pages = kmalloc_array(buffers, sizeof(struct page *), GFP_KERNEL);
+	spd->partial = kmalloc_array(buffers, sizeof(struct partial_page),
+				     GFP_KERNEL);
 
 	if (spd->pages && spd->partial)
 		return 0;
@@ -307,7 +305,7 @@ ssize_t generic_file_splice_read(struct file *in, loff_t *ppos,
 	idx = to.idx;
 	init_sync_kiocb(&kiocb, in);
 	kiocb.ki_pos = *ppos;
-	ret = in->f_op->read_iter(&kiocb, &to);
+	ret = call_read_iter(in, &kiocb, &to);
 	if (ret > 0) {
 		*ppos = kiocb.ki_pos;
 		file_accessed(in);
@@ -367,22 +365,6 @@ static ssize_t kernel_readv(struct file *file, const struct kvec *vec,
 	return res;
 }
 
-ssize_t kernel_write(struct file *file, const char *buf, size_t count,
-			    loff_t pos)
-{
-	mm_segment_t old_fs;
-	ssize_t res;
-
-	old_fs = get_fs();
-	set_fs(get_ds());
-	/* The cast to a user pointer is valid due to the set_fs() */
-	res = vfs_write(file, (__force const char __user *)buf, count, &pos);
-	set_fs(old_fs);
-
-	return res;
-}
-EXPORT_SYMBOL(kernel_write);
-
 static ssize_t default_file_splice_read(struct file *in, loff_t *ppos,
 				 struct pipe_inode_info *pipe, size_t len,
 				 unsigned int flags)
@@ -391,7 +373,7 @@ static ssize_t default_file_splice_read(struct file *in, loff_t *ppos,
 	struct iov_iter to;
 	struct page **pages;
 	unsigned int nr_pages;
-	size_t offset, dummy, copied = 0;
+	size_t offset, base, copied = 0;
 	ssize_t res;
 	int i;
 
@@ -406,16 +388,15 @@ static ssize_t default_file_splice_read(struct file *in, loff_t *ppos,
 
 	iov_iter_pipe(&to, ITER_PIPE | READ, pipe, len + offset);
 
-	res = iov_iter_get_pages_alloc(&to, &pages, len + offset, &dummy);
+	res = iov_iter_get_pages_alloc(&to, &pages, len + offset, &base);
 	if (res <= 0)
 		return -ENOMEM;
 
-	BUG_ON(dummy);
-	nr_pages = DIV_ROUND_UP(res, PAGE_SIZE);
+	nr_pages = DIV_ROUND_UP(res + base, PAGE_SIZE);
 
 	vec = __vec;
 	if (nr_pages > PIPE_DEF_BUFFERS) {
-		vec = kmalloc(nr_pages * sizeof(struct kvec), GFP_KERNEL);
+		vec = kmalloc_array(nr_pages, sizeof(struct kvec), GFP_KERNEL);
 		if (unlikely(!vec)) {
 			res = -ENOMEM;
 			goto out;
@@ -766,7 +747,7 @@ iter_file_splice_write(struct pipe_inode_info *pipe, struct file *out,
 
 		iov_iter_bvec(&from, ITER_BVEC | WRITE, array, n,
 			      sd.total_len - left);
-		ret = vfs_iter_write(out, &from, &sd.pos);
+		ret = vfs_iter_write(out, &from, &sd.pos, 0);
 		if (ret <= 0)
 			break;
 
@@ -1262,30 +1243,19 @@ static int pipe_to_user(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
  * For lack of a better implementation, implement vmsplice() to userspace
  * as a simple copy of the pipes pages to the user iov.
  */
-static long vmsplice_to_user(struct file *file, const struct iovec __user *uiov,
-			     unsigned long nr_segs, unsigned int flags)
+static long vmsplice_to_user(struct file *file, struct iov_iter *iter,
+			     unsigned int flags)
 {
-	struct pipe_inode_info *pipe;
-	struct splice_desc sd;
-	long ret;
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
+	struct pipe_inode_info *pipe = get_pipe_info(file);
+	struct splice_desc sd = {
+		.total_len = iov_iter_count(iter),
+		.flags = flags,
+		.u.data = iter
+	};
+	long ret = 0;
 
-	pipe = get_pipe_info(file);
 	if (!pipe)
 		return -EBADF;
-
-	ret = import_iovec(READ, uiov, nr_segs,
-			   ARRAY_SIZE(iovstack), &iov, &iter);
-	if (ret < 0)
-		return ret;
-
-	sd.total_len = iov_iter_count(&iter);
-	sd.len = 0;
-	sd.flags = flags;
-	sd.u.data = &iter;
-	sd.pos = 0;
 
 	if (sd.total_len) {
 		pipe_lock(pipe);
@@ -1293,7 +1263,6 @@ static long vmsplice_to_user(struct file *file, const struct iovec __user *uiov,
 		pipe_unlock(pipe);
 	}
 
-	kfree(iov);
 	return ret;
 }
 
@@ -1302,14 +1271,11 @@ static long vmsplice_to_user(struct file *file, const struct iovec __user *uiov,
  * as splice-from-memory, where the regular splice is splice-from-file (or
  * to file). In both cases the output is a pipe, naturally.
  */
-static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
-			     unsigned long nr_segs, unsigned int flags)
+static long vmsplice_to_pipe(struct file *file, struct iov_iter *iter,
+			     unsigned int flags)
 {
 	struct pipe_inode_info *pipe;
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter from;
-	long ret;
+	long ret = 0;
 	unsigned buf_flag = 0;
 
 	if (flags & SPLICE_F_GIFT)
@@ -1319,20 +1285,29 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
 	if (!pipe)
 		return -EBADF;
 
-	ret = import_iovec(WRITE, uiov, nr_segs,
-			   ARRAY_SIZE(iovstack), &iov, &from);
-	if (ret < 0)
-		return ret;
-
 	pipe_lock(pipe);
 	ret = wait_for_space(pipe, flags);
 	if (!ret)
-		ret = iter_to_pipe(&from, pipe, buf_flag);
+		ret = iter_to_pipe(iter, pipe, buf_flag);
 	pipe_unlock(pipe);
 	if (ret > 0)
 		wakeup_pipe_readers(pipe);
-	kfree(iov);
 	return ret;
+}
+
+static int vmsplice_type(struct fd f, int *type)
+{
+	if (!f.file)
+		return -EBADF;
+	if (f.file->f_mode & FMODE_WRITE) {
+		*type = WRITE;
+	} else if (f.file->f_mode & FMODE_READ) {
+		*type = READ;
+	} else {
+		fdput(f);
+		return -EBADF;
+	}
+	return 0;
 }
 
 /*
@@ -1351,28 +1326,42 @@ static long vmsplice_to_pipe(struct file *file, const struct iovec __user *uiov,
  * Currently we punt and implement it as a normal copy, see pipe_to_user().
  *
  */
-SYSCALL_DEFINE4(vmsplice, int, fd, const struct iovec __user *, iov,
-		unsigned long, nr_segs, unsigned int, flags)
+static long do_vmsplice(struct file *f, struct iov_iter *iter, unsigned int flags)
 {
-	struct fd f;
-	long error;
-
-	if (unlikely(nr_segs > UIO_MAXIOV))
+	if (unlikely(flags & ~SPLICE_F_ALL))
 		return -EINVAL;
-	else if (unlikely(!nr_segs))
+
+	if (!iov_iter_count(iter))
 		return 0;
 
-	error = -EBADF;
+	if (iov_iter_rw(iter) == WRITE)
+		return vmsplice_to_pipe(f, iter, flags);
+	else
+		return vmsplice_to_user(f, iter, flags);
+}
+
+SYSCALL_DEFINE4(vmsplice, int, fd, const struct iovec __user *, uiov,
+		unsigned long, nr_segs, unsigned int, flags)
+{
+	struct iovec iovstack[UIO_FASTIOV];
+	struct iovec *iov = iovstack;
+	struct iov_iter iter;
+	long error;
+	struct fd f;
+	int type;
+
 	f = fdget(fd);
-	if (f.file) {
-		if (f.file->f_mode & FMODE_WRITE)
-			error = vmsplice_to_pipe(f.file, iov, nr_segs, flags);
-		else if (f.file->f_mode & FMODE_READ)
-			error = vmsplice_to_user(f.file, iov, nr_segs, flags);
+	error = vmsplice_type(f, &type);
+	if (error)
+		return error;
 
-		fdput(f);
+	error = import_iovec(type, uiov, nr_segs,
+			     ARRAY_SIZE(iovstack), &iov, &iter);
+	if (!error) {
+		error = do_vmsplice(f.file, &iter, flags);
+		kfree(iov);
 	}
-
+	fdput(f);
 	return error;
 }
 
@@ -1380,20 +1369,26 @@ SYSCALL_DEFINE4(vmsplice, int, fd, const struct iovec __user *, iov,
 COMPAT_SYSCALL_DEFINE4(vmsplice, int, fd, const struct compat_iovec __user *, iov32,
 		    unsigned int, nr_segs, unsigned int, flags)
 {
-	unsigned i;
-	struct iovec __user *iov;
-	if (nr_segs > UIO_MAXIOV)
-		return -EINVAL;
-	iov = compat_alloc_user_space(nr_segs * sizeof(struct iovec));
-	for (i = 0; i < nr_segs; i++) {
-		struct compat_iovec v;
-		if (get_user(v.iov_base, &iov32[i].iov_base) ||
-		    get_user(v.iov_len, &iov32[i].iov_len) ||
-		    put_user(compat_ptr(v.iov_base), &iov[i].iov_base) ||
-		    put_user(v.iov_len, &iov[i].iov_len))
-			return -EFAULT;
+	struct iovec iovstack[UIO_FASTIOV];
+	struct iovec *iov = iovstack;
+	struct iov_iter iter;
+	long error;
+	struct fd f;
+	int type;
+
+	f = fdget(fd);
+	error = vmsplice_type(f, &type);
+	if (error)
+		return error;
+
+	error = compat_import_iovec(type, iov32, nr_segs,
+			     ARRAY_SIZE(iovstack), &iov, &iter);
+	if (!error) {
+		error = do_vmsplice(f.file, &iter, flags);
+		kfree(iov);
 	}
-	return sys_vmsplice(fd, iov, nr_segs, flags);
+	fdput(f);
+	return error;
 }
 #endif
 
@@ -1406,6 +1401,9 @@ SYSCALL_DEFINE6(splice, int, fd_in, loff_t __user *, off_in,
 
 	if (unlikely(!len))
 		return 0;
+
+	if (unlikely(flags & ~SPLICE_F_ALL))
+		return -EINVAL;
 
 	error = -EBADF;
 	in = fdget(fd_in);
@@ -1734,6 +1732,9 @@ SYSCALL_DEFINE4(tee, int, fdin, int, fdout, size_t, len, unsigned int, flags)
 {
 	struct fd in;
 	int error;
+
+	if (unlikely(flags & ~SPLICE_F_ALL))
+		return -EINVAL;
 
 	if (unlikely(!len))
 		return 0;

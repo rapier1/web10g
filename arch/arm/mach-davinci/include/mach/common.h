@@ -53,7 +53,6 @@ struct davinci_soc_info {
 	u32				jtag_id_reg;
 	struct davinci_id		*ids;
 	unsigned long			ids_num;
-	struct clk_lookup		*cpu_clks;
 	u32				*psc_bases;
 	unsigned long			psc_bases_num;
 	u32				pinmux_base;
@@ -79,9 +78,8 @@ struct davinci_soc_info {
 
 extern struct davinci_soc_info davinci_soc_info;
 
-extern void davinci_common_init(struct davinci_soc_info *soc_info);
+extern void davinci_common_init(const struct davinci_soc_info *soc_info);
 extern void davinci_init_ide(void);
-void davinci_restart(enum reboot_mode mode, const char *cmd);
 void davinci_init_late(void);
 
 #ifdef CONFIG_DAVINCI_RESET_CLOCKS
@@ -101,6 +99,8 @@ int davinci_pm_init(void);
 #else
 static inline int davinci_pm_init(void) { return 0; }
 #endif
+
+void __init pdata_quirks_init(void);
 
 #define SRAM_SIZE	SZ_128K
 

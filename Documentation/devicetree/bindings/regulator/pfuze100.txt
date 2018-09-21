@@ -13,7 +13,7 @@ Required child node:
   --PFUZE100
   sw1ab,sw1c,sw2,sw3a,sw3b,sw4,swbst,vsnvs,vrefddr,vgen1~vgen6
   --PFUZE200
-  sw1ab,sw2,sw3a,sw3b,swbst,vsnvs,vrefddr,vgen1~vgen6
+  sw1ab,sw2,sw3a,sw3b,swbst,vsnvs,vrefddr,vgen1~vgen6,coin
   --PFUZE3000
   sw1a,sw1b,sw2,sw3,swbst,vsnvs,vrefddr,vldo1,vldo2,vccsd,v33,vldo3,vldo4
 
@@ -21,7 +21,7 @@ Each regulator is defined using the standard binding for regulators.
 
 Example 1: PFUZE100
 
-	pmic: pfuze100@08 {
+	pfuze100: pmic@8 {
 		compatible = "fsl,pfuze100";
 		reg = <0x08>;
 
@@ -122,7 +122,7 @@ Example 1: PFUZE100
 
 Example 2: PFUZE200
 
-	pmic: pfuze200@08 {
+	pfuze200: pmic@8 {
 		compatible = "fsl,pfuze200";
 		reg = <0x08>;
 
@@ -205,12 +205,18 @@ Example 2: PFUZE200
 				regulator-max-microvolt = <3300000>;
 				regulator-always-on;
 			};
+
+			coin_reg: coin {
+				regulator-min-microvolt = <2500000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+			};
 		};
 	};
 
 Example 3: PFUZE3000
 
-	pmic: pfuze3000@08 {
+	pfuze3000: pmic@8 {
 		compatible = "fsl,pfuze3000";
 		reg = <0x08>;
 

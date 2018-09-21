@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Intel(R) Trace Hub Memory Storage Unit
  *
  * Copyright (C) 2014-2015 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
@@ -27,7 +19,9 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 
-#include <asm/cacheflush.h>
+#ifdef CONFIG_X86
+#include <asm/set_memory.h>
+#endif
 
 #include "intel_th.h"
 #include "msu.h"
@@ -707,17 +701,17 @@ static int msc_buffer_win_alloc(struct msc *msc, unsigned int nr_blocks)
 	}
 
 	for (i = 0; i < nr_blocks; i++) {
-		win->block[i].bdesc = dma_alloc_coherent(msc_dev(msc), size,
-							 &win->block[i].addr,
-							 GFP_KERNEL);
+		win->block[i].bdesc =
+			dma_alloc_coherent(msc_dev(msc)->parent->parent, size,
+					   &win->block[i].addr, GFP_KERNEL);
+
+		if (!win->block[i].bdesc)
+			goto err_nomem;
 
 #ifdef CONFIG_X86
 		/* Set the page as uncached */
 		set_memory_uc((unsigned long)win->block[i].bdesc, 1);
 #endif
-
-		if (!win->block[i].bdesc)
-			goto err_nomem;
 	}
 
 	win->msc = msc;
@@ -739,8 +733,8 @@ err_nomem:
 		/* Reset the page to write-back before releasing */
 		set_memory_wb((unsigned long)win->block[i].bdesc, 1);
 #endif
-		dma_free_coherent(msc_dev(msc), size, win->block[i].bdesc,
-				  win->block[i].addr);
+		dma_free_coherent(msc_dev(msc)->parent->parent, size,
+				  win->block[i].bdesc, win->block[i].addr);
 	}
 	kfree(win);
 
@@ -775,7 +769,7 @@ static void msc_buffer_win_free(struct msc *msc, struct msc_window *win)
 		/* Reset the page to write-back before releasing */
 		set_memory_wb((unsigned long)win->block[i].bdesc, 1);
 #endif
-		dma_free_coherent(msc_dev(win->msc), PAGE_SIZE,
+		dma_free_coherent(msc_dev(win->msc)->parent->parent, PAGE_SIZE,
 				  win->block[i].bdesc, win->block[i].addr);
 	}
 
@@ -1188,9 +1182,9 @@ static void msc_mmap_close(struct vm_area_struct *vma)
 	mutex_unlock(&msc->buf_mutex);
 }
 
-static int msc_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+static int msc_mmap_fault(struct vm_fault *vmf)
 {
-	struct msc_iter *iter = vma->vm_file->private_data;
+	struct msc_iter *iter = vmf->vma->vm_file->private_data;
 	struct msc *msc = iter->msc;
 
 	vmf->page = msc_buffer_get_page(msc, vmf->pgoff);
@@ -1198,7 +1192,7 @@ static int msc_mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 		return VM_FAULT_SIGBUS;
 
 	get_page(vmf->page);
-	vmf->page->mapping = vma->vm_file->f_mapping;
+	vmf->page->mapping = vmf->vma->vm_file->f_mapping;
 	vmf->page->index = vmf->pgoff;
 
 	return 0;

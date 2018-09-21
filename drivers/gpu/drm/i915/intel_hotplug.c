@@ -76,31 +76,72 @@
  * it will use i915_hotplug_work_func where this logic is handled.
  */
 
-bool intel_hpd_pin_to_port(enum hpd_pin pin, enum port *port)
+/**
+ * intel_hpd_port - return port hard associated with certain pin.
+ * @dev_priv: private driver data pointer
+ * @pin: the hpd pin to get associated port
+ *
+ * Return port that is associatade with @pin and PORT_NONE if no port is
+ * hard associated with that @pin.
+ */
+enum port intel_hpd_pin_to_port(struct drm_i915_private *dev_priv,
+				enum hpd_pin pin)
 {
 	switch (pin) {
 	case HPD_PORT_A:
-		*port = PORT_A;
-		return true;
+		return PORT_A;
 	case HPD_PORT_B:
-		*port = PORT_B;
-		return true;
+		return PORT_B;
 	case HPD_PORT_C:
-		*port = PORT_C;
-		return true;
+		return PORT_C;
 	case HPD_PORT_D:
-		*port = PORT_D;
-		return true;
+		return PORT_D;
 	case HPD_PORT_E:
-		*port = PORT_E;
-		return true;
+		if (IS_CNL_WITH_PORT_F(dev_priv))
+			return PORT_F;
+		return PORT_E;
+	case HPD_PORT_F:
+		return PORT_F;
 	default:
-		return false;	/* no hpd */
+		return PORT_NONE; /* no port for this pin */
+	}
+}
+
+/**
+ * intel_hpd_pin_default - return default pin associated with certain port.
+ * @dev_priv: private driver data pointer
+ * @port: the hpd port to get associated pin
+ *
+ * It is only valid and used by digital port encoder.
+ *
+ * Return pin that is associatade with @port and HDP_NONE if no pin is
+ * hard associated with that @port.
+ */
+enum hpd_pin intel_hpd_pin_default(struct drm_i915_private *dev_priv,
+				   enum port port)
+{
+	switch (port) {
+	case PORT_A:
+		return HPD_PORT_A;
+	case PORT_B:
+		return HPD_PORT_B;
+	case PORT_C:
+		return HPD_PORT_C;
+	case PORT_D:
+		return HPD_PORT_D;
+	case PORT_E:
+		return HPD_PORT_E;
+	case PORT_F:
+		if (IS_CNL_WITH_PORT_F(dev_priv))
+			return HPD_PORT_E;
+		return HPD_PORT_F;
+	default:
+		MISSING_CASE(port);
+		return HPD_NONE;
 	}
 }
 
 #define HPD_STORM_DETECT_PERIOD		1000
-#define HPD_STORM_THRESHOLD		5
 #define HPD_STORM_REENABLE_DELAY	(2 * 60 * 1000)
 
 /**
@@ -112,9 +153,13 @@ bool intel_hpd_pin_to_port(enum hpd_pin pin, enum port *port)
  * storms. Only the pin specific stats and state are changed, the caller is
  * responsible for further action.
  *
- * @HPD_STORM_THRESHOLD irqs are allowed within @HPD_STORM_DETECT_PERIOD ms,
- * otherwise it's considered an irq storm, and the irq state is set to
- * @HPD_MARK_DISABLED.
+ * The number of irqs that are allowed within @HPD_STORM_DETECT_PERIOD is
+ * stored in @dev_priv->hotplug.hpd_storm_threshold which defaults to
+ * @HPD_STORM_DEFAULT_THRESHOLD. If this threshold is exceeded, it's
+ * considered an irq storm and the irq state is set to @HPD_MARK_DISABLED.
+ *
+ * The HPD threshold can be controlled through i915_hpd_storm_ctl in debugfs,
+ * and should only be adjusted for automated hotplug testing.
  *
  * Return true if an irq storm was detected on @pin.
  */
@@ -123,13 +168,15 @@ static bool intel_hpd_irq_storm_detect(struct drm_i915_private *dev_priv,
 {
 	unsigned long start = dev_priv->hotplug.stats[pin].last_jiffies;
 	unsigned long end = start + msecs_to_jiffies(HPD_STORM_DETECT_PERIOD);
+	const int threshold = dev_priv->hotplug.hpd_storm_threshold;
 	bool storm = false;
 
 	if (!time_in_range(jiffies, start, end)) {
 		dev_priv->hotplug.stats[pin].last_jiffies = jiffies;
 		dev_priv->hotplug.stats[pin].count = 0;
 		DRM_DEBUG_KMS("Received HPD interrupt on PIN %d - cnt: 0\n", pin);
-	} else if (dev_priv->hotplug.stats[pin].count > HPD_STORM_THRESHOLD) {
+	} else if (dev_priv->hotplug.stats[pin].count > threshold &&
+		   threshold) {
 		dev_priv->hotplug.stats[pin].state = HPD_MARK_DISABLED;
 		DRM_DEBUG_KMS("HPD interrupt storm detected on PIN %d\n", pin);
 		storm = true;
@@ -145,16 +192,17 @@ static bool intel_hpd_irq_storm_detect(struct drm_i915_private *dev_priv,
 static void intel_hpd_irq_storm_disable(struct drm_i915_private *dev_priv)
 {
 	struct drm_device *dev = &dev_priv->drm;
-	struct drm_mode_config *mode_config = &dev->mode_config;
 	struct intel_connector *intel_connector;
 	struct intel_encoder *intel_encoder;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	enum hpd_pin pin;
 	bool hpd_disabled = false;
 
-	assert_spin_locked(&dev_priv->irq_lock);
+	lockdep_assert_held(&dev_priv->irq_lock);
 
-	list_for_each_entry(connector, &mode_config->connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		if (connector->polled != DRM_CONNECTOR_POLL_HPD)
 			continue;
 
@@ -177,10 +225,11 @@ static void intel_hpd_irq_storm_disable(struct drm_i915_private *dev_priv)
 			| DRM_CONNECTOR_POLL_DISCONNECT;
 		hpd_disabled = true;
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	/* Enable polling and queue hotplug re-enabling. */
 	if (hpd_disabled) {
-		drm_kms_helper_poll_enable_locked(dev);
+		drm_kms_helper_poll_enable(dev);
 		mod_delayed_work(system_wq, &dev_priv->hotplug.reenable_work,
 				 msecs_to_jiffies(HPD_STORM_REENABLE_DELAY));
 	}
@@ -192,7 +241,6 @@ static void intel_hpd_irq_storm_reenable_work(struct work_struct *work)
 		container_of(work, typeof(*dev_priv),
 			     hotplug.reenable_work.work);
 	struct drm_device *dev = &dev_priv->drm;
-	struct drm_mode_config *mode_config = &dev->mode_config;
 	int i;
 
 	intel_runtime_pm_get(dev_priv);
@@ -200,13 +248,15 @@ static void intel_hpd_irq_storm_reenable_work(struct work_struct *work)
 	spin_lock_irq(&dev_priv->irq_lock);
 	for_each_hpd_pin(i) {
 		struct drm_connector *connector;
+		struct drm_connector_list_iter conn_iter;
 
 		if (dev_priv->hotplug.stats[i].state != HPD_DISABLED)
 			continue;
 
 		dev_priv->hotplug.stats[i].state = HPD_ENABLED;
 
-		list_for_each_entry(connector, &mode_config->connector_list, head) {
+		drm_connector_list_iter_begin(dev, &conn_iter);
+		drm_for_each_connector_iter(connector, &conn_iter) {
 			struct intel_connector *intel_connector = to_intel_connector(connector);
 
 			if (intel_connector->encoder->hpd_pin == i) {
@@ -218,31 +268,35 @@ static void intel_hpd_irq_storm_reenable_work(struct work_struct *work)
 					connector->polled = DRM_CONNECTOR_POLL_HPD;
 			}
 		}
+		drm_connector_list_iter_end(&conn_iter);
 	}
-	if (dev_priv->display.hpd_irq_setup)
+	if (dev_priv->display_irqs_enabled && dev_priv->display.hpd_irq_setup)
 		dev_priv->display.hpd_irq_setup(dev_priv);
 	spin_unlock_irq(&dev_priv->irq_lock);
 
 	intel_runtime_pm_put(dev_priv);
 }
 
-static bool intel_hpd_irq_event(struct drm_device *dev,
-				struct drm_connector *connector)
+bool intel_encoder_hotplug(struct intel_encoder *encoder,
+			   struct intel_connector *connector)
 {
+	struct drm_device *dev = connector->base.dev;
 	enum drm_connector_status old_status;
 
 	WARN_ON(!mutex_is_locked(&dev->mode_config.mutex));
-	old_status = connector->status;
+	old_status = connector->base.status;
 
-	connector->status = connector->funcs->detect(connector, false);
-	if (old_status == connector->status)
+	connector->base.status =
+		drm_helper_probe_detect(&connector->base, NULL, false);
+
+	if (old_status == connector->base.status)
 		return false;
 
 	DRM_DEBUG_KMS("[CONNECTOR:%d:%s] status updated from %s to %s\n",
-		      connector->base.id,
-		      connector->name,
+		      connector->base.base.id,
+		      connector->base.name,
 		      drm_get_connector_status_name(old_status),
-		      drm_get_connector_status_name(connector->status));
+		      drm_get_connector_status_name(connector->base.status));
 
 	return true;
 }
@@ -303,14 +357,14 @@ static void i915_hotplug_work_func(struct work_struct *work)
 	struct drm_i915_private *dev_priv =
 		container_of(work, struct drm_i915_private, hotplug.hotplug_work);
 	struct drm_device *dev = &dev_priv->drm;
-	struct drm_mode_config *mode_config = &dev->mode_config;
 	struct intel_connector *intel_connector;
 	struct intel_encoder *intel_encoder;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	bool changed = false;
 	u32 hpd_event_bits;
 
-	mutex_lock(&mode_config->mutex);
+	mutex_lock(&dev->mode_config.mutex);
 	DRM_DEBUG_KMS("running encoder hotplug functions\n");
 
 	spin_lock_irq(&dev_priv->irq_lock);
@@ -323,7 +377,8 @@ static void i915_hotplug_work_func(struct work_struct *work)
 
 	spin_unlock_irq(&dev_priv->irq_lock);
 
-	list_for_each_entry(connector, &mode_config->connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		intel_connector = to_intel_connector(connector);
 		if (!intel_connector->encoder)
 			continue;
@@ -331,13 +386,13 @@ static void i915_hotplug_work_func(struct work_struct *work)
 		if (hpd_event_bits & (1 << intel_encoder->hpd_pin)) {
 			DRM_DEBUG_KMS("Connector %s (pin %i) received hotplug event.\n",
 				      connector->name, intel_encoder->hpd_pin);
-			if (intel_encoder->hot_plug)
-				intel_encoder->hot_plug(intel_encoder);
-			if (intel_hpd_irq_event(dev, connector))
-				changed = true;
+
+			changed |= intel_encoder->hotplug(intel_encoder,
+							  intel_connector);
 		}
 	}
-	mutex_unlock(&mode_config->mutex);
+	drm_connector_list_iter_end(&conn_iter);
+	mutex_unlock(&dev->mode_config.mutex);
 
 	if (changed)
 		drm_kms_helper_hotplug_event(dev);
@@ -377,8 +432,9 @@ void intel_hpd_irq_handler(struct drm_i915_private *dev_priv,
 		if (!(BIT(i) & pin_mask))
 			continue;
 
-		is_dig_port = intel_hpd_pin_to_port(i, &port) &&
-			      dev_priv->hotplug.irq_port[port];
+		port = intel_hpd_pin_to_port(dev_priv, i);
+		is_dig_port = port != PORT_NONE &&
+			dev_priv->hotplug.irq_port[port];
 
 		if (is_dig_port) {
 			bool long_hpd = long_mask & BIT(i);
@@ -425,7 +481,7 @@ void intel_hpd_irq_handler(struct drm_i915_private *dev_priv,
 		}
 	}
 
-	if (storm_detected)
+	if (storm_detected && dev_priv->display_irqs_enabled)
 		dev_priv->display.hpd_irq_setup(dev_priv);
 	spin_unlock(&dev_priv->irq_lock);
 
@@ -471,10 +527,12 @@ void intel_hpd_init(struct drm_i915_private *dev_priv)
 	 * Interrupt setup is already guaranteed to be single-threaded, this is
 	 * just to make the assert_spin_locked checks happy.
 	 */
-	spin_lock_irq(&dev_priv->irq_lock);
-	if (dev_priv->display.hpd_irq_setup)
-		dev_priv->display.hpd_irq_setup(dev_priv);
-	spin_unlock_irq(&dev_priv->irq_lock);
+	if (dev_priv->display_irqs_enabled && dev_priv->display.hpd_irq_setup) {
+		spin_lock_irq(&dev_priv->irq_lock);
+		if (dev_priv->display_irqs_enabled)
+			dev_priv->display.hpd_irq_setup(dev_priv);
+		spin_unlock_irq(&dev_priv->irq_lock);
+	}
 }
 
 static void i915_hpd_poll_init_work(struct work_struct *work)
@@ -483,15 +541,16 @@ static void i915_hpd_poll_init_work(struct work_struct *work)
 		container_of(work, struct drm_i915_private,
 			     hotplug.poll_init_work);
 	struct drm_device *dev = &dev_priv->drm;
-	struct drm_mode_config *mode_config = &dev->mode_config;
 	struct drm_connector *connector;
+	struct drm_connector_list_iter conn_iter;
 	bool enabled;
 
 	mutex_lock(&dev->mode_config.mutex);
 
 	enabled = READ_ONCE(dev_priv->hotplug.poll_enabled);
 
-	list_for_each_entry(connector, &mode_config->connector_list, head) {
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector, &conn_iter) {
 		struct intel_connector *intel_connector =
 			to_intel_connector(connector);
 		connector->polled = intel_connector->polled;
@@ -509,9 +568,10 @@ static void i915_hpd_poll_init_work(struct work_struct *work)
 				DRM_CONNECTOR_POLL_HPD;
 		}
 	}
+	drm_connector_list_iter_end(&conn_iter);
 
 	if (enabled)
-		drm_kms_helper_poll_enable_locked(dev);
+		drm_kms_helper_poll_enable(dev);
 
 	mutex_unlock(&dev->mode_config.mutex);
 

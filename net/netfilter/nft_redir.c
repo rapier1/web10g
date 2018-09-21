@@ -47,10 +47,6 @@ int nft_redir_init(const struct nft_ctx *ctx,
 	unsigned int plen;
 	int err;
 
-	err = nft_redir_validate(ctx, expr, NULL);
-	if (err < 0)
-		return err;
-
 	plen = FIELD_SIZEOF(struct nf_nat_range, min_addr.all);
 	if (tb[NFTA_REDIR_REG_PROTO_MIN]) {
 		priv->sreg_proto_min =
@@ -79,7 +75,7 @@ int nft_redir_init(const struct nft_ctx *ctx,
 			return -EINVAL;
 	}
 
-	return nf_ct_netns_get(ctx->net, ctx->afi->family);
+	return nf_ct_netns_get(ctx->net, ctx->family);
 }
 EXPORT_SYMBOL_GPL(nft_redir_init);
 

@@ -76,6 +76,8 @@
 #include <linux/miscdevice.h>
 #include <linux/falloc.h>
 #include <linux/uio.h>
+#include <linux/ioprio.h>
+
 #include "loop.h"
 
 #include <linux/uaccess.h>
@@ -186,7 +188,7 @@ static void __loop_update_dio(struct loop_device *lo, bool dio)
 	 *
 	 * TODO: the above condition may be loosed in the future, and
 	 * direct I/O may be switched runtime at that time because most
-	 * of requests in sane appplications should be PAGE_SIZE algined
+	 * of requests in sane applications should be PAGE_SIZE aligned
 	 */
 	if (dio) {
 		if (queue_logical_block_size(lo->lo_queue) >= sb_bsize &&
@@ -213,10 +215,13 @@ static void __loop_update_dio(struct loop_device *lo, bool dio)
 	 */
 	blk_mq_freeze_queue(lo->lo_queue);
 	lo->use_dio = use_dio;
-	if (use_dio)
+	if (use_dio) {
+		blk_queue_flag_clear(QUEUE_FLAG_NOMERGES, lo->lo_queue);
 		lo->lo_flags |= LO_FLAGS_DIRECT_IO;
-	else
+	} else {
+		blk_queue_flag_set(QUEUE_FLAG_NOMERGES, lo->lo_queue);
 		lo->lo_flags &= ~LO_FLAGS_DIRECT_IO;
+	}
 	blk_mq_unfreeze_queue(lo->lo_queue);
 }
 
@@ -263,10 +268,10 @@ static int lo_write_bvec(struct file *file, struct bio_vec *bvec, loff_t *ppos)
 	struct iov_iter i;
 	ssize_t bw;
 
-	iov_iter_bvec(&i, ITER_BVEC, bvec, 1, bvec->bv_len);
+	iov_iter_bvec(&i, ITER_BVEC | WRITE, bvec, 1, bvec->bv_len);
 
 	file_start_write(file);
-	bw = vfs_iter_write(file, &i, ppos);
+	bw = vfs_iter_write(file, &i, ppos, 0);
 	file_end_write(file);
 
 	if (likely(bw ==  bvec->bv_len))
@@ -342,7 +347,7 @@ static int lo_read_simple(struct loop_device *lo, struct request *rq,
 
 	rq_for_each_segment(bvec, rq, iter) {
 		iov_iter_bvec(&i, ITER_BVEC, &bvec, 1, bvec.bv_len);
-		len = vfs_iter_read(lo->lo_backing_file, &i, &pos);
+		len = vfs_iter_read(lo->lo_backing_file, &i, &pos, 0);
 		if (len < 0)
 			return len;
 
@@ -383,7 +388,7 @@ static int lo_read_transfer(struct loop_device *lo, struct request *rq,
 		b.bv_len = bvec.bv_len;
 
 		iov_iter_bvec(&i, ITER_BVEC, &b, 1, b.bv_len);
-		len = vfs_iter_read(lo->lo_backing_file, &i, &pos);
+		len = vfs_iter_read(lo->lo_backing_file, &i, &pos, 0);
 		if (len < 0) {
 			ret = len;
 			goto out_free_page;
@@ -445,32 +450,60 @@ static int lo_req_flush(struct loop_device *lo, struct request *rq)
 	return ret;
 }
 
-static inline void handle_partial_read(struct loop_cmd *cmd, long bytes)
+static void lo_complete_rq(struct request *rq)
 {
-	if (bytes < 0 || op_is_write(req_op(cmd->rq)))
-		return;
+	struct loop_cmd *cmd = blk_mq_rq_to_pdu(rq);
+	blk_status_t ret = BLK_STS_OK;
 
-	if (unlikely(bytes < blk_rq_bytes(cmd->rq))) {
-		struct bio *bio = cmd->rq->bio;
-
-		bio_advance(bio, bytes);
-		zero_fill_bio(bio);
+	if (!cmd->use_aio || cmd->ret < 0 || cmd->ret == blk_rq_bytes(rq) ||
+	    req_op(rq) != REQ_OP_READ) {
+		if (cmd->ret < 0)
+			ret = BLK_STS_IOERR;
+		goto end_io;
 	}
+
+	/*
+	 * Short READ - if we got some data, advance our request and
+	 * retry it. If we got no data, end the rest with EIO.
+	 */
+	if (cmd->ret) {
+		blk_update_request(rq, BLK_STS_OK, cmd->ret);
+		cmd->ret = 0;
+		blk_mq_requeue_request(rq, true);
+	} else {
+		if (cmd->use_aio) {
+			struct bio *bio = rq->bio;
+
+			while (bio) {
+				zero_fill_bio(bio);
+				bio = bio->bi_next;
+			}
+		}
+		ret = BLK_STS_IOERR;
+end_io:
+		blk_mq_end_request(rq, ret);
+	}
+}
+
+static void lo_rw_aio_do_completion(struct loop_cmd *cmd)
+{
+	struct request *rq = blk_mq_rq_from_pdu(cmd);
+
+	if (!atomic_dec_and_test(&cmd->ref))
+		return;
+	kfree(cmd->bvec);
+	cmd->bvec = NULL;
+	blk_mq_complete_request(rq);
 }
 
 static void lo_rw_aio_complete(struct kiocb *iocb, long ret, long ret2)
 {
 	struct loop_cmd *cmd = container_of(iocb, struct loop_cmd, iocb);
-	struct request *rq = cmd->rq;
 
-	handle_partial_read(cmd, ret);
-
-	if (ret > 0)
-		ret = 0;
-	else if (ret < 0)
-		ret = -EIO;
-
-	blk_mq_complete_request(rq, ret);
+	if (cmd->css)
+		css_put(cmd->css);
+	cmd->ret = ret;
+	lo_rw_aio_do_completion(cmd);
 }
 
 static int lo_rw_aio(struct loop_device *lo, struct loop_cmd *cmd,
@@ -478,32 +511,68 @@ static int lo_rw_aio(struct loop_device *lo, struct loop_cmd *cmd,
 {
 	struct iov_iter iter;
 	struct bio_vec *bvec;
-	struct bio *bio = cmd->rq->bio;
+	struct request *rq = blk_mq_rq_from_pdu(cmd);
+	struct bio *bio = rq->bio;
 	struct file *file = lo->lo_backing_file;
+	unsigned int offset;
+	int segments = 0;
 	int ret;
 
-	/* nomerge for loop request queue */
-	WARN_ON(cmd->rq->bio != cmd->rq->biotail);
+	if (rq->bio != rq->biotail) {
+		struct req_iterator iter;
+		struct bio_vec tmp;
 
-	bvec = __bvec_iter_bvec(bio->bi_io_vec, bio->bi_iter);
+		__rq_for_each_bio(bio, rq)
+			segments += bio_segments(bio);
+		bvec = kmalloc_array(segments, sizeof(struct bio_vec),
+				     GFP_NOIO);
+		if (!bvec)
+			return -EIO;
+		cmd->bvec = bvec;
+
+		/*
+		 * The bios of the request may be started from the middle of
+		 * the 'bvec' because of bio splitting, so we can't directly
+		 * copy bio->bi_iov_vec to new bvec. The rq_for_each_segment
+		 * API will take care of all details for us.
+		 */
+		rq_for_each_segment(tmp, rq, iter) {
+			*bvec = tmp;
+			bvec++;
+		}
+		bvec = cmd->bvec;
+		offset = 0;
+	} else {
+		/*
+		 * Same here, this bio may be started from the middle of the
+		 * 'bvec' because of bio splitting, so offset from the bvec
+		 * must be passed to iov iterator
+		 */
+		offset = bio->bi_iter.bi_bvec_done;
+		bvec = __bvec_iter_bvec(bio->bi_io_vec, bio->bi_iter);
+		segments = bio_segments(bio);
+	}
+	atomic_set(&cmd->ref, 2);
+
 	iov_iter_bvec(&iter, ITER_BVEC | rw, bvec,
-		      bio_segments(bio), blk_rq_bytes(cmd->rq));
-	/*
-	 * This bio may be started from the middle of the 'bvec'
-	 * because of bio splitting, so offset from the bvec must
-	 * be passed to iov iterator
-	 */
-	iter.iov_offset = bio->bi_iter.bi_bvec_done;
+		      segments, blk_rq_bytes(rq));
+	iter.iov_offset = offset;
 
 	cmd->iocb.ki_pos = pos;
 	cmd->iocb.ki_filp = file;
 	cmd->iocb.ki_complete = lo_rw_aio_complete;
 	cmd->iocb.ki_flags = IOCB_DIRECT;
+	cmd->iocb.ki_ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_NONE, 0);
+	if (cmd->css)
+		kthread_associate_blkcg(cmd->css);
 
 	if (rw == WRITE)
-		ret = file->f_op->write_iter(&cmd->iocb, &iter);
+		ret = call_write_iter(file, &cmd->iocb, &iter);
 	else
-		ret = file->f_op->read_iter(&cmd->iocb, &iter);
+		ret = call_read_iter(file, &cmd->iocb, &iter);
+
+	lo_rw_aio_do_completion(cmd);
+	kthread_associate_blkcg(NULL);
 
 	if (ret != -EIOCBQUEUED)
 		cmd->iocb.ki_complete(&cmd->iocb, ret, 0);
@@ -528,6 +597,7 @@ static int do_req_filebacked(struct loop_device *lo, struct request *rq)
 	case REQ_OP_FLUSH:
 		return lo_req_flush(lo, rq);
 	case REQ_OP_DISCARD:
+	case REQ_OP_WRITE_ZEROES:
 		return lo_discard(lo, rq, pos);
 	case REQ_OP_WRITE:
 		if (lo->transfer)
@@ -550,69 +620,10 @@ static int do_req_filebacked(struct loop_device *lo, struct request *rq)
 	}
 }
 
-struct switch_request {
-	struct file *file;
-	struct completion wait;
-};
-
 static inline void loop_update_dio(struct loop_device *lo)
 {
 	__loop_update_dio(lo, io_is_direct(lo->lo_backing_file) |
 			lo->use_dio);
-}
-
-/*
- * Do the actual switch; called from the BIO completion routine
- */
-static void do_loop_switch(struct loop_device *lo, struct switch_request *p)
-{
-	struct file *file = p->file;
-	struct file *old_file = lo->lo_backing_file;
-	struct address_space *mapping;
-
-	/* if no new file, only flush of queued bios requested */
-	if (!file)
-		return;
-
-	mapping = file->f_mapping;
-	mapping_set_gfp_mask(old_file->f_mapping, lo->old_gfp_mask);
-	lo->lo_backing_file = file;
-	lo->lo_blocksize = S_ISBLK(mapping->host->i_mode) ?
-		mapping->host->i_bdev->bd_block_size : PAGE_SIZE;
-	lo->old_gfp_mask = mapping_gfp_mask(mapping);
-	mapping_set_gfp_mask(mapping, lo->old_gfp_mask & ~(__GFP_IO|__GFP_FS));
-	loop_update_dio(lo);
-}
-
-/*
- * loop_switch performs the hard work of switching a backing store.
- * First it needs to flush existing IO, it does this by sending a magic
- * BIO down the pipe. The completion of this BIO does the actual switch.
- */
-static int loop_switch(struct loop_device *lo, struct file *file)
-{
-	struct switch_request w;
-
-	w.file = file;
-
-	/* freeze queue and wait for completion of scheduled requests */
-	blk_mq_freeze_queue(lo->lo_queue);
-
-	/* do the switch action */
-	do_loop_switch(lo, &w);
-
-	/* unfreeze */
-	blk_mq_unfreeze_queue(lo->lo_queue);
-
-	return 0;
-}
-
-/*
- * Helper to flush the IOs in loop, but keeping loop thread running
- */
-static int loop_flush(struct loop_device *lo)
-{
-	return loop_switch(lo, NULL);
 }
 
 static void loop_reread_partitions(struct loop_device *lo,
@@ -635,6 +646,36 @@ static void loop_reread_partitions(struct loop_device *lo,
 	if (rc)
 		pr_warn("%s: partition scan of loop%d (%s) failed (rc=%d)\n",
 			__func__, lo->lo_number, lo->lo_file_name, rc);
+}
+
+static inline int is_loop_device(struct file *file)
+{
+	struct inode *i = file->f_mapping->host;
+
+	return i && S_ISBLK(i->i_mode) && MAJOR(i->i_rdev) == LOOP_MAJOR;
+}
+
+static int loop_validate_file(struct file *file, struct block_device *bdev)
+{
+	struct inode	*inode = file->f_mapping->host;
+	struct file	*f = file;
+
+	/* Avoid recursion */
+	while (is_loop_device(f)) {
+		struct loop_device *l;
+
+		if (f->f_mapping->host->i_bdev == bdev)
+			return -EBADF;
+
+		l = f->f_mapping->host->i_bdev->bd_disk->private_data;
+		if (l->lo_state == Lo_unbound) {
+			return -EINVAL;
+		}
+		f = l->lo_backing_file;
+	}
+	if (!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))
+		return -EINVAL;
+	return 0;
 }
 
 /*
@@ -666,22 +707,28 @@ static int loop_change_fd(struct loop_device *lo, struct block_device *bdev,
 	if (!file)
 		goto out;
 
+	error = loop_validate_file(file, bdev);
+	if (error)
+		goto out_putf;
+
 	inode = file->f_mapping->host;
 	old_file = lo->lo_backing_file;
 
 	error = -EINVAL;
-
-	if (!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))
-		goto out_putf;
 
 	/* size of the new backing store needs to be the same */
 	if (get_loop_size(lo, file) != get_loop_size(lo, old_file))
 		goto out_putf;
 
 	/* and ... switch */
-	error = loop_switch(lo, file);
-	if (error)
-		goto out_putf;
+	blk_mq_freeze_queue(lo->lo_queue);
+	mapping_set_gfp_mask(old_file->f_mapping, lo->old_gfp_mask);
+	lo->lo_backing_file = file;
+	lo->old_gfp_mask = mapping_gfp_mask(file->f_mapping);
+	mapping_set_gfp_mask(file->f_mapping,
+			     lo->old_gfp_mask & ~(__GFP_IO|__GFP_FS));
+	loop_update_dio(lo);
+	blk_mq_unfreeze_queue(lo->lo_queue);
 
 	fput(old_file);
 	if (lo->lo_flags & LO_FLAGS_PARTSCAN)
@@ -692,13 +739,6 @@ static int loop_change_fd(struct loop_device *lo, struct block_device *bdev,
 	fput(file);
  out:
 	return error;
-}
-
-static inline int is_loop_device(struct file *file)
-{
-	struct inode *i = file->f_mapping->host;
-
-	return i && S_ISBLK(i->i_mode) && MAJOR(i->i_rdev) == LOOP_MAJOR;
 }
 
 /* loop sysfs attributes */
@@ -720,7 +760,7 @@ static ssize_t loop_attr_do_show_##_name(struct device *d,		\
 	return loop_attr_show(d, b, loop_attr_##_name##_show);		\
 }									\
 static struct device_attribute loop_attr_##_name =			\
-	__ATTR(_name, S_IRUGO, loop_attr_do_show_##_name, NULL);
+	__ATTR(_name, 0444, loop_attr_do_show_##_name, NULL);
 
 static ssize_t loop_attr_backing_file_show(struct loop_device *lo, char *buf)
 {
@@ -797,16 +837,17 @@ static struct attribute_group loop_attribute_group = {
 	.attrs= loop_attrs,
 };
 
-static int loop_sysfs_init(struct loop_device *lo)
+static void loop_sysfs_init(struct loop_device *lo)
 {
-	return sysfs_create_group(&disk_to_dev(lo->lo_disk)->kobj,
-				  &loop_attribute_group);
+	lo->sysfs_inited = !sysfs_create_group(&disk_to_dev(lo->lo_disk)->kobj,
+						&loop_attribute_group);
 }
 
 static void loop_sysfs_exit(struct loop_device *lo)
 {
-	sysfs_remove_group(&disk_to_dev(lo->lo_disk)->kobj,
-			   &loop_attribute_group);
+	if (lo->sysfs_inited)
+		sysfs_remove_group(&disk_to_dev(lo->lo_disk)->kobj,
+				   &loop_attribute_group);
 }
 
 static void loop_config_discard(struct loop_device *lo)
@@ -826,16 +867,17 @@ static void loop_config_discard(struct loop_device *lo)
 		q->limits.discard_granularity = 0;
 		q->limits.discard_alignment = 0;
 		blk_queue_max_discard_sectors(q, 0);
-		q->limits.discard_zeroes_data = 0;
-		queue_flag_clear_unlocked(QUEUE_FLAG_DISCARD, q);
+		blk_queue_max_write_zeroes_sectors(q, 0);
+		blk_queue_flag_clear(QUEUE_FLAG_DISCARD, q);
 		return;
 	}
 
 	q->limits.discard_granularity = inode->i_sb->s_blocksize;
 	q->limits.discard_alignment = 0;
+
 	blk_queue_max_discard_sectors(q, UINT_MAX >> 9);
-	q->limits.discard_zeroes_data = 1;
-	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, q);
+	blk_queue_max_write_zeroes_sectors(q, UINT_MAX >> 9);
+	blk_queue_flag_set(QUEUE_FLAG_DISCARD, q);
 }
 
 static void loop_unprepare_queue(struct loop_device *lo)
@@ -844,10 +886,16 @@ static void loop_unprepare_queue(struct loop_device *lo)
 	kthread_stop(lo->worker_task);
 }
 
+static int loop_kthread_worker_fn(void *worker_ptr)
+{
+	current->flags |= PF_LESS_THROTTLE;
+	return kthread_worker_fn(worker_ptr);
+}
+
 static int loop_prepare_queue(struct loop_device *lo)
 {
 	kthread_init_worker(&lo->worker);
-	lo->worker_task = kthread_run(kthread_worker_fn,
+	lo->worker_task = kthread_run(loop_kthread_worker_fn,
 			&lo->worker, "loop%d", lo->lo_number);
 	if (IS_ERR(lo->worker_task))
 		return -ENOMEM;
@@ -858,10 +906,9 @@ static int loop_prepare_queue(struct loop_device *lo)
 static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 		       struct block_device *bdev, unsigned int arg)
 {
-	struct file	*file, *f;
+	struct file	*file;
 	struct inode	*inode;
 	struct address_space *mapping;
-	unsigned lo_blocksize;
 	int		lo_flags = 0;
 	int		error;
 	loff_t		size;
@@ -878,35 +925,16 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	if (lo->lo_state != Lo_unbound)
 		goto out_putf;
 
-	/* Avoid recursion */
-	f = file;
-	while (is_loop_device(f)) {
-		struct loop_device *l;
-
-		if (f->f_mapping->host->i_bdev == bdev)
-			goto out_putf;
-
-		l = f->f_mapping->host->i_bdev->bd_disk->private_data;
-		if (l->lo_state == Lo_unbound) {
-			error = -EINVAL;
-			goto out_putf;
-		}
-		f = l->lo_backing_file;
-	}
+	error = loop_validate_file(file, bdev);
+	if (error)
+		goto out_putf;
 
 	mapping = file->f_mapping;
 	inode = mapping->host;
 
-	error = -EINVAL;
-	if (!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))
-		goto out_putf;
-
 	if (!(file->f_mode & FMODE_WRITE) || !(mode & FMODE_WRITE) ||
 	    !file->f_op->write_iter)
 		lo_flags |= LO_FLAGS_READ_ONLY;
-
-	lo_blocksize = S_ISBLK(inode->i_mode) ?
-		inode->i_bdev->bd_block_size : PAGE_SIZE;
 
 	error = -EFBIG;
 	size = get_loop_size(lo, file);
@@ -921,7 +949,6 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	set_device_ro(bdev, (lo_flags & LO_FLAGS_READ_ONLY) != 0);
 
 	lo->use_dio = false;
-	lo->lo_blocksize = lo_blocksize;
 	lo->lo_device = bdev;
 	lo->lo_flags = lo_flags;
 	lo->lo_backing_file = file;
@@ -941,7 +968,8 @@ static int loop_set_fd(struct loop_device *lo, fmode_t mode,
 	/* let user-space know about the new size */
 	kobject_uevent(&disk_to_dev(bdev->bd_disk)->kobj, KOBJ_CHANGE);
 
-	set_blocksize(bdev, lo_blocksize);
+	set_blocksize(bdev, S_ISBLK(inode->i_mode) ?
+		      block_size(inode->i_bdev) : PAGE_SIZE);
 
 	lo->lo_state = Lo_bound;
 	if (part_shift)
@@ -1047,9 +1075,13 @@ static int loop_clr_fd(struct loop_device *lo)
 	memset(lo->lo_encrypt_key, 0, LO_KEY_SIZE);
 	memset(lo->lo_crypt_name, 0, LO_NAME_SIZE);
 	memset(lo->lo_file_name, 0, LO_NAME_SIZE);
+	blk_queue_logical_block_size(lo->lo_queue, 512);
+	blk_queue_physical_block_size(lo->lo_queue, 512);
+	blk_queue_io_min(lo->lo_queue, 512);
 	if (bdev) {
 		bdput(bdev);
 		invalidate_bdev(bdev);
+		bdev->bd_inode->i_mapping->wb_err = 0;
 	}
 	set_capacity(lo->lo_disk, 0);
 	loop_sysfs_exit(lo);
@@ -1097,29 +1129,39 @@ loop_set_status(struct loop_device *lo, const struct loop_info64 *info)
 	if ((unsigned int) info->lo_encrypt_key_size > LO_KEY_SIZE)
 		return -EINVAL;
 
+	/* I/O need to be drained during transfer transition */
+	blk_mq_freeze_queue(lo->lo_queue);
+
 	err = loop_release_xfer(lo);
 	if (err)
-		return err;
+		goto exit;
 
 	if (info->lo_encrypt_type) {
 		unsigned int type = info->lo_encrypt_type;
 
-		if (type >= MAX_LO_CRYPT)
-			return -EINVAL;
+		if (type >= MAX_LO_CRYPT) {
+			err = -EINVAL;
+			goto exit;
+		}
 		xfer = xfer_funcs[type];
-		if (xfer == NULL)
-			return -EINVAL;
+		if (xfer == NULL) {
+			err = -EINVAL;
+			goto exit;
+		}
 	} else
 		xfer = NULL;
 
 	err = loop_init_xfer(lo, xfer, info);
 	if (err)
-		return err;
+		goto exit;
 
 	if (lo->lo_offset != info->lo_offset ||
-	    lo->lo_sizelimit != info->lo_sizelimit)
-		if (figure_loop_size(lo, info->lo_offset, info->lo_sizelimit))
-			return -EFBIG;
+	    lo->lo_sizelimit != info->lo_sizelimit) {
+		if (figure_loop_size(lo, info->lo_offset, info->lo_sizelimit)) {
+			err = -EFBIG;
+			goto exit;
+		}
+	}
 
 	loop_config_discard(lo);
 
@@ -1137,13 +1179,6 @@ loop_set_status(struct loop_device *lo, const struct loop_info64 *info)
 	     (info->lo_flags & LO_FLAGS_AUTOCLEAR))
 		lo->lo_flags ^= LO_FLAGS_AUTOCLEAR;
 
-	if ((info->lo_flags & LO_FLAGS_PARTSCAN) &&
-	     !(lo->lo_flags & LO_FLAGS_PARTSCAN)) {
-		lo->lo_flags |= LO_FLAGS_PARTSCAN;
-		lo->lo_disk->flags &= ~GENHD_FL_NO_PART_SCAN;
-		loop_reread_partitions(lo, lo->lo_device);
-	}
-
 	lo->lo_encrypt_key_size = info->lo_encrypt_key_size;
 	lo->lo_init[0] = info->lo_init[0];
 	lo->lo_init[1] = info->lo_init[1];
@@ -1156,26 +1191,33 @@ loop_set_status(struct loop_device *lo, const struct loop_info64 *info)
 	/* update dio if lo_offset or transfer is changed */
 	__loop_update_dio(lo, lo->use_dio);
 
-	return 0;
+ exit:
+	blk_mq_unfreeze_queue(lo->lo_queue);
+
+	if (!err && (info->lo_flags & LO_FLAGS_PARTSCAN) &&
+	     !(lo->lo_flags & LO_FLAGS_PARTSCAN)) {
+		lo->lo_flags |= LO_FLAGS_PARTSCAN;
+		lo->lo_disk->flags &= ~GENHD_FL_NO_PART_SCAN;
+		loop_reread_partitions(lo, lo->lo_device);
+	}
+
+	return err;
 }
 
 static int
 loop_get_status(struct loop_device *lo, struct loop_info64 *info)
 {
-	struct file *file = lo->lo_backing_file;
+	struct file *file;
 	struct kstat stat;
-	int error;
+	int ret;
 
-	if (lo->lo_state != Lo_bound)
+	if (lo->lo_state != Lo_bound) {
+		mutex_unlock(&lo->lo_ctl_mutex);
 		return -ENXIO;
-	error = vfs_getattr(&file->f_path, &stat);
-	if (error)
-		return error;
+	}
+
 	memset(info, 0, sizeof(*info));
 	info->lo_number = lo->lo_number;
-	info->lo_device = huge_encode_dev(stat.dev);
-	info->lo_inode = stat.ino;
-	info->lo_rdevice = huge_encode_dev(lo->lo_device ? stat.rdev : stat.dev);
 	info->lo_offset = lo->lo_offset;
 	info->lo_sizelimit = lo->lo_sizelimit;
 	info->lo_flags = lo->lo_flags;
@@ -1188,7 +1230,19 @@ loop_get_status(struct loop_device *lo, struct loop_info64 *info)
 		memcpy(info->lo_encrypt_key, lo->lo_encrypt_key,
 		       lo->lo_encrypt_key_size);
 	}
-	return 0;
+
+	/* Drop lo_ctl_mutex while we call into the filesystem. */
+	file = get_file(lo->lo_backing_file);
+	mutex_unlock(&lo->lo_ctl_mutex);
+	ret = vfs_getattr(&file->f_path, &stat, STATX_INO,
+			  AT_STATX_SYNC_AS_STAT);
+	if (!ret) {
+		info->lo_device = huge_encode_dev(stat.dev);
+		info->lo_inode = stat.ino;
+		info->lo_rdevice = huge_encode_dev(stat.rdev);
+	}
+	fput(file);
+	return ret;
 }
 
 static void
@@ -1269,12 +1323,13 @@ static int
 loop_get_status_old(struct loop_device *lo, struct loop_info __user *arg) {
 	struct loop_info info;
 	struct loop_info64 info64;
-	int err = 0;
+	int err;
 
-	if (!arg)
-		err = -EINVAL;
-	if (!err)
-		err = loop_get_status(lo, &info64);
+	if (!arg) {
+		mutex_unlock(&lo->lo_ctl_mutex);
+		return -EINVAL;
+	}
+	err = loop_get_status(lo, &info64);
 	if (!err)
 		err = loop_info64_to_old(&info64, &info);
 	if (!err && copy_to_user(arg, &info, sizeof(info)))
@@ -1286,19 +1341,20 @@ loop_get_status_old(struct loop_device *lo, struct loop_info __user *arg) {
 static int
 loop_get_status64(struct loop_device *lo, struct loop_info64 __user *arg) {
 	struct loop_info64 info64;
-	int err = 0;
+	int err;
 
-	if (!arg)
-		err = -EINVAL;
-	if (!err)
-		err = loop_get_status(lo, &info64);
+	if (!arg) {
+		mutex_unlock(&lo->lo_ctl_mutex);
+		return -EINVAL;
+	}
+	err = loop_get_status(lo, &info64);
 	if (!err && copy_to_user(arg, &info64, sizeof(info64)))
 		err = -EFAULT;
 
 	return err;
 }
 
-static int loop_set_capacity(struct loop_device *lo, struct block_device *bdev)
+static int loop_set_capacity(struct loop_device *lo)
 {
 	if (unlikely(lo->lo_state != Lo_bound))
 		return -ENXIO;
@@ -1320,13 +1376,36 @@ static int loop_set_dio(struct loop_device *lo, unsigned long arg)
 	return error;
 }
 
+static int loop_set_block_size(struct loop_device *lo, unsigned long arg)
+{
+	if (lo->lo_state != Lo_bound)
+		return -ENXIO;
+
+	if (arg < 512 || arg > PAGE_SIZE || !is_power_of_2(arg))
+		return -EINVAL;
+
+	blk_mq_freeze_queue(lo->lo_queue);
+
+	blk_queue_logical_block_size(lo->lo_queue, arg);
+	blk_queue_physical_block_size(lo->lo_queue, arg);
+	blk_queue_io_min(lo->lo_queue, arg);
+	loop_update_dio(lo);
+
+	blk_mq_unfreeze_queue(lo->lo_queue);
+
+	return 0;
+}
+
 static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 	unsigned int cmd, unsigned long arg)
 {
 	struct loop_device *lo = bdev->bd_disk->private_data;
 	int err;
 
-	mutex_lock_nested(&lo->lo_ctl_mutex, 1);
+	err = mutex_lock_killable_nested(&lo->lo_ctl_mutex, 1);
+	if (err)
+		goto out_unlocked;
+
 	switch (cmd) {
 	case LOOP_SET_FD:
 		err = loop_set_fd(lo, mode, bdev, arg);
@@ -1348,7 +1427,8 @@ static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 		break;
 	case LOOP_GET_STATUS:
 		err = loop_get_status_old(lo, (struct loop_info __user *) arg);
-		break;
+		/* loop_get_status() unlocks lo_ctl_mutex */
+		goto out_unlocked;
 	case LOOP_SET_STATUS64:
 		err = -EPERM;
 		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
@@ -1357,16 +1437,22 @@ static int lo_ioctl(struct block_device *bdev, fmode_t mode,
 		break;
 	case LOOP_GET_STATUS64:
 		err = loop_get_status64(lo, (struct loop_info64 __user *) arg);
-		break;
+		/* loop_get_status() unlocks lo_ctl_mutex */
+		goto out_unlocked;
 	case LOOP_SET_CAPACITY:
 		err = -EPERM;
 		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
-			err = loop_set_capacity(lo, bdev);
+			err = loop_set_capacity(lo);
 		break;
 	case LOOP_SET_DIRECT_IO:
 		err = -EPERM;
 		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
 			err = loop_set_dio(lo, arg);
+		break;
+	case LOOP_SET_BLOCK_SIZE:
+		err = -EPERM;
+		if ((mode & FMODE_WRITE) || capable(CAP_SYS_ADMIN))
+			err = loop_set_block_size(lo, arg);
 		break;
 	default:
 		err = lo->ioctl ? lo->ioctl(lo, cmd, arg) : -EINVAL;
@@ -1485,12 +1571,13 @@ loop_get_status_compat(struct loop_device *lo,
 		       struct compat_loop_info __user *arg)
 {
 	struct loop_info64 info64;
-	int err = 0;
+	int err;
 
-	if (!arg)
-		err = -EINVAL;
-	if (!err)
-		err = loop_get_status(lo, &info64);
+	if (!arg) {
+		mutex_unlock(&lo->lo_ctl_mutex);
+		return -EINVAL;
+	}
+	err = loop_get_status(lo, &info64);
 	if (!err)
 		err = loop_info64_to_compat(&info64, arg);
 	return err;
@@ -1504,16 +1591,20 @@ static int lo_compat_ioctl(struct block_device *bdev, fmode_t mode,
 
 	switch(cmd) {
 	case LOOP_SET_STATUS:
-		mutex_lock(&lo->lo_ctl_mutex);
-		err = loop_set_status_compat(
-			lo, (const struct compat_loop_info __user *) arg);
-		mutex_unlock(&lo->lo_ctl_mutex);
+		err = mutex_lock_killable(&lo->lo_ctl_mutex);
+		if (!err) {
+			err = loop_set_status_compat(lo,
+						     (const struct compat_loop_info __user *)arg);
+			mutex_unlock(&lo->lo_ctl_mutex);
+		}
 		break;
 	case LOOP_GET_STATUS:
-		mutex_lock(&lo->lo_ctl_mutex);
-		err = loop_get_status_compat(
-			lo, (struct compat_loop_info __user *) arg);
-		mutex_unlock(&lo->lo_ctl_mutex);
+		err = mutex_lock_killable(&lo->lo_ctl_mutex);
+		if (!err) {
+			err = loop_get_status_compat(lo,
+						     (struct compat_loop_info __user *)arg);
+			/* loop_get_status() unlocks lo_ctl_mutex */
+		}
 		break;
 	case LOOP_SET_CAPACITY:
 	case LOOP_CLR_FD:
@@ -1522,6 +1613,7 @@ static int lo_compat_ioctl(struct block_device *bdev, fmode_t mode,
 		arg = (unsigned long) compat_ptr(arg);
 	case LOOP_SET_FD:
 	case LOOP_CHANGE_FD:
+	case LOOP_SET_BLOCK_SIZE:
 		err = lo_ioctl(bdev, mode, cmd, arg);
 		break;
 	default:
@@ -1550,9 +1642,8 @@ out:
 	return err;
 }
 
-static void lo_release(struct gendisk *disk, fmode_t mode)
+static void __lo_release(struct loop_device *lo)
 {
-	struct loop_device *lo = disk->private_data;
 	int err;
 
 	if (atomic_dec_return(&lo->lo_refcnt))
@@ -1567,15 +1658,23 @@ static void lo_release(struct gendisk *disk, fmode_t mode)
 		err = loop_clr_fd(lo);
 		if (!err)
 			return;
-	} else {
+	} else if (lo->lo_state == Lo_bound) {
 		/*
 		 * Otherwise keep thread (if running) and config,
 		 * but flush possible ongoing bios in thread.
 		 */
-		loop_flush(lo);
+		blk_mq_freeze_queue(lo->lo_queue);
+		blk_mq_unfreeze_queue(lo->lo_queue);
 	}
 
 	mutex_unlock(&lo->lo_ctl_mutex);
+}
+
+static void lo_release(struct gendisk *disk, fmode_t mode)
+{
+	mutex_lock(&loop_index_mutex);
+	__lo_release(disk->private_data);
+	mutex_unlock(&loop_index_mutex);
 }
 
 static const struct block_device_operations lo_fops = {
@@ -1592,9 +1691,9 @@ static const struct block_device_operations lo_fops = {
  * And now the modules code and kernel interface.
  */
 static int max_loop;
-module_param(max_loop, int, S_IRUGO);
+module_param(max_loop, int, 0444);
 MODULE_PARM_DESC(max_loop, "Maximum number of loop devices");
-module_param(max_part, int, S_IRUGO);
+module_param(max_part, int, 0444);
 MODULE_PARM_DESC(max_part, "Maximum number of partitions per loop device");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_BLOCKDEV_MAJOR(LOOP_MAJOR);
@@ -1637,20 +1736,22 @@ int loop_unregister_transfer(int number)
 EXPORT_SYMBOL(loop_register_transfer);
 EXPORT_SYMBOL(loop_unregister_transfer);
 
-static int loop_queue_rq(struct blk_mq_hw_ctx *hctx,
+static blk_status_t loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 		const struct blk_mq_queue_data *bd)
 {
-	struct loop_cmd *cmd = blk_mq_rq_to_pdu(bd->rq);
-	struct loop_device *lo = cmd->rq->q->queuedata;
+	struct request *rq = bd->rq;
+	struct loop_cmd *cmd = blk_mq_rq_to_pdu(rq);
+	struct loop_device *lo = rq->q->queuedata;
 
-	blk_mq_start_request(bd->rq);
+	blk_mq_start_request(rq);
 
 	if (lo->lo_state != Lo_bound)
-		return BLK_MQ_RQ_QUEUE_ERROR;
+		return BLK_STS_IOERR;
 
-	switch (req_op(cmd->rq)) {
+	switch (req_op(rq)) {
 	case REQ_OP_FLUSH:
 	case REQ_OP_DISCARD:
+	case REQ_OP_WRITE_ZEROES:
 		cmd->use_aio = false;
 		break;
 	default:
@@ -1658,15 +1759,24 @@ static int loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 		break;
 	}
 
+	/* always use the first bio's css */
+#ifdef CONFIG_BLK_CGROUP
+	if (cmd->use_aio && rq->bio && rq->bio->bi_css) {
+		cmd->css = rq->bio->bi_css;
+		css_get(cmd->css);
+	} else
+#endif
+		cmd->css = NULL;
 	kthread_queue_work(&lo->worker, &cmd->work);
 
-	return BLK_MQ_RQ_QUEUE_OK;
+	return BLK_STS_OK;
 }
 
 static void loop_handle_cmd(struct loop_cmd *cmd)
 {
-	const bool write = op_is_write(req_op(cmd->rq));
-	struct loop_device *lo = cmd->rq->q->queuedata;
+	struct request *rq = blk_mq_rq_from_pdu(cmd);
+	const bool write = op_is_write(req_op(rq));
+	struct loop_device *lo = rq->q->queuedata;
 	int ret = 0;
 
 	if (write && (lo->lo_flags & LO_FLAGS_READ_ONLY)) {
@@ -1674,11 +1784,13 @@ static void loop_handle_cmd(struct loop_cmd *cmd)
 		goto failed;
 	}
 
-	ret = do_req_filebacked(lo, cmd->rq);
+	ret = do_req_filebacked(lo, rq);
  failed:
 	/* complete non-aio request */
-	if (!cmd->use_aio || ret)
-		blk_mq_complete_request(cmd->rq, ret ? -EIO : 0);
+	if (!cmd->use_aio || ret) {
+		cmd->ret = ret ? -EIO : 0;
+		blk_mq_complete_request(rq);
+	}
 }
 
 static void loop_queue_work(struct kthread_work *work)
@@ -1689,21 +1801,19 @@ static void loop_queue_work(struct kthread_work *work)
 	loop_handle_cmd(cmd);
 }
 
-static int loop_init_request(void *data, struct request *rq,
-		unsigned int hctx_idx, unsigned int request_idx,
-		unsigned int numa_node)
+static int loop_init_request(struct blk_mq_tag_set *set, struct request *rq,
+		unsigned int hctx_idx, unsigned int numa_node)
 {
 	struct loop_cmd *cmd = blk_mq_rq_to_pdu(rq);
 
-	cmd->rq = rq;
 	kthread_init_work(&cmd->work, loop_queue_work);
-
 	return 0;
 }
 
-static struct blk_mq_ops loop_mq_ops = {
+static const struct blk_mq_ops loop_mq_ops = {
 	.queue_rq       = loop_queue_rq,
 	.init_request	= loop_init_request,
+	.complete	= lo_complete_rq,
 };
 
 static int loop_add(struct loop_device **l, int i)
@@ -1751,11 +1861,15 @@ static int loop_add(struct loop_device **l, int i)
 	}
 	lo->lo_queue->queuedata = lo;
 
+	blk_queue_max_hw_sectors(lo->lo_queue, BLK_DEF_MAX_SECTORS);
+
 	/*
-	 * It doesn't make sense to enable merge because the I/O
-	 * submitted to backing file is handled page by page.
+	 * By default, we do buffer IO, so it doesn't make sense to enable
+	 * merge because the I/O submitted to backing file is handled page by
+	 * page. For directio mode, merge does help to dispatch bigger request
+	 * to underlayer disk. We will enable merge once directio is enabled.
 	 */
-	queue_flag_set_unlocked(QUEUE_FLAG_NOMERGES, lo->lo_queue);
+	blk_queue_flag_set(QUEUE_FLAG_NOMERGES, lo->lo_queue);
 
 	err = -ENOMEM;
 	disk = lo->lo_disk = alloc_disk(1 << part_shift);
@@ -1811,8 +1925,8 @@ out:
 
 static void loop_remove(struct loop_device *lo)
 {
-	blk_cleanup_queue(lo->lo_queue);
 	del_gendisk(lo->lo_disk);
+	blk_cleanup_queue(lo->lo_queue);
 	blk_mq_free_tag_set(&lo->tag_set);
 	put_disk(lo->lo_disk);
 	kfree(lo);
@@ -1869,7 +1983,7 @@ static struct kobject *loop_probe(dev_t dev, int *part, void *data)
 	if (err < 0)
 		kobj = NULL;
 	else
-		kobj = get_disk(lo->lo_disk);
+		kobj = get_disk_and_module(lo->lo_disk);
 	mutex_unlock(&loop_index_mutex);
 
 	*part = 0;
@@ -1896,7 +2010,9 @@ static long loop_control_ioctl(struct file *file, unsigned int cmd,
 		ret = loop_lookup(&lo, parm);
 		if (ret < 0)
 			break;
-		mutex_lock(&lo->lo_ctl_mutex);
+		ret = mutex_lock_killable(&lo->lo_ctl_mutex);
+		if (ret)
+			break;
 		if (lo->lo_state != Lo_unbound) {
 			ret = -EBUSY;
 			mutex_unlock(&lo->lo_ctl_mutex);
@@ -1947,10 +2063,6 @@ static int __init loop_init(void)
 	struct loop_device *lo;
 	int err;
 
-	err = misc_register(&loop_misc);
-	if (err < 0)
-		return err;
-
 	part_shift = 0;
 	if (max_part > 0) {
 		part_shift = fls(max_part);
@@ -1968,12 +2080,12 @@ static int __init loop_init(void)
 
 	if ((1UL << part_shift) > DISK_MAX_PARTS) {
 		err = -EINVAL;
-		goto misc_out;
+		goto err_out;
 	}
 
 	if (max_loop > 1UL << (MINORBITS - part_shift)) {
 		err = -EINVAL;
-		goto misc_out;
+		goto err_out;
 	}
 
 	/*
@@ -1991,6 +2103,11 @@ static int __init loop_init(void)
 		nr = CONFIG_BLK_DEV_LOOP_MIN_COUNT;
 		range = 1UL << MINORBITS;
 	}
+
+	err = misc_register(&loop_misc);
+	if (err < 0)
+		goto err_out;
+
 
 	if (register_blkdev(LOOP_MAJOR, "loop")) {
 		err = -EIO;
@@ -2011,6 +2128,7 @@ static int __init loop_init(void)
 
 misc_out:
 	misc_deregister(&loop_misc);
+err_out:
 	return err;
 }
 

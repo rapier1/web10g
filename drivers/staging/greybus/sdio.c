@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SD/MMC Greybus driver.
  *
  * Copyright 2014-2015 Google Inc.
  * Copyright 2014-2015 Linaro Ltd.
- *
- * Released under the GPLv2 only.
  */
 
 #include <linux/kernel.h>
@@ -52,7 +51,7 @@ struct gb_sdio_host {
 
 static inline bool single_op(struct mmc_command *cmd)
 {
-	uint32_t opcode = cmd->opcode;
+	u32 opcode = cmd->opcode;
 
 	return opcode == MMC_WRITE_BLOCK ||
 	       opcode == MMC_READ_SINGLE_BLOCK;

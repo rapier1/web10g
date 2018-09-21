@@ -28,6 +28,8 @@
 #include <linux/export.h>
 #include <linux/stacktrace.h>
 #include <linux/kallsyms.h>
+#include <linux/sched/debug.h>
+
 #include <asm/arcregs.h>
 #include <asm/unwind.h>
 #include <asm/switch_to.h>
@@ -161,7 +163,7 @@ arc_unwind_core(struct task_struct *tsk, struct pt_regs *regs,
  */
 static int __print_sym(unsigned int address, void *unused)
 {
-	__print_symbol("  %s\n", address);
+	printk("  %pS\n", (void *)address);
 	return 0;
 }
 

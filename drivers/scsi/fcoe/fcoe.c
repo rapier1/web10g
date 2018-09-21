@@ -63,11 +63,11 @@ unsigned int fcoe_debug_logging;
 module_param_named(debug_logging, fcoe_debug_logging, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(debug_logging, "a bit mask of logging levels");
 
-unsigned int fcoe_e_d_tov = 2 * 1000;
+static unsigned int fcoe_e_d_tov = 2 * 1000;
 module_param_named(e_d_tov, fcoe_e_d_tov, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(e_d_tov, "E_D_TOV in ms, default 2000");
 
-unsigned int fcoe_r_a_tov = 2 * 2 * 1000;
+static unsigned int fcoe_r_a_tov = 2 * 2 * 1000;
 module_param_named(r_a_tov, fcoe_r_a_tov, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(r_a_tov, "R_A_TOV in ms, default 4000");
 
@@ -155,7 +155,7 @@ static int fcoe_vport_disable(struct fc_vport *, bool disable);
 static void fcoe_set_vport_symbolic_name(struct fc_vport *);
 static void fcoe_set_port_id(struct fc_lport *, u32, struct fc_frame *);
 static void fcoe_fcf_get_vlan_id(struct fcoe_fcf_device *);
-
+static void fcoe_vport_remove(struct fc_lport *);
 
 static struct fcoe_sysfs_function_template fcoe_sysfs_templ = {
 	.set_fcoe_ctlr_mode = fcoe_ctlr_mode,
@@ -277,6 +277,7 @@ static struct scsi_host_template fcoe_shost_template = {
 	.name = "FCoE Driver",
 	.proc_name = FCOE_NAME,
 	.queuecommand = fc_queuecommand,
+	.eh_timed_out = fc_eh_timed_out,
 	.eh_abort_handler = fc_eh_abort,
 	.eh_device_reset_handler = fc_eh_device_reset,
 	.eh_host_reset_handler = fc_eh_host_reset,
@@ -326,8 +327,7 @@ static int fcoe_interface_setup(struct fcoe_interface *fcoe,
 
 	/* look for SAN MAC address, if multiple SAN MACs exist, only
 	 * use the first one for SPMA */
-	real_dev = (netdev->priv_flags & IFF_802_1Q_VLAN) ?
-		vlan_dev_real_dev(netdev) : netdev;
+	real_dev = is_vlan_dev(netdev) ? vlan_dev_real_dev(netdev) : netdev;
 	fcoe->realdev = real_dev;
 	rcu_read_lock();
 	for_each_dev_addr(real_dev, ha) {
@@ -501,11 +501,6 @@ static void fcoe_interface_cleanup(struct fcoe_interface *fcoe)
 	struct net_device *netdev = fcoe->netdev;
 	struct fcoe_ctlr *fip = fcoe_to_ctlr(fcoe);
 
-	rtnl_lock();
-	if (!fcoe->removed)
-		fcoe_interface_remove(fcoe);
-	rtnl_unlock();
-
 	/* Release the self-reference taken during fcoe_interface_create() */
 	/* tear-down the FCoE controller */
 	fcoe_ctlr_destroy(fip);
@@ -519,7 +514,7 @@ static void fcoe_interface_cleanup(struct fcoe_interface *fcoe)
  * @skb:      The receive skb
  * @netdev:   The associated net device
  * @ptype:    The packet_type structure which was used to register this handler
- * @orig_dev: The original net_device the the skb was received on.
+ * @orig_dev: The original net_device the skb was received on.
  *	      (in case dev is a bond)
  *
  * Returns: 0 for success
@@ -542,7 +537,7 @@ static int fcoe_fip_recv(struct sk_buff *skb, struct net_device *netdev,
  * @skb:      The receive skb
  * @netdev:   The associated net device
  * @ptype:    The packet_type structure which was used to register this handler
- * @orig_dev: The original net_device the the skb was received on.
+ * @orig_dev: The original net_device the skb was received on.
  *	      (in case dev is a bond)
  *
  * Returns: 0 for success
@@ -730,7 +725,7 @@ static int fcoe_netdev_config(struct fc_lport *lport, struct net_device *netdev)
 	ctlr = fcoe_to_ctlr(fcoe);
 
 	/* Figure out the VLAN ID, if any */
-	if (netdev->priv_flags & IFF_802_1Q_VLAN)
+	if (is_vlan_dev(netdev))
 		lport->vlan = vlan_dev_vlan_id(netdev);
 	else
 		lport->vlan = 0;
@@ -754,7 +749,7 @@ static int fcoe_netdev_config(struct fc_lport *lport, struct net_device *netdev)
 
 	skb_queue_head_init(&port->fcoe_pending_queue);
 	port->fcoe_pending_queue_active = 0;
-	setup_timer(&port->timer, fcoe_queue_timer, (unsigned long)lport);
+	timer_setup(&port->timer, fcoe_queue_timer, 0);
 
 	fcoe_link_speed_update(lport);
 
@@ -959,13 +954,13 @@ static inline int fcoe_em_config(struct fc_lport *lport)
 	 * Reuse existing offload em instance in case
 	 * it is already allocated on real eth device
 	 */
-	if (fcoe->netdev->priv_flags & IFF_802_1Q_VLAN)
+	if (is_vlan_dev(fcoe->netdev))
 		cur_real_dev = vlan_dev_real_dev(fcoe->netdev);
 	else
 		cur_real_dev = fcoe->netdev;
 
 	list_for_each_entry(oldfcoe, &fcoe_hostlist, list) {
-		if (oldfcoe->netdev->priv_flags & IFF_802_1Q_VLAN)
+		if (is_vlan_dev(oldfcoe->netdev))
 			old_real_dev = vlan_dev_real_dev(oldfcoe->netdev);
 		else
 			old_real_dev = oldfcoe->netdev;
@@ -1014,6 +1009,8 @@ skip_oem:
  * fcoe_if_destroy() - Tear down a SW FCoE instance
  * @lport: The local port to be destroyed
  *
+ * Locking: Must be called with the RTNL mutex held.
+ *
  */
 static void fcoe_if_destroy(struct fc_lport *lport)
 {
@@ -1035,14 +1032,12 @@ static void fcoe_if_destroy(struct fc_lport *lport)
 	/* Free existing transmit skbs */
 	fcoe_clean_pending_queue(lport);
 
-	rtnl_lock();
 	if (!is_zero_ether_addr(port->data_src_addr))
 		dev_uc_del(netdev, port->data_src_addr);
 	if (lport->vport)
 		synchronize_net();
 	else
 		fcoe_interface_remove(fcoe);
-	rtnl_unlock();
 
 	/* Free queued packets for the per-CPU receive threads */
 	fcoe_percpu_clean(lport);
@@ -1543,7 +1538,7 @@ static int fcoe_xmit(struct fc_lport *lport, struct fc_frame *fp)
 		cp = kmap_atomic(skb_frag_page(frag))
 			+ frag->page_offset;
 	} else {
-		cp = (struct fcoe_crc_eof *)skb_put(skb, tlen);
+		cp = skb_put(skb, tlen);
 	}
 
 	memset(cp, 0, sizeof(*cp));
@@ -1563,7 +1558,7 @@ static int fcoe_xmit(struct fc_lport *lport, struct fc_frame *fp)
 	skb->protocol = htons(ETH_P_FCOE);
 	skb->priority = fcoe->priority;
 
-	if (fcoe->netdev->priv_flags & IFF_802_1Q_VLAN &&
+	if (is_vlan_dev(fcoe->netdev) &&
 	    fcoe->realdev->features & NETIF_F_HW_VLAN_CTAG_TX) {
 		/* must set skb->dev before calling vlan_put_tag */
 		skb->dev = fcoe->realdev;
@@ -1794,7 +1789,7 @@ fcoe_hostlist_lookup_realdev_port(struct net_device *netdev)
 	struct net_device *real_dev;
 
 	list_for_each_entry(fcoe, &fcoe_hostlist, list) {
-		if (fcoe->netdev->priv_flags & IFF_802_1Q_VLAN)
+		if (is_vlan_dev(fcoe->netdev))
 			real_dev = vlan_dev_real_dev(fcoe->netdev);
 		else
 			real_dev = fcoe->netdev;
@@ -1903,7 +1898,14 @@ static int fcoe_device_notification(struct notifier_block *notifier,
 	case NETDEV_UNREGISTER:
 		list_del(&fcoe->list);
 		port = lport_priv(ctlr->lp);
-		queue_work(fcoe_wq, &port->destroy_work);
+		fcoe_vport_remove(lport);
+		mutex_lock(&fcoe_config_mutex);
+		fcoe_if_destroy(lport);
+		if (!fcoe->removed)
+			fcoe_interface_remove(fcoe);
+		fcoe_interface_cleanup(fcoe);
+		mutex_unlock(&fcoe_config_mutex);
+		fcoe_ctlr_device_delete(fcoe_ctlr_to_ctlr_dev(ctlr));
 		goto out;
 		break;
 	case NETDEV_FEAT_CHANGE:
@@ -2108,30 +2110,10 @@ static void fcoe_destroy_work(struct work_struct *work)
 	struct fcoe_ctlr *ctlr;
 	struct fcoe_port *port;
 	struct fcoe_interface *fcoe;
-	struct Scsi_Host *shost;
-	struct fc_host_attrs *fc_host;
-	unsigned long flags;
-	struct fc_vport *vport;
-	struct fc_vport *next_vport;
 
 	port = container_of(work, struct fcoe_port, destroy_work);
-	shost = port->lport->host;
-	fc_host = shost_to_fc_host(shost);
 
-	/* Loop through all the vports and mark them for deletion */
-	spin_lock_irqsave(shost->host_lock, flags);
-	list_for_each_entry_safe(vport, next_vport, &fc_host->vports, peers) {
-		if (vport->flags & (FC_VPORT_DEL | FC_VPORT_CREATING)) {
-			continue;
-		} else {
-			vport->flags |= FC_VPORT_DELETING;
-			queue_work(fc_host_work_q(shost),
-				   &vport->vport_delete_work);
-		}
-	}
-	spin_unlock_irqrestore(shost->host_lock, flags);
-
-	flush_workqueue(fc_host_work_q(shost));
+	fcoe_vport_remove(port->lport);
 
 	mutex_lock(&fcoe_config_mutex);
 
@@ -2139,7 +2121,11 @@ static void fcoe_destroy_work(struct work_struct *work)
 	ctlr = fcoe_to_ctlr(fcoe);
 	cdev = fcoe_ctlr_to_ctlr_dev(ctlr);
 
+	rtnl_lock();
 	fcoe_if_destroy(port->lport);
+	if (!fcoe->removed)
+		fcoe_interface_remove(fcoe);
+	rtnl_unlock();
 	fcoe_interface_cleanup(fcoe);
 
 	mutex_unlock(&fcoe_config_mutex);
@@ -2254,11 +2240,13 @@ static int _fcoe_create(struct net_device *netdev, enum fip_mode fip_mode,
 		printk(KERN_ERR "fcoe: Failed to create interface (%s)\n",
 		       netdev->name);
 		rc = -EIO;
+		if (!fcoe->removed)
+			fcoe_interface_remove(fcoe);
 		rtnl_unlock();
 		fcoe_interface_cleanup(fcoe);
 		mutex_unlock(&fcoe_config_mutex);
 		fcoe_ctlr_device_delete(ctlr_dev);
-		goto out;
+		return rc;
 	}
 
 	/* Make this the "master" N_Port */
@@ -2299,7 +2287,7 @@ static int _fcoe_create(struct net_device *netdev, enum fip_mode fip_mode,
 out_nodev:
 	rtnl_unlock();
 	mutex_unlock(&fcoe_config_mutex);
-out:
+
 	return rc;
 }
 
@@ -2590,7 +2578,7 @@ module_exit(fcoe_exit);
  * fcoe_flogi_resp() - FCoE specific FLOGI and FDISC response handler
  * @seq: active sequence in the FLOGI or FDISC exchange
  * @fp: response frame, or error encoded in a pointer (timeout)
- * @arg: pointer the the fcoe_ctlr structure
+ * @arg: pointer to the fcoe_ctlr structure
  *
  * This handles MAC address management for FCoE, then passes control on to
  * the libfc FLOGI response handler.
@@ -2619,7 +2607,7 @@ done:
  * fcoe_logo_resp() - FCoE specific LOGO response handler
  * @seq: active sequence in the LOGO exchange
  * @fp: response frame, or error encoded in a pointer (timeout)
- * @arg: pointer the the fcoe_ctlr structure
+ * @arg: pointer to the fcoe_ctlr structure
  *
  * This handles MAC address management for FCoE, then passes control on to
  * the libfc LOGO response handler.
@@ -2738,10 +2726,43 @@ static int fcoe_vport_destroy(struct fc_vport *vport)
 	mutex_unlock(&n_port->lp_mutex);
 
 	mutex_lock(&fcoe_config_mutex);
+	rtnl_lock();
 	fcoe_if_destroy(vn_port);
+	rtnl_unlock();
 	mutex_unlock(&fcoe_config_mutex);
 
 	return 0;
+}
+
+/**
+ * fcoe_vport_remove() - remove attached vports
+ * @lport: lport for which the vports should be removed
+ */
+static void fcoe_vport_remove(struct fc_lport *lport)
+{
+	struct Scsi_Host *shost;
+	struct fc_host_attrs *fc_host;
+	unsigned long flags;
+	struct fc_vport *vport;
+	struct fc_vport *next_vport;
+
+	shost = lport->host;
+	fc_host = shost_to_fc_host(shost);
+
+	/* Loop through all the vports and mark them for deletion */
+	spin_lock_irqsave(shost->host_lock, flags);
+	list_for_each_entry_safe(vport, next_vport, &fc_host->vports, peers) {
+		if (vport->flags & (FC_VPORT_DEL | FC_VPORT_CREATING)) {
+			continue;
+		} else {
+			vport->flags |= FC_VPORT_DELETING;
+			queue_work(fc_host_work_q(shost),
+				   &vport->vport_delete_work);
+		}
+	}
+	spin_unlock_irqrestore(shost->host_lock, flags);
+
+	flush_workqueue(fc_host_work_q(shost));
 }
 
 /**

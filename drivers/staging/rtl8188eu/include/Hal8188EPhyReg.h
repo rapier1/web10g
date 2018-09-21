@@ -136,7 +136,8 @@
 #define	rCCK0_CCA			0xa08
 
 /* AGC default value, saturation level Antenna Diversity, RX AGC, LNA Threshold,
- * RX LNA Threshold useless now. Not the same as 90 series */
+ * RX LNA Threshold useless now. Not the same as 90 series
+ */
 #define	rCCK0_RxAGC1			0xa0c
 #define	rCCK0_RxAGC2			0xa10	/* AGC & DAGC */
 
@@ -179,7 +180,7 @@
 
 /* RxIQ DC offset, Rx digital filter, DC notch filter */
 #define	rOFDM0_XARxAFE			0xc10
-#define	rOFDM0_XARxIQImbalance		0xc14  /* RxIQ imblance matrix */
+#define	rOFDM0_XARxIQImbalance		0xc14  /* RxIQ imbalance matrix */
 #define	rOFDM0_XBRxAFE			0xc18
 #define	rOFDM0_XBRxIQImbalance		0xc1c
 #define	rOFDM0_XCRxAFE			0xc20

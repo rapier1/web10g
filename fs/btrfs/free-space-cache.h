@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2009 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License v2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
-#ifndef __BTRFS_FREE_SPACE_CACHE
-#define __BTRFS_FREE_SPACE_CACHE
+#ifndef BTRFS_FREE_SPACE_CACHE_H
+#define BTRFS_FREE_SPACE_CACHE_H
 
 struct btrfs_free_space {
 	struct rb_node offset_index;
@@ -51,18 +38,17 @@ struct btrfs_free_space_op {
 
 struct btrfs_io_ctl;
 
-struct inode *lookup_free_space_inode(struct btrfs_root *root,
+struct inode *lookup_free_space_inode(struct btrfs_fs_info *fs_info,
 				      struct btrfs_block_group_cache
 				      *block_group, struct btrfs_path *path);
-int create_free_space_inode(struct btrfs_root *root,
+int create_free_space_inode(struct btrfs_fs_info *fs_info,
 			    struct btrfs_trans_handle *trans,
 			    struct btrfs_block_group_cache *block_group,
 			    struct btrfs_path *path);
 
 int btrfs_check_trunc_cache_free_space(struct btrfs_fs_info *fs_info,
 				       struct btrfs_block_rsv *rsv);
-int btrfs_truncate_free_space_cache(struct btrfs_root *root,
-				    struct btrfs_trans_handle *trans,
+int btrfs_truncate_free_space_cache(struct btrfs_trans_handle *trans,
 				    struct btrfs_block_group_cache *block_group,
 				    struct inode *inode);
 int load_free_space_cache(struct btrfs_fs_info *fs_info,

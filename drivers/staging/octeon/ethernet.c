@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * This file is based on code from OCTEON SDK by Cavium Networks.
  *
  * Copyright (c) 2003-2007 Cavium Networks
- *
- * This file is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, Version 2, as
- * published by the Free Software Foundation.
  */
 
 #include <linux/platform_device.h>
@@ -228,17 +225,17 @@ static struct net_device_stats *cvm_oct_common_get_stats(struct net_device *dev)
 			cvmx_pko_get_port_status(priv->port, 1, &tx_status);
 		}
 
-		priv->stats.rx_packets += rx_status.inb_packets;
-		priv->stats.tx_packets += tx_status.packets;
-		priv->stats.rx_bytes += rx_status.inb_octets;
-		priv->stats.tx_bytes += tx_status.octets;
-		priv->stats.multicast += rx_status.multicast_packets;
-		priv->stats.rx_crc_errors += rx_status.inb_errors;
-		priv->stats.rx_frame_errors += rx_status.fcs_align_err_packets;
-		priv->stats.rx_dropped += rx_status.dropped_packets;
+		dev->stats.rx_packets += rx_status.inb_packets;
+		dev->stats.tx_packets += tx_status.packets;
+		dev->stats.rx_bytes += rx_status.inb_octets;
+		dev->stats.tx_bytes += tx_status.octets;
+		dev->stats.multicast += rx_status.multicast_packets;
+		dev->stats.rx_crc_errors += rx_status.inb_errors;
+		dev->stats.rx_frame_errors += rx_status.fcs_align_err_packets;
+		dev->stats.rx_dropped += rx_status.dropped_packets;
 	}
 
-	return &priv->stats;
+	return &dev->stats;
 }
 
 /**
@@ -889,7 +886,8 @@ static int cvm_oct_probe(struct platform_device *pdev)
 				fau -=
 				    cvmx_pko_get_num_queues(priv->port) *
 				    sizeof(u32);
-				schedule_delayed_work(&priv->port_periodic_work, HZ);
+				schedule_delayed_work(&priv->port_periodic_work,
+						      HZ);
 			}
 		}
 	}

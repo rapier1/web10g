@@ -4,253 +4,214 @@
  * Copyright (C) 2016 Jens Axboe
  */
 #include <linux/kernel.h>
+#include <linux/rculist.h>
 #include <linux/blk-mq.h>
 
 #include "blk-stat.h"
 #include "blk-mq.h"
+#include "blk.h"
 
-static void blk_stat_flush_batch(struct blk_rq_stat *stat)
+struct blk_queue_stats {
+	struct list_head callbacks;
+	spinlock_t lock;
+	bool enable_accounting;
+};
+
+static void blk_stat_init(struct blk_rq_stat *stat)
 {
-	const s32 nr_batch = READ_ONCE(stat->nr_batch);
-	const s32 nr_samples = READ_ONCE(stat->nr_samples);
-
-	if (!nr_batch)
-		return;
-	if (!nr_samples)
-		stat->mean = div64_s64(stat->batch, nr_batch);
-	else {
-		stat->mean = div64_s64((stat->mean * nr_samples) +
-					stat->batch,
-					nr_batch + nr_samples);
-	}
-
-	stat->nr_samples += nr_batch;
-	stat->nr_batch = stat->batch = 0;
+	stat->min = -1ULL;
+	stat->max = stat->nr_samples = stat->mean = 0;
+	stat->batch = 0;
 }
 
+/* src is a per-cpu stat, mean isn't initialized */
 static void blk_stat_sum(struct blk_rq_stat *dst, struct blk_rq_stat *src)
 {
 	if (!src->nr_samples)
 		return;
 
-	blk_stat_flush_batch(src);
-
 	dst->min = min(dst->min, src->min);
 	dst->max = max(dst->max, src->max);
 
-	if (!dst->nr_samples)
-		dst->mean = src->mean;
-	else {
-		dst->mean = div64_s64((src->mean * src->nr_samples) +
-					(dst->mean * dst->nr_samples),
-					dst->nr_samples + src->nr_samples);
-	}
+	dst->mean = div_u64(src->batch + dst->mean * dst->nr_samples,
+				dst->nr_samples + src->nr_samples);
+
 	dst->nr_samples += src->nr_samples;
 }
 
-static void blk_mq_stat_get(struct request_queue *q, struct blk_rq_stat *dst)
+static void __blk_stat_add(struct blk_rq_stat *stat, u64 value)
 {
-	struct blk_mq_hw_ctx *hctx;
-	struct blk_mq_ctx *ctx;
-	uint64_t latest = 0;
-	int i, j, nr;
-
-	blk_stat_init(&dst[BLK_STAT_READ]);
-	blk_stat_init(&dst[BLK_STAT_WRITE]);
-
-	nr = 0;
-	do {
-		uint64_t newest = 0;
-
-		queue_for_each_hw_ctx(q, hctx, i) {
-			hctx_for_each_ctx(hctx, ctx, j) {
-				blk_stat_flush_batch(&ctx->stat[BLK_STAT_READ]);
-				blk_stat_flush_batch(&ctx->stat[BLK_STAT_WRITE]);
-
-				if (!ctx->stat[BLK_STAT_READ].nr_samples &&
-				    !ctx->stat[BLK_STAT_WRITE].nr_samples)
-					continue;
-				if (ctx->stat[BLK_STAT_READ].time > newest)
-					newest = ctx->stat[BLK_STAT_READ].time;
-				if (ctx->stat[BLK_STAT_WRITE].time > newest)
-					newest = ctx->stat[BLK_STAT_WRITE].time;
-			}
-		}
-
-		/*
-		 * No samples
-		 */
-		if (!newest)
-			break;
-
-		if (newest > latest)
-			latest = newest;
-
-		queue_for_each_hw_ctx(q, hctx, i) {
-			hctx_for_each_ctx(hctx, ctx, j) {
-				if (ctx->stat[BLK_STAT_READ].time == newest) {
-					blk_stat_sum(&dst[BLK_STAT_READ],
-						     &ctx->stat[BLK_STAT_READ]);
-					nr++;
-				}
-				if (ctx->stat[BLK_STAT_WRITE].time == newest) {
-					blk_stat_sum(&dst[BLK_STAT_WRITE],
-						     &ctx->stat[BLK_STAT_WRITE]);
-					nr++;
-				}
-			}
-		}
-		/*
-		 * If we race on finding an entry, just loop back again.
-		 * Should be very rare.
-		 */
-	} while (!nr);
-
-	dst[BLK_STAT_READ].time = dst[BLK_STAT_WRITE].time = latest;
+	stat->min = min(stat->min, value);
+	stat->max = max(stat->max, value);
+	stat->batch += value;
+	stat->nr_samples++;
 }
 
-void blk_queue_stat_get(struct request_queue *q, struct blk_rq_stat *dst)
+void blk_stat_add(struct request *rq, u64 now)
 {
-	if (q->mq_ops)
-		blk_mq_stat_get(q, dst);
-	else {
-		blk_stat_flush_batch(&q->rq_stats[BLK_STAT_READ]);
-		blk_stat_flush_batch(&q->rq_stats[BLK_STAT_WRITE]);
-		memcpy(&dst[BLK_STAT_READ], &q->rq_stats[BLK_STAT_READ],
-				sizeof(struct blk_rq_stat));
-		memcpy(&dst[BLK_STAT_WRITE], &q->rq_stats[BLK_STAT_WRITE],
-				sizeof(struct blk_rq_stat));
+	struct request_queue *q = rq->q;
+	struct blk_stat_callback *cb;
+	struct blk_rq_stat *stat;
+	int bucket;
+	u64 value;
+
+	value = (now >= rq->io_start_time_ns) ? now - rq->io_start_time_ns : 0;
+
+	blk_throtl_stat_add(rq, value);
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(cb, &q->stats->callbacks, list) {
+		if (!blk_stat_is_active(cb))
+			continue;
+
+		bucket = cb->bucket_fn(rq);
+		if (bucket < 0)
+			continue;
+
+		stat = &get_cpu_ptr(cb->cpu_stat)[bucket];
+		__blk_stat_add(stat, value);
+		put_cpu_ptr(cb->cpu_stat);
 	}
+	rcu_read_unlock();
 }
 
-void blk_hctx_stat_get(struct blk_mq_hw_ctx *hctx, struct blk_rq_stat *dst)
+static void blk_stat_timer_fn(struct timer_list *t)
 {
-	struct blk_mq_ctx *ctx;
-	unsigned int i, nr;
+	struct blk_stat_callback *cb = from_timer(cb, t, timer);
+	unsigned int bucket;
+	int cpu;
 
-	nr = 0;
-	do {
-		uint64_t newest = 0;
+	for (bucket = 0; bucket < cb->buckets; bucket++)
+		blk_stat_init(&cb->stat[bucket]);
 
-		hctx_for_each_ctx(hctx, ctx, i) {
-			blk_stat_flush_batch(&ctx->stat[BLK_STAT_READ]);
-			blk_stat_flush_batch(&ctx->stat[BLK_STAT_WRITE]);
+	for_each_online_cpu(cpu) {
+		struct blk_rq_stat *cpu_stat;
 
-			if (!ctx->stat[BLK_STAT_READ].nr_samples &&
-			    !ctx->stat[BLK_STAT_WRITE].nr_samples)
-				continue;
-
-			if (ctx->stat[BLK_STAT_READ].time > newest)
-				newest = ctx->stat[BLK_STAT_READ].time;
-			if (ctx->stat[BLK_STAT_WRITE].time > newest)
-				newest = ctx->stat[BLK_STAT_WRITE].time;
+		cpu_stat = per_cpu_ptr(cb->cpu_stat, cpu);
+		for (bucket = 0; bucket < cb->buckets; bucket++) {
+			blk_stat_sum(&cb->stat[bucket], &cpu_stat[bucket]);
+			blk_stat_init(&cpu_stat[bucket]);
 		}
+	}
 
-		if (!newest)
-			break;
-
-		hctx_for_each_ctx(hctx, ctx, i) {
-			if (ctx->stat[BLK_STAT_READ].time == newest) {
-				blk_stat_sum(&dst[BLK_STAT_READ],
-						&ctx->stat[BLK_STAT_READ]);
-				nr++;
-			}
-			if (ctx->stat[BLK_STAT_WRITE].time == newest) {
-				blk_stat_sum(&dst[BLK_STAT_WRITE],
-						&ctx->stat[BLK_STAT_WRITE]);
-				nr++;
-			}
-		}
-		/*
-		 * If we race on finding an entry, just loop back again.
-		 * Should be very rare, as the window is only updated
-		 * occasionally
-		 */
-	} while (!nr);
+	cb->timer_fn(cb);
 }
 
-static void __blk_stat_init(struct blk_rq_stat *stat, s64 time_now)
+struct blk_stat_callback *
+blk_stat_alloc_callback(void (*timer_fn)(struct blk_stat_callback *),
+			int (*bucket_fn)(const struct request *),
+			unsigned int buckets, void *data)
 {
-	stat->min = -1ULL;
-	stat->max = stat->nr_samples = stat->mean = 0;
-	stat->batch = stat->nr_batch = 0;
-	stat->time = time_now & BLK_STAT_NSEC_MASK;
+	struct blk_stat_callback *cb;
+
+	cb = kmalloc(sizeof(*cb), GFP_KERNEL);
+	if (!cb)
+		return NULL;
+
+	cb->stat = kmalloc_array(buckets, sizeof(struct blk_rq_stat),
+				 GFP_KERNEL);
+	if (!cb->stat) {
+		kfree(cb);
+		return NULL;
+	}
+	cb->cpu_stat = __alloc_percpu(buckets * sizeof(struct blk_rq_stat),
+				      __alignof__(struct blk_rq_stat));
+	if (!cb->cpu_stat) {
+		kfree(cb->stat);
+		kfree(cb);
+		return NULL;
+	}
+
+	cb->timer_fn = timer_fn;
+	cb->bucket_fn = bucket_fn;
+	cb->data = data;
+	cb->buckets = buckets;
+	timer_setup(&cb->timer, blk_stat_timer_fn, 0);
+
+	return cb;
+}
+EXPORT_SYMBOL_GPL(blk_stat_alloc_callback);
+
+void blk_stat_add_callback(struct request_queue *q,
+			   struct blk_stat_callback *cb)
+{
+	unsigned int bucket;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct blk_rq_stat *cpu_stat;
+
+		cpu_stat = per_cpu_ptr(cb->cpu_stat, cpu);
+		for (bucket = 0; bucket < cb->buckets; bucket++)
+			blk_stat_init(&cpu_stat[bucket]);
+	}
+
+	spin_lock(&q->stats->lock);
+	list_add_tail_rcu(&cb->list, &q->stats->callbacks);
+	blk_queue_flag_set(QUEUE_FLAG_STATS, q);
+	spin_unlock(&q->stats->lock);
+}
+EXPORT_SYMBOL_GPL(blk_stat_add_callback);
+
+void blk_stat_remove_callback(struct request_queue *q,
+			      struct blk_stat_callback *cb)
+{
+	spin_lock(&q->stats->lock);
+	list_del_rcu(&cb->list);
+	if (list_empty(&q->stats->callbacks) && !q->stats->enable_accounting)
+		blk_queue_flag_clear(QUEUE_FLAG_STATS, q);
+	spin_unlock(&q->stats->lock);
+
+	del_timer_sync(&cb->timer);
+}
+EXPORT_SYMBOL_GPL(blk_stat_remove_callback);
+
+static void blk_stat_free_callback_rcu(struct rcu_head *head)
+{
+	struct blk_stat_callback *cb;
+
+	cb = container_of(head, struct blk_stat_callback, rcu);
+	free_percpu(cb->cpu_stat);
+	kfree(cb->stat);
+	kfree(cb);
 }
 
-void blk_stat_init(struct blk_rq_stat *stat)
+void blk_stat_free_callback(struct blk_stat_callback *cb)
 {
-	__blk_stat_init(stat, ktime_to_ns(ktime_get()));
+	if (cb)
+		call_rcu(&cb->rcu, blk_stat_free_callback_rcu);
+}
+EXPORT_SYMBOL_GPL(blk_stat_free_callback);
+
+void blk_stat_enable_accounting(struct request_queue *q)
+{
+	spin_lock(&q->stats->lock);
+	q->stats->enable_accounting = true;
+	blk_queue_flag_set(QUEUE_FLAG_STATS, q);
+	spin_unlock(&q->stats->lock);
 }
 
-static bool __blk_stat_is_current(struct blk_rq_stat *stat, s64 now)
+struct blk_queue_stats *blk_alloc_queue_stats(void)
 {
-	return (now & BLK_STAT_NSEC_MASK) == (stat->time & BLK_STAT_NSEC_MASK);
+	struct blk_queue_stats *stats;
+
+	stats = kmalloc(sizeof(*stats), GFP_KERNEL);
+	if (!stats)
+		return NULL;
+
+	INIT_LIST_HEAD(&stats->callbacks);
+	spin_lock_init(&stats->lock);
+	stats->enable_accounting = false;
+
+	return stats;
 }
 
-bool blk_stat_is_current(struct blk_rq_stat *stat)
+void blk_free_queue_stats(struct blk_queue_stats *stats)
 {
-	return __blk_stat_is_current(stat, ktime_to_ns(ktime_get()));
-}
-
-void blk_stat_add(struct blk_rq_stat *stat, struct request *rq)
-{
-	s64 now, value;
-
-	now = __blk_stat_time(ktime_to_ns(ktime_get()));
-	if (now < blk_stat_time(&rq->issue_stat))
+	if (!stats)
 		return;
 
-	if (!__blk_stat_is_current(stat, now))
-		__blk_stat_init(stat, now);
+	WARN_ON(!list_empty(&stats->callbacks));
 
-	value = now - blk_stat_time(&rq->issue_stat);
-	if (value > stat->max)
-		stat->max = value;
-	if (value < stat->min)
-		stat->min = value;
-
-	if (stat->batch + value < stat->batch ||
-	    stat->nr_batch + 1 == BLK_RQ_STAT_BATCH)
-		blk_stat_flush_batch(stat);
-
-	stat->batch += value;
-	stat->nr_batch++;
-}
-
-void blk_stat_clear(struct request_queue *q)
-{
-	if (q->mq_ops) {
-		struct blk_mq_hw_ctx *hctx;
-		struct blk_mq_ctx *ctx;
-		int i, j;
-
-		queue_for_each_hw_ctx(q, hctx, i) {
-			hctx_for_each_ctx(hctx, ctx, j) {
-				blk_stat_init(&ctx->stat[BLK_STAT_READ]);
-				blk_stat_init(&ctx->stat[BLK_STAT_WRITE]);
-			}
-		}
-	} else {
-		blk_stat_init(&q->rq_stats[BLK_STAT_READ]);
-		blk_stat_init(&q->rq_stats[BLK_STAT_WRITE]);
-	}
-}
-
-void blk_stat_set_issue_time(struct blk_issue_stat *stat)
-{
-	stat->time = (stat->time & BLK_STAT_MASK) |
-			(ktime_to_ns(ktime_get()) & BLK_STAT_TIME_MASK);
-}
-
-/*
- * Enable stat tracking, return whether it was enabled
- */
-bool blk_stat_enable(struct request_queue *q)
-{
-	if (!test_bit(QUEUE_FLAG_STATS, &q->queue_flags)) {
-		set_bit(QUEUE_FLAG_STATS, &q->queue_flags);
-		return false;
-	}
-
-	return true;
+	kfree(stats);
 }

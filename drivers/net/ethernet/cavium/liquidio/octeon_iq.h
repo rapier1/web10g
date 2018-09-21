@@ -62,8 +62,8 @@ struct oct_iq_stats {
 	u64 tx_tot_bytes;/**< Total count of bytes sento to network. */
 	u64 tx_gso;  /* count of tso */
 	u64 tx_vxlan; /* tunnel */
-	u64 tx_dmamap_fail;
-	u64 tx_restart;
+	u64 tx_dmamap_fail; /* Number of times dma mapping failed */
+	u64 tx_restart; /* Number of times this queue restarted */
 };
 
 #define OCT_IQ_STATS_SIZE   (sizeof(struct oct_iq_stats))
@@ -152,7 +152,7 @@ struct octeon_instr_queue {
 	struct oct_iq_stats stats;
 
 	/** DMA mapped base address of the input descriptor ring. */
-	u64 base_addr_dma;
+	dma_addr_t base_addr_dma;
 
 	/** Application context */
 	void *app_ctx;
@@ -251,7 +251,7 @@ union octeon_instr_64B {
 
 /** The size of each buffer in soft command buffer pool
  */
-#define  SOFT_COMMAND_BUFFER_SIZE	1536
+#define  SOFT_COMMAND_BUFFER_SIZE	2048
 
 struct octeon_soft_command {
 	/** Soft command buffer info. */
@@ -343,6 +343,9 @@ int octeon_delete_instr_queue(struct octeon_device *octeon_dev, u32 iq_no);
 
 int lio_wait_for_instr_fetch(struct octeon_device *oct);
 
+void
+octeon_ring_doorbell_locked(struct octeon_device *oct, u32 iq_no);
+
 int
 octeon_register_reqtype_free_fn(struct octeon_device *oct, int reqtype,
 				void (*fn)(void *));
@@ -369,5 +372,5 @@ int octeon_setup_iq(struct octeon_device *oct, int ifidx,
 		    void *app_ctx);
 int
 octeon_flush_iq(struct octeon_device *oct, struct octeon_instr_queue *iq,
-		u32 pending_thresh, u32 napi_budget);
+		u32 napi_budget);
 #endif				/* __OCTEON_IQ_H__ */

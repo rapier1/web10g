@@ -1,4 +1,4 @@
-/**
+/*
  * Driver for Sharp IX2505V (marked B0017) DVB-S silicon tuner
  *
  * Copyright (C) 2010 Malcolm Priestley
@@ -11,10 +11,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  */
 
@@ -40,7 +36,7 @@ struct ix2505v_state {
 	u32 frequency;
 };
 
-/**
+/*
  *  Data read format of the Sharp IX2505V B0017
  *
  *  byte1:   1   |   1   |   0   |   0   |   0   |  MA1  |  MA0  |  1
@@ -103,7 +99,7 @@ static void ix2505v_release(struct dvb_frontend *fe)
 
 }
 
-/**
+/*
  *  Data write format of the Sharp IX2505V B0017
  *
  *  byte1:   1   |   1   |   0   |   0   |   0   | 0(MA1)| 0(MA0)|  0

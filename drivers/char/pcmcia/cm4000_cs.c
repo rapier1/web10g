@@ -655,13 +655,13 @@ static void terminate_monitor(struct cm4000_dev *dev)
  * monitor the card every 50msec. as a side-effect, retrieve the
  * atr once a card is inserted. another side-effect of retrieving the
  * atr is that the card will be powered on, so there is no need to
- * power on the card explictely from the application: the driver
+ * power on the card explicitly from the application: the driver
  * is already doing that for you.
  */
 
-static void monitor_card(unsigned long p)
+static void monitor_card(struct timer_list *t)
 {
-	struct cm4000_dev *dev = (struct cm4000_dev *) p;
+	struct cm4000_dev *dev = from_timer(dev, t, timer);
 	unsigned int iobase = dev->p_dev->resource[0]->start;
 	unsigned short s;
 	struct ptsreq ptsreq;
@@ -1037,7 +1037,7 @@ release_io:
 	clear_bit(LOCK_IO, &dev->flags);
 	wake_up_interruptible(&dev->ioq);
 
-	DEBUGP(2, dev, "<- cmm_read returns: rc = %Zi\n",
+	DEBUGP(2, dev, "<- cmm_read returns: rc = %zi\n",
 	       (rc < 0 ? rc : count));
 	return rc < 0 ? rc : count;
 }
@@ -1374,7 +1374,7 @@ static void start_monitor(struct cm4000_dev *dev)
 	DEBUGP(3, dev, "-> start_monitor\n");
 	if (!dev->monitor_running) {
 		DEBUGP(5, dev, "create, init and add timer\n");
-		setup_timer(&dev->timer, monitor_card, (unsigned long)dev);
+		timer_setup(&dev->timer, monitor_card, 0);
 		dev->monitor_running = 1;
 		mod_timer(&dev->timer, jiffies);
 	} else

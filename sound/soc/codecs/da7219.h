@@ -14,6 +14,9 @@
 #ifndef __DA7219_H
 #define __DA7219_H
 
+#include <linux/clk.h>
+#include <linux/clkdev.h>
+#include <linux/clk-provider.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <sound/da7219.h>
@@ -810,7 +813,14 @@ struct da7219_priv {
 	bool wakeup_source;
 	struct regulator_bulk_data supplies[DA7219_NUM_SUPPLIES];
 	struct regmap *regmap;
-	struct mutex lock;
+	struct mutex ctrl_lock;
+	struct mutex pll_lock;
+
+#ifdef CONFIG_COMMON_CLK
+	struct clk_hw dai_clks_hw;
+#endif
+	struct clk_lookup *dai_clks_lookup;
+	struct clk *dai_clks;
 
 	struct clk *mclk;
 	unsigned int mclk_rate;
@@ -820,5 +830,7 @@ struct da7219_priv {
 	bool alc_en;
 	u8 gain_ramp_ctrl;
 };
+
+int da7219_set_pll(struct snd_soc_component *component, int source, unsigned int fout);
 
 #endif /* __DA7219_H */

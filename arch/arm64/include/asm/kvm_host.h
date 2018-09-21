@@ -24,15 +24,17 @@
 
 #include <linux/types.h>
 #include <linux/kvm_types.h>
+#include <asm/cpufeature.h>
+#include <asm/daifflags.h>
+#include <asm/fpsimd.h>
 #include <asm/kvm.h>
 #include <asm/kvm_asm.h>
 #include <asm/kvm_mmio.h>
+#include <asm/thread_info.h>
 
 #define __KVM_HAVE_ARCH_INTC_INITIALIZED
 
-#define KVM_USER_MEM_SLOTS 32
-#define KVM_PRIVATE_MEM_SLOTS 4
-#define KVM_COALESCED_MMIO_PAGE_OFFSET 1
+#define KVM_USER_MEM_SLOTS 512
 #define KVM_HALT_POLL_NS_DEFAULT 500000
 
 #include <kvm/arm_vgic.h>
@@ -43,7 +45,11 @@
 
 #define KVM_VCPU_MAX_FEATURES 4
 
-#define KVM_REQ_VCPU_EXIT	8
+#define KVM_REQ_SLEEP \
+	KVM_ARCH_REQ_FLAGS(0, KVM_REQUEST_WAIT | KVM_REQUEST_NO_WAKEUP)
+#define KVM_REQ_IRQ_PENDING	KVM_ARCH_REQ(1)
+
+DECLARE_STATIC_KEY_FALSE(userspace_irqchip_in_use);
 
 int __attribute_const__ kvm_target_cpu(void);
 int kvm_reset_vcpu(struct kvm_vcpu *vcpu);
@@ -71,8 +77,8 @@ struct kvm_arch {
 	/* Interrupt controller */
 	struct vgic_dist	vgic;
 
-	/* Timer */
-	struct arch_timer_kvm	timer;
+	/* Mandated version of PSCI */
+	u32 psci_version;
 };
 
 #define KVM_NR_MEM_OBJS     40
@@ -90,6 +96,7 @@ struct kvm_vcpu_fault_info {
 	u32 esr_el2;		/* Hyp Syndrom Register */
 	u64 far_el2;		/* Hyp Fault Address Register */
 	u64 hpfar_el2;		/* Hyp IPA Fault Address Register */
+	u64 disr_el1;		/* Deferred [SError] Status Register */
 };
 
 /*
@@ -121,6 +128,7 @@ enum vcpu_sysreg {
 	PAR_EL1,	/* Physical Address Register */
 	MDSCR_EL1,	/* Monitor Debug System Control Register */
 	MDCCINT_EL1,	/* Monitor Debug Comms Channel Interrupt Enable Reg */
+	DISR_EL1,	/* Deferred Interrupt Status Register */
 
 	/* Performance Monitors Registers */
 	PMCR_EL0,	/* Control Register */
@@ -193,6 +201,8 @@ struct kvm_cpu_context {
 		u64 sys_regs[NR_SYS_REGS];
 		u32 copro[NR_COPRO_REGS];
 	};
+
+	struct kvm_vcpu *__hyp_running_vcpu;
 };
 
 typedef struct kvm_cpu_context kvm_cpu_context_t;
@@ -207,8 +217,11 @@ struct kvm_vcpu_arch {
 	/* Exception Information */
 	struct kvm_vcpu_fault_info fault;
 
-	/* Guest debug state */
-	u64 debug_flags;
+	/* State of various workarounds, see kvm_asm.h for bit assignment */
+	u64 workaround_flags;
+
+	/* Miscellaneous vcpu state flags */
+	u64 flags;
 
 	/*
 	 * We maintain more than a single set of debug registers to support
@@ -229,7 +242,16 @@ struct kvm_vcpu_arch {
 
 	/* Pointer to host CPU context */
 	kvm_cpu_context_t *host_cpu_context;
-	struct kvm_guest_debug_arch host_debug_state;
+
+	struct thread_info *host_thread_info;	/* hyp VA */
+	struct user_fpsimd_state *host_fpsimd_state;	/* hyp VA */
+
+	struct {
+		/* {Break,watch}point registers */
+		struct kvm_guest_debug_arch regs;
+		/* Statistical profiling extension */
+		u64 pmscr_el1;
+	} host_debug_state;
 
 	/* VGIC state */
 	struct vgic_cpu vgic_cpu;
@@ -261,9 +283,6 @@ struct kvm_vcpu_arch {
 	/* IO related fields */
 	struct kvm_decode mmio_decode;
 
-	/* Interrupt related fields */
-	u64 irq_lines;		/* IRQ and FIQ levels */
-
 	/* Cache some mmu pages needed inside spinlock regions */
 	struct kvm_mmu_memory_cache mmu_page_cache;
 
@@ -273,24 +292,41 @@ struct kvm_vcpu_arch {
 
 	/* Detect first run of a vcpu */
 	bool has_run_once;
+
+	/* Virtual SError ESR to restore when HCR_EL2.VSE is set */
+	u64 vsesr_el2;
+
+	/* True when deferrable sysregs are loaded on the physical CPU,
+	 * see kvm_vcpu_load_sysregs and kvm_vcpu_put_sysregs. */
+	bool sysregs_loaded_on_cpu;
 };
 
+/* vcpu_arch flags field values: */
+#define KVM_ARM64_DEBUG_DIRTY		(1 << 0)
+#define KVM_ARM64_FP_ENABLED		(1 << 1) /* guest FP regs loaded */
+#define KVM_ARM64_FP_HOST		(1 << 2) /* host FP regs loaded */
+#define KVM_ARM64_HOST_SVE_IN_USE	(1 << 3) /* backup for host TIF_SVE */
+#define KVM_ARM64_HOST_SVE_ENABLED	(1 << 4) /* SVE enabled for EL0 */
+
 #define vcpu_gp_regs(v)		(&(v)->arch.ctxt.gp_regs)
-#define vcpu_sys_reg(v,r)	((v)->arch.ctxt.sys_regs[(r)])
+
+/*
+ * Only use __vcpu_sys_reg if you know you want the memory backed version of a
+ * register, and not the one most recently accessed by a running VCPU.  For
+ * example, for userspace access or for system registers that are never context
+ * switched, but only emulated.
+ */
+#define __vcpu_sys_reg(v,r)	((v)->arch.ctxt.sys_regs[(r)])
+
+u64 vcpu_read_sys_reg(struct kvm_vcpu *vcpu, int reg);
+void vcpu_write_sys_reg(struct kvm_vcpu *vcpu, u64 val, int reg);
+
 /*
  * CP14 and CP15 live in the same array, as they are backed by the
  * same system registers.
  */
 #define vcpu_cp14(v,r)		((v)->arch.ctxt.copro[(r)])
 #define vcpu_cp15(v,r)		((v)->arch.ctxt.copro[(r)])
-
-#ifdef CONFIG_CPU_BIG_ENDIAN
-#define vcpu_cp15_64_high(v,r)	vcpu_cp15((v),(r))
-#define vcpu_cp15_64_low(v,r)	vcpu_cp15((v),(r) + 1)
-#else
-#define vcpu_cp15_64_high(v,r)	vcpu_cp15((v),(r) + 1)
-#define vcpu_cp15_64_low(v,r)	vcpu_cp15((v),(r))
-#endif
 
 struct kvm_vm_stat {
 	ulong remote_tlb_flush;
@@ -323,18 +359,10 @@ void kvm_set_spte_hva(struct kvm *kvm, unsigned long hva, pte_t pte);
 int kvm_age_hva(struct kvm *kvm, unsigned long start, unsigned long end);
 int kvm_test_age_hva(struct kvm *kvm, unsigned long hva);
 
-/* We do not have shadow page tables, hence the empty hooks */
-static inline void kvm_arch_mmu_notifier_invalidate_page(struct kvm *kvm,
-							 unsigned long address)
-{
-}
-
 struct kvm_vcpu *kvm_arm_get_running_vcpu(void);
 struct kvm_vcpu * __percpu *kvm_get_running_vcpus(void);
 void kvm_arm_halt_guest(struct kvm *kvm);
 void kvm_arm_resume_guest(struct kvm *kvm);
-void kvm_arm_halt_vcpu(struct kvm_vcpu *vcpu);
-void kvm_arm_resume_vcpu(struct kvm_vcpu *vcpu);
 
 u64 __kvm_call_hyp(void *hypfn, ...);
 #define kvm_call_hyp(f, ...) __kvm_call_hyp(kvm_ksym_ref(f), ##__VA_ARGS__)
@@ -344,28 +372,54 @@ void kvm_mmu_wp_memory_region(struct kvm *kvm, int slot);
 
 int handle_exit(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		int exception_index);
+void handle_exit_early(struct kvm_vcpu *vcpu, struct kvm_run *run,
+		       int exception_index);
 
 int kvm_perf_init(void);
 int kvm_perf_teardown(void);
 
 struct kvm_vcpu *kvm_mpidr_to_vcpu(struct kvm *kvm, unsigned long mpidr);
 
+void __kvm_set_tpidr_el2(u64 tpidr_el2);
+DECLARE_PER_CPU(kvm_cpu_context_t, kvm_host_cpu_state);
+
 static inline void __cpu_init_hyp_mode(phys_addr_t pgd_ptr,
 				       unsigned long hyp_stack_ptr,
 				       unsigned long vector_ptr)
 {
+	u64 tpidr_el2;
+
 	/*
-	 * Call initialization code, and switch to the full blown
-	 * HYP code.
+	 * Call initialization code, and switch to the full blown HYP code.
+	 * If the cpucaps haven't been finalized yet, something has gone very
+	 * wrong, and hyp will crash and burn when it uses any
+	 * cpus_have_const_cap() wrapper.
 	 */
+	BUG_ON(!static_branch_likely(&arm64_const_caps_ready));
 	__kvm_call_hyp((void *)pgd_ptr, hyp_stack_ptr, vector_ptr);
+
+	/*
+	 * Calculate the raw per-cpu offset without a translation from the
+	 * kernel's mapping to the linear mapping, and store it in tpidr_el2
+	 * so that we can use adr_l to access per-cpu variables in EL2.
+	 */
+	tpidr_el2 = (u64)this_cpu_ptr(&kvm_host_cpu_state)
+		- (u64)kvm_ksym_ref(kvm_host_cpu_state);
+
+	kvm_call_hyp(__kvm_set_tpidr_el2, tpidr_el2);
 }
 
-void __kvm_hyp_teardown(void);
-static inline void __cpu_reset_hyp_mode(unsigned long vector_ptr,
-					phys_addr_t phys_idmap_start)
+static inline bool kvm_arch_check_sve_has_vhe(void)
 {
-	kvm_call_hyp(__kvm_hyp_teardown, phys_idmap_start);
+	/*
+	 * The Arm architecture specifies that implementation of SVE
+	 * requires VHE also to be implemented.  The KVM code for arm64
+	 * relies on this when SVE is present:
+	 */
+	if (system_supports_sve())
+		return has_vhe();
+	else
+		return true;
 }
 
 static inline void kvm_arch_hardware_unsetup(void) {}
@@ -378,6 +432,7 @@ void kvm_arm_init_debug(void);
 void kvm_arm_setup_debug(struct kvm_vcpu *vcpu);
 void kvm_arm_clear_debug(struct kvm_vcpu *vcpu);
 void kvm_arm_reset_debug_ptr(struct kvm_vcpu *vcpu);
+bool kvm_arm_handle_step_debug(struct kvm_vcpu *vcpu, struct kvm_run *run);
 int kvm_arm_vcpu_arch_set_attr(struct kvm_vcpu *vcpu,
 			       struct kvm_device_attr *attr);
 int kvm_arm_vcpu_arch_get_attr(struct kvm_vcpu *vcpu,
@@ -392,5 +447,70 @@ static inline void __cpu_init_stage2(void)
 	WARN_ONCE(parange < 40,
 		  "PARange is %d bits, unsupported configuration!", parange);
 }
+
+/* Guest/host FPSIMD coordination helpers */
+int kvm_arch_vcpu_run_map_fp(struct kvm_vcpu *vcpu);
+void kvm_arch_vcpu_load_fp(struct kvm_vcpu *vcpu);
+void kvm_arch_vcpu_ctxsync_fp(struct kvm_vcpu *vcpu);
+void kvm_arch_vcpu_put_fp(struct kvm_vcpu *vcpu);
+
+#ifdef CONFIG_KVM /* Avoid conflicts with core headers if CONFIG_KVM=n */
+static inline int kvm_arch_vcpu_run_pid_change(struct kvm_vcpu *vcpu)
+{
+	return kvm_arch_vcpu_run_map_fp(vcpu);
+}
+#endif
+
+static inline void kvm_arm_vhe_guest_enter(void)
+{
+	local_daif_mask();
+}
+
+static inline void kvm_arm_vhe_guest_exit(void)
+{
+	local_daif_restore(DAIF_PROCCTX_NOIRQ);
+
+	/*
+	 * When we exit from the guest we change a number of CPU configuration
+	 * parameters, such as traps.  Make sure these changes take effect
+	 * before running the host or additional guests.
+	 */
+	isb();
+}
+
+static inline bool kvm_arm_harden_branch_predictor(void)
+{
+	return cpus_have_const_cap(ARM64_HARDEN_BRANCH_PREDICTOR);
+}
+
+#define KVM_SSBD_UNKNOWN		-1
+#define KVM_SSBD_FORCE_DISABLE		0
+#define KVM_SSBD_KERNEL		1
+#define KVM_SSBD_FORCE_ENABLE		2
+#define KVM_SSBD_MITIGATED		3
+
+static inline int kvm_arm_have_ssbd(void)
+{
+	switch (arm64_get_ssbd_state()) {
+	case ARM64_SSBD_FORCE_DISABLE:
+		return KVM_SSBD_FORCE_DISABLE;
+	case ARM64_SSBD_KERNEL:
+		return KVM_SSBD_KERNEL;
+	case ARM64_SSBD_FORCE_ENABLE:
+		return KVM_SSBD_FORCE_ENABLE;
+	case ARM64_SSBD_MITIGATED:
+		return KVM_SSBD_MITIGATED;
+	case ARM64_SSBD_UNKNOWN:
+	default:
+		return KVM_SSBD_UNKNOWN;
+	}
+}
+
+void kvm_vcpu_load_sysregs(struct kvm_vcpu *vcpu);
+void kvm_vcpu_put_sysregs(struct kvm_vcpu *vcpu);
+
+#define __KVM_HAVE_ARCH_VM_ALLOC
+struct kvm *kvm_arch_alloc_vm(void);
+void kvm_arch_free_vm(struct kvm *kvm);
 
 #endif /* __ARM64_KVM_HOST_H__ */

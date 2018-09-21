@@ -310,7 +310,7 @@ omap5430_adc_to_temp[
 	119800, 120200, 120600, 121000, 121400, 121800, 122400, 122600, 123000,
 	123400,
 	/* Index 940 - 945 */
-	123800, 1242000, 124600, 124900, 125000, 125000,
+	123800, 124200, 124600, 124900, 125000, 125000,
 };
 
 /* OMAP54xx ES2.0 data */
@@ -336,8 +336,6 @@ const struct ti_bandgap_data omap5430_data = {
 		.domain = "cpu",
 		.register_cooling = ti_thermal_register_cpu_cooling,
 		.unregister_cooling = ti_thermal_unregister_cpu_cooling,
-		.slope = OMAP_GRADIENT_SLOPE_5430_CPU,
-		.constant = OMAP_GRADIENT_CONST_5430_CPU,
 		.slope_pcb = OMAP_GRADIENT_SLOPE_W_PCB_5430_CPU,
 		.constant_pcb = OMAP_GRADIENT_CONST_W_PCB_5430_CPU,
 		},
@@ -345,8 +343,6 @@ const struct ti_bandgap_data omap5430_data = {
 		.registers = &omap5430_gpu_temp_sensor_registers,
 		.ts_data = &omap5430_gpu_temp_sensor_data,
 		.domain = "gpu",
-		.slope = OMAP_GRADIENT_SLOPE_5430_GPU,
-		.constant = OMAP_GRADIENT_CONST_5430_GPU,
 		.slope_pcb = OMAP_GRADIENT_SLOPE_W_PCB_5430_GPU,
 		.constant_pcb = OMAP_GRADIENT_CONST_W_PCB_5430_GPU,
 		},

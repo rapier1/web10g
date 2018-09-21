@@ -19,6 +19,7 @@
  *
  */
 
+#include <inttypes.h>
 #include <sys/utsname.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -37,9 +38,11 @@
 #include "debug.h"
 #include "intlist.h"
 #include "util.h"
+#include "strlist.h"
 #include "symbol.h"
 #include "probe-finder.h"
 #include "probe-file.h"
+#include "string2.h"
 
 /* Kprobe tracer basic type is up to u64 */
 #define MAX_BASIC_TYPE_BITS	64
@@ -420,20 +423,20 @@ static int convert_variable_fields(Dwarf_Die *vr_die, const char *varname,
 		pr_warning("Failed to get the type of %s.\n", varname);
 		return -ENOENT;
 	}
-	pr_debug2("Var real type: (%x)\n", (unsigned)dwarf_dieoffset(&type));
+	pr_debug2("Var real type: %s (%x)\n", dwarf_diename(&type),
+		  (unsigned)dwarf_dieoffset(&type));
 	tag = dwarf_tag(&type);
 
 	if (field->name[0] == '[' &&
 	    (tag == DW_TAG_array_type || tag == DW_TAG_pointer_type)) {
-		if (field->next)
-			/* Save original type for next field */
-			memcpy(die_mem, &type, sizeof(*die_mem));
+		/* Save original type for next field or type */
+		memcpy(die_mem, &type, sizeof(*die_mem));
 		/* Get the type of this array */
 		if (die_get_real_type(&type, &type) == NULL) {
 			pr_warning("Failed to get the type of %s.\n", varname);
 			return -ENOENT;
 		}
-		pr_debug2("Array real type: (%x)\n",
+		pr_debug2("Array real type: %s (%x)\n", dwarf_diename(&type),
 			 (unsigned)dwarf_dieoffset(&type));
 		if (tag == DW_TAG_pointer_type) {
 			ref = zalloc(sizeof(struct probe_trace_arg_ref));
@@ -445,9 +448,6 @@ static int convert_variable_fields(Dwarf_Die *vr_die, const char *varname,
 				*ref_ptr = ref;
 		}
 		ref->offset += dwarf_bytesize(&type) * field->index;
-		if (!field->next)
-			/* Save vr_die for converting types */
-			memcpy(die_mem, vr_die, sizeof(*die_mem));
 		goto next;
 	} else if (tag == DW_TAG_pointer_type) {
 		/* Check the pointer and dereference */
@@ -464,7 +464,7 @@ static int convert_variable_fields(Dwarf_Die *vr_die, const char *varname,
 		/* Verify it is a data structure  */
 		tag = dwarf_tag(&type);
 		if (tag != DW_TAG_structure_type && tag != DW_TAG_union_type) {
-			pr_warning("%s is not a data structure nor an union.\n",
+			pr_warning("%s is not a data structure nor a union.\n",
 				   varname);
 			return -EINVAL;
 		}
@@ -479,7 +479,7 @@ static int convert_variable_fields(Dwarf_Die *vr_die, const char *varname,
 	} else {
 		/* Verify it is a data structure  */
 		if (tag != DW_TAG_structure_type && tag != DW_TAG_union_type) {
-			pr_warning("%s is not a data structure nor an union.\n",
+			pr_warning("%s is not a data structure nor a union.\n",
 				   varname);
 			return -EINVAL;
 		}

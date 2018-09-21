@@ -22,9 +22,9 @@
 #include "core.h"
 #include "debug.h"
 #include "tracepoint.h"
-#include "fwsignal.h"
 #include "fweh.h"
 #include "fwil.h"
+#include "proto.h"
 
 /**
  * struct brcmf_fweh_queue_item - event item on event queue.
@@ -172,14 +172,14 @@ static void brcmf_fweh_handle_if_event(struct brcmf_pub *drvr,
 		if (IS_ERR(ifp))
 			return;
 		if (!is_p2pdev)
-			brcmf_fws_add_interface(ifp);
+			brcmf_proto_add_if(drvr, ifp);
 		if (!drvr->fweh.evt_handler[BRCMF_E_IF])
 			if (brcmf_net_attach(ifp, false) < 0)
 				return;
 	}
 
 	if (ifp && ifevent->action == BRCMF_E_IF_CHANGE)
-		brcmf_fws_reset_interface(ifp);
+		brcmf_proto_reset_if(drvr, ifp);
 
 	err = brcmf_fweh_call_event_handler(ifp, emsg->event_code, emsg, data);
 
@@ -257,11 +257,6 @@ static void brcmf_fweh_event_worker(struct work_struct *work)
 		brcmf_dbg_hex_dump(BRCMF_EVENT_ON(), event->data,
 				   min_t(u32, emsg.datalen, 64),
 				   "event payload, len=%d\n", emsg.datalen);
-		if (emsg.datalen > event->datalen) {
-			brcmf_err("event invalid length header=%d, msg=%d\n",
-				  event->datalen, emsg.datalen);
-			goto event_free;
-		}
 
 		/* special handling of interface event */
 		if (event->code == BRCMF_E_IF) {
@@ -429,7 +424,8 @@ void brcmf_fweh_process_event(struct brcmf_pub *drvr,
 	if (code != BRCMF_E_IF && !fweh->evt_handler[code])
 		return;
 
-	if (datalen > BRCMF_DCMD_MAXLEN)
+	if (datalen > BRCMF_DCMD_MAXLEN ||
+	    datalen + sizeof(*event_packet) > packet_len)
 		return;
 
 	if (in_interrupt())

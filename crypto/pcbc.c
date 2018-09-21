@@ -14,12 +14,14 @@
  *
  */
 
+#include <crypto/algapi.h>
 #include <crypto/internal/skcipher.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/compiler.h>
 
 struct crypto_pcbc_ctx {
 	struct crypto_cipher *child;
@@ -54,8 +56,7 @@ static int crypto_pcbc_encrypt_segment(struct skcipher_request *req,
 	do {
 		crypto_xor(iv, src, bsize);
 		crypto_cipher_encrypt_one(tfm, dst, iv);
-		memcpy(iv, dst, bsize);
-		crypto_xor(iv, src, bsize);
+		crypto_xor_cpy(iv, dst, src, bsize);
 
 		src += bsize;
 		dst += bsize;
@@ -72,14 +73,13 @@ static int crypto_pcbc_encrypt_inplace(struct skcipher_request *req,
 	unsigned int nbytes = walk->nbytes;
 	u8 *src = walk->src.virt.addr;
 	u8 *iv = walk->iv;
-	u8 tmpbuf[bsize];
+	u8 tmpbuf[MAX_CIPHER_BLOCKSIZE];
 
 	do {
 		memcpy(tmpbuf, src, bsize);
 		crypto_xor(iv, src, bsize);
 		crypto_cipher_encrypt_one(tfm, src, iv);
-		memcpy(iv, tmpbuf, bsize);
-		crypto_xor(iv, src, bsize);
+		crypto_xor_cpy(iv, tmpbuf, src, bsize);
 
 		src += bsize;
 	} while ((nbytes -= bsize) >= bsize);
@@ -126,8 +126,7 @@ static int crypto_pcbc_decrypt_segment(struct skcipher_request *req,
 	do {
 		crypto_cipher_decrypt_one(tfm, dst, src);
 		crypto_xor(dst, iv, bsize);
-		memcpy(iv, src, bsize);
-		crypto_xor(iv, dst, bsize);
+		crypto_xor_cpy(iv, dst, src, bsize);
 
 		src += bsize;
 		dst += bsize;
@@ -146,14 +145,13 @@ static int crypto_pcbc_decrypt_inplace(struct skcipher_request *req,
 	unsigned int nbytes = walk->nbytes;
 	u8 *src = walk->src.virt.addr;
 	u8 *iv = walk->iv;
-	u8 tmpbuf[bsize] __attribute__ ((aligned(__alignof__(u32))));
+	u8 tmpbuf[MAX_CIPHER_BLOCKSIZE] __aligned(__alignof__(u32));
 
 	do {
 		memcpy(tmpbuf, src, bsize);
 		crypto_cipher_decrypt_one(tfm, src, src);
 		crypto_xor(src, iv, bsize);
-		memcpy(iv, tmpbuf, bsize);
-		crypto_xor(iv, src, bsize);
+		crypto_xor_cpy(iv, src, tmpbuf, bsize);
 
 		src += bsize;
 	} while ((nbytes -= bsize) >= bsize);
@@ -258,9 +256,6 @@ static int crypto_pcbc_create(struct crypto_template *tmpl, struct rtattr **tb)
 	inst->alg.base.cra_priority = alg->cra_priority;
 	inst->alg.base.cra_blocksize = alg->cra_blocksize;
 	inst->alg.base.cra_alignmask = alg->cra_alignmask;
-
-	/* We access the data as u32s when xoring. */
-	inst->alg.base.cra_alignmask |= __alignof__(u32) - 1;
 
 	inst->alg.ivsize = alg->cra_blocksize;
 	inst->alg.min_keysize = alg->cra_cipher.cia_min_keysize;

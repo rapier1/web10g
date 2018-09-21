@@ -754,6 +754,8 @@ struct ath_nf_limits {
 	s16 max;
 	s16 min;
 	s16 nominal;
+	s16 cal[AR5416_MAX_CHAINS];
+	s16 pwr[AR5416_MAX_CHAINS];
 };
 
 enum ath_cal_list {
@@ -803,6 +805,7 @@ struct ath_hw {
 	u32 rfkill_gpio;
 	u32 rfkill_polarity;
 	u32 ah_flags;
+	s16 nf_override;
 
 	bool reset_power_on;
 	bool htc_reset_init;
@@ -976,6 +979,9 @@ struct ath_hw {
 	bool tpc_enabled;
 	u8 tx_power[Ar5416RateSize];
 	u8 tx_power_stbc[Ar5416RateSize];
+	bool msi_enabled;
+	u32 msi_mask;
+	u32 msi_reg;
 };
 
 struct ath_bus_ops {

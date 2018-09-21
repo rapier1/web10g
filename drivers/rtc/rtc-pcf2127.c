@@ -52,9 +52,20 @@ static int pcf2127_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	struct pcf2127 *pcf2127 = dev_get_drvdata(dev);
 	unsigned char buf[10];
 	int ret;
+	int i;
 
-	ret = regmap_bulk_read(pcf2127->regmap, PCF2127_REG_CTRL1, buf,
-				sizeof(buf));
+	for (i = 0; i <= PCF2127_REG_CTRL3; i++) {
+		ret = regmap_read(pcf2127->regmap, PCF2127_REG_CTRL1 + i,
+				  (unsigned int *)(buf + i));
+		if (ret) {
+			dev_err(dev, "%s: read error\n", __func__);
+			return ret;
+		}
+	}
+
+	ret = regmap_bulk_read(pcf2127->regmap, PCF2127_REG_SC,
+			       (buf + PCF2127_REG_SC),
+			       ARRAY_SIZE(buf) - PCF2127_REG_SC);
 	if (ret) {
 		dev_err(dev, "%s: read error\n", __func__);
 		return ret;
@@ -100,7 +111,7 @@ static int pcf2127_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		tm->tm_sec, tm->tm_min, tm->tm_hour,
 		tm->tm_mday, tm->tm_mon, tm->tm_year, tm->tm_wday);
 
-	return rtc_valid_tm(tm);
+	return 0;
 }
 
 static int pcf2127_rtc_set_time(struct device *dev, struct rtc_time *tm)

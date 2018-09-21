@@ -54,6 +54,8 @@ struct udl_device {
 	struct usb_device *udev;
 	struct drm_crtc *crtc;
 
+	struct mutex gem_lock;
+
 	int sku_pixel_limit;
 
 	struct urb_list urbs;
@@ -100,7 +102,7 @@ int udl_submit_urb(struct drm_device *dev, struct urb *urb, size_t len);
 void udl_urb_completion(struct urb *urb);
 
 int udl_driver_load(struct drm_device *dev, unsigned long flags);
-int udl_driver_unload(struct drm_device *dev);
+void udl_driver_unload(struct drm_device *dev);
 
 int udl_fbdev_init(struct drm_device *dev);
 void udl_fbdev_cleanup(struct drm_device *dev);
@@ -134,7 +136,7 @@ void udl_gem_put_pages(struct udl_gem_object *obj);
 int udl_gem_vmap(struct udl_gem_object *obj);
 void udl_gem_vunmap(struct udl_gem_object *obj);
 int udl_drm_gem_mmap(struct file *filp, struct vm_area_struct *vma);
-int udl_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf);
+int udl_gem_fault(struct vm_fault *vmf);
 
 int udl_handle_damage(struct udl_framebuffer *fb, int x, int y,
 		      int width, int height);

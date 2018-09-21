@@ -17,10 +17,13 @@
  *
  */
 
+#include <errno.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include "util.h"
 #include "debug.h"
 #include "dwarf-aux.h"
+#include "string2.h"
 
 /**
  * cu_find_realpath - Find the realpath of the target file
@@ -976,7 +979,7 @@ int die_get_varname(Dwarf_Die *vr_die, struct strbuf *buf)
 	return ret < 0 ? ret : strbuf_addf(buf, "\t%s", dwarf_diename(vr_die));
 }
 
-#ifdef HAVE_DWARF_GETLOCATIONS
+#ifdef HAVE_DWARF_GETLOCATIONS_SUPPORT
 /**
  * die_get_var_innermost_scope - Get innermost scope range of given variable DIE
  * @sp_die: a subprogram DIE

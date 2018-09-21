@@ -199,7 +199,7 @@ struct mwl8k_priv {
 	struct ieee80211_channel channels_24[14];
 	struct ieee80211_rate rates_24[13];
 	struct ieee80211_supported_band band_50;
-	struct ieee80211_channel channels_50[4];
+	struct ieee80211_channel channels_50[9];
 	struct ieee80211_rate rates_50[8];
 	u32 ap_macids_supported;
 	u32 sta_macids_supported;
@@ -383,6 +383,11 @@ static const struct ieee80211_channel mwl8k_channels_50[] = {
 	{ .band = NL80211_BAND_5GHZ, .center_freq = 5200, .hw_value = 40, },
 	{ .band = NL80211_BAND_5GHZ, .center_freq = 5220, .hw_value = 44, },
 	{ .band = NL80211_BAND_5GHZ, .center_freq = 5240, .hw_value = 48, },
+	{ .band = NL80211_BAND_5GHZ, .center_freq = 5745, .hw_value = 149, },
+	{ .band = NL80211_BAND_5GHZ, .center_freq = 5765, .hw_value = 153, },
+	{ .band = NL80211_BAND_5GHZ, .center_freq = 5785, .hw_value = 157, },
+	{ .band = NL80211_BAND_5GHZ, .center_freq = 5805, .hw_value = 161, },
+	{ .band = NL80211_BAND_5GHZ, .center_freq = 5825, .hw_value = 165, },
 };
 
 static const struct ieee80211_rate mwl8k_rates_50[] = {
@@ -994,9 +999,9 @@ mwl8k_rxd_ap_process(void *_rxd, struct ieee80211_rx_status *status,
 	*noise = -rxd->noise_floor;
 
 	if (rxd->rate & MWL8K_AP_RATE_INFO_MCS_FORMAT) {
-		status->flag |= RX_FLAG_HT;
+		status->encoding = RX_ENC_HT;
 		if (rxd->rate & MWL8K_AP_RATE_INFO_40MHZ)
-			status->flag |= RX_FLAG_40MHZ;
+			status->bw = RATE_INFO_BW_40;
 		status->rate_idx = MWL8K_AP_RATE_INFO_RATEID(rxd->rate);
 	} else {
 		int i;
@@ -1011,7 +1016,7 @@ mwl8k_rxd_ap_process(void *_rxd, struct ieee80211_rx_status *status,
 
 	if (rxd->channel > 14) {
 		status->band = NL80211_BAND_5GHZ;
-		if (!(status->flag & RX_FLAG_HT))
+		if (!(status->encoding == RX_ENC_HT))
 			status->rate_idx -= 5;
 	} else {
 		status->band = NL80211_BAND_2GHZ;
@@ -1109,17 +1114,17 @@ mwl8k_rxd_sta_process(void *_rxd, struct ieee80211_rx_status *status,
 	status->rate_idx = MWL8K_STA_RATE_INFO_RATEID(rate_info);
 
 	if (rate_info & MWL8K_STA_RATE_INFO_SHORTPRE)
-		status->flag |= RX_FLAG_SHORTPRE;
+		status->enc_flags |= RX_ENC_FLAG_SHORTPRE;
 	if (rate_info & MWL8K_STA_RATE_INFO_40MHZ)
-		status->flag |= RX_FLAG_40MHZ;
+		status->bw = RATE_INFO_BW_40;
 	if (rate_info & MWL8K_STA_RATE_INFO_SHORTGI)
-		status->flag |= RX_FLAG_SHORT_GI;
+		status->enc_flags |= RX_ENC_FLAG_SHORT_GI;
 	if (rate_info & MWL8K_STA_RATE_INFO_MCS_FORMAT)
-		status->flag |= RX_FLAG_HT;
+		status->encoding = RX_ENC_HT;
 
 	if (rxd->channel > 14) {
 		status->band = NL80211_BAND_5GHZ;
-		if (!(status->flag & RX_FLAG_HT))
+		if (!(status->encoding == RX_ENC_HT))
 			status->rate_idx -= 5;
 	} else {
 		status->band = NL80211_BAND_2GHZ;
@@ -6143,6 +6148,8 @@ static int mwl8k_firmware_load_success(struct mwl8k_priv *priv)
 
 	if (priv->sta_macids_supported || priv->device_info->fw_image_sta)
 		hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_STATION);
+
+	wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
 
 	rc = ieee80211_register_hw(hw);
 	if (rc) {

@@ -21,10 +21,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -1427,14 +1423,14 @@ static long vidioc_default(struct file *file, void *fh, bool valid_prio,
 
 }
 
-static unsigned int meye_poll(struct file *file, poll_table *wait)
+static __poll_t meye_poll(struct file *file, poll_table *wait)
 {
-	unsigned int res = v4l2_ctrl_poll(file, wait);
+	__poll_t res = v4l2_ctrl_poll(file, wait);
 
 	mutex_lock(&meye.lock);
 	poll_wait(file, &meye.proc_list, wait);
 	if (kfifo_len(&meye.doneq))
-		res |= POLLIN | POLLRDNORM;
+		res |= EPOLLIN | EPOLLRDNORM;
 	mutex_unlock(&meye.lock);
 	return res;
 }
@@ -1537,10 +1533,10 @@ static const struct v4l2_ioctl_ops meye_ioctl_ops = {
 	.vidioc_default		= vidioc_default,
 };
 
-static struct video_device meye_template = {
+static const struct video_device meye_template = {
 	.name		= "meye",
 	.fops		= &meye_fops,
-	.ioctl_ops 	= &meye_ioctl_ops,
+	.ioctl_ops	= &meye_ioctl_ops,
 	.release	= video_device_release_empty,
 };
 
@@ -1629,40 +1625,37 @@ static int meye_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
 	ret = -ENOMEM;
 	meye.mchip_dev = pcidev;
 
-	meye.grab_temp = vmalloc(MCHIP_NB_PAGES_MJPEG * PAGE_SIZE);
-	if (!meye.grab_temp) {
-		v4l2_err(v4l2_dev, "grab buffer allocation failed\n");
+	meye.grab_temp = vmalloc(array_size(PAGE_SIZE, MCHIP_NB_PAGES_MJPEG));
+	if (!meye.grab_temp)
 		goto outvmalloc;
-	}
 
 	spin_lock_init(&meye.grabq_lock);
 	if (kfifo_alloc(&meye.grabq, sizeof(int) * MEYE_MAX_BUFNBRS,
-				GFP_KERNEL)) {
-		v4l2_err(v4l2_dev, "fifo allocation failed\n");
+			GFP_KERNEL))
 		goto outkfifoalloc1;
-	}
+
 	spin_lock_init(&meye.doneq_lock);
 	if (kfifo_alloc(&meye.doneq, sizeof(int) * MEYE_MAX_BUFNBRS,
-				GFP_KERNEL)) {
-		v4l2_err(v4l2_dev, "fifo allocation failed\n");
+			GFP_KERNEL))
 		goto outkfifoalloc2;
-	}
 
 	meye.vdev = meye_template;
 	meye.vdev.v4l2_dev = &meye.v4l2_dev;
 
-	ret = -EIO;
-	if ((ret = sony_pic_camera_command(SONY_PIC_COMMAND_SETCAMERA, 1))) {
+	ret = sony_pic_camera_command(SONY_PIC_COMMAND_SETCAMERA, 1);
+	if (ret) {
 		v4l2_err(v4l2_dev, "meye: unable to power on the camera\n");
 		v4l2_err(v4l2_dev, "meye: did you enable the camera in sonypi using the module options ?\n");
 		goto outsonypienable;
 	}
 
-	if ((ret = pci_enable_device(meye.mchip_dev))) {
+	ret = pci_enable_device(meye.mchip_dev);
+	if (ret) {
 		v4l2_err(v4l2_dev, "meye: pci_enable_device failed\n");
 		goto outenabledev;
 	}
 
+	ret = -EIO;
 	mchip_adr = pci_resource_start(meye.mchip_dev,0);
 	if (!mchip_adr) {
 		v4l2_err(v4l2_dev, "meye: mchip has no device base address\n");
@@ -1804,7 +1797,7 @@ static void meye_remove(struct pci_dev *pcidev)
 	printk(KERN_INFO "meye: removed\n");
 }
 
-static struct pci_device_id meye_pci_tbl[] = {
+static const struct pci_device_id meye_pci_tbl[] = {
 	{ PCI_VDEVICE(KAWASAKI, PCI_DEVICE_ID_MCHIP_KL5A72002), 0 },
 	{ }
 };

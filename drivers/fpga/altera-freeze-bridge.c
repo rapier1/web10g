@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * FPGA Freeze Bridge Controller
  *
  *  Copyright (C) 2016 Altera Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -28,6 +17,7 @@
 #define FREEZE_CSR_REG_VERSION			12
 
 #define FREEZE_CSR_SUPPORTED_VERSION		2
+#define FREEZE_CSR_OFFICIAL_VERSION		0xad000003
 
 #define FREEZE_CSR_STATUS_FREEZE_REQ_DONE	BIT(0)
 #define FREEZE_CSR_STATUS_UNFREEZE_REQ_DONE	BIT(1)
@@ -203,7 +193,7 @@ static int altera_freeze_br_enable_show(struct fpga_bridge *bridge)
 	return priv->enable;
 }
 
-static struct fpga_bridge_ops altera_freeze_br_br_ops = {
+static const struct fpga_bridge_ops altera_freeze_br_br_ops = {
 	.enable_set = altera_freeze_br_enable_set,
 	.enable_show = altera_freeze_br_enable_show,
 };
@@ -218,12 +208,30 @@ static int altera_freeze_br_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *np = pdev->dev.of_node;
+	void __iomem *base_addr;
 	struct altera_freeze_br_data *priv;
+	struct fpga_bridge *br;
 	struct resource *res;
 	u32 status, revision;
+	int ret;
 
 	if (!np)
 		return -ENODEV;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base_addr = devm_ioremap_resource(dev, res);
+	if (IS_ERR(base_addr))
+		return PTR_ERR(base_addr);
+
+	revision = readl(base_addr + FREEZE_CSR_REG_VERSION);
+	if ((revision != FREEZE_CSR_SUPPORTED_VERSION) &&
+	    (revision != FREEZE_CSR_OFFICIAL_VERSION)) {
+		dev_err(dev,
+			"%s unexpected revision 0x%x != 0x%x != 0x%x\n",
+			__func__, revision, FREEZE_CSR_SUPPORTED_VERSION,
+			FREEZE_CSR_OFFICIAL_VERSION);
+		return -EINVAL;
+	}
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -231,28 +239,33 @@ static int altera_freeze_br_probe(struct platform_device *pdev)
 
 	priv->dev = dev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	priv->base_addr = devm_ioremap_resource(dev, res);
-	if (IS_ERR(priv->base_addr))
-		return PTR_ERR(priv->base_addr);
-
-	status = readl(priv->base_addr + FREEZE_CSR_STATUS_OFFSET);
+	status = readl(base_addr + FREEZE_CSR_STATUS_OFFSET);
 	if (status & FREEZE_CSR_STATUS_UNFREEZE_REQ_DONE)
 		priv->enable = 1;
 
-	revision = readl(priv->base_addr + FREEZE_CSR_REG_VERSION);
-	if (revision != FREEZE_CSR_SUPPORTED_VERSION)
-		dev_warn(dev,
-			 "%s Freeze Controller unexpected revision %d != %d\n",
-			 __func__, revision, FREEZE_CSR_SUPPORTED_VERSION);
+	priv->base_addr = base_addr;
 
-	return fpga_bridge_register(dev, FREEZE_BRIDGE_NAME,
-				    &altera_freeze_br_br_ops, priv);
+	br = fpga_bridge_create(dev, FREEZE_BRIDGE_NAME,
+				&altera_freeze_br_br_ops, priv);
+	if (!br)
+		return -ENOMEM;
+
+	platform_set_drvdata(pdev, br);
+
+	ret = fpga_bridge_register(br);
+	if (ret) {
+		fpga_bridge_free(br);
+		return ret;
+	}
+
+	return 0;
 }
 
 static int altera_freeze_br_remove(struct platform_device *pdev)
 {
-	fpga_bridge_unregister(&pdev->dev);
+	struct fpga_bridge *br = platform_get_drvdata(pdev);
+
+	fpga_bridge_unregister(br);
 
 	return 0;
 }

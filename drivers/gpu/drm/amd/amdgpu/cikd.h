@@ -502,7 +502,7 @@
 #       define SDMA_COPY_SUB_OPCODE_T2T_SUB_WINDOW        6
 #define	SDMA_OPCODE_WRITE				  2
 #       define SDMA_WRITE_SUB_OPCODE_LINEAR               0
-#       define SDMA_WRTIE_SUB_OPCODE_TILED                1
+#       define SDMA_WRITE_SUB_OPCODE_TILED                1
 #define	SDMA_OPCODE_INDIRECT_BUFFER			  4
 #define	SDMA_OPCODE_FENCE				  5
 #define	SDMA_OPCODE_TRAP				  6
@@ -562,7 +562,7 @@
 #define	PRIVATE_BASE(x)	((x) << 0) /* scratch */
 #define	SHARED_BASE(x)	((x) << 16) /* LDS */
 
-#define KFD_CIK_SDMA_QUEUE_OFFSET	0x200
+#define KFD_CIK_SDMA_QUEUE_OFFSET (mmSDMA0_RLC1_RB_CNTL - mmSDMA0_RLC0_RB_CNTL)
 
 /* valid for both DEFAULT_MTYPE and APE1_MTYPE */
 enum {

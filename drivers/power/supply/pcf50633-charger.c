@@ -43,7 +43,6 @@ int pcf50633_mbc_usb_curlim_set(struct pcf50633 *pcf, int ma)
 	struct pcf50633_mbc *mbc = platform_get_drvdata(pcf->mbc_pdev);
 	int ret = 0;
 	u8 bits;
-	int charging_start = 1;
 	u8 mbcs2, chgmod;
 	unsigned int mbcc5;
 
@@ -58,7 +57,6 @@ int pcf50633_mbc_usb_curlim_set(struct pcf50633 *pcf, int ma)
 		ma = 100;
 	} else {
 		bits = PCF50633_MBCC7_USB_SUSPEND;
-		charging_start = 0;
 		ma = 0;
 	}
 
@@ -254,7 +252,7 @@ static struct attribute *pcf50633_mbc_sysfs_entries[] = {
 	NULL,
 };
 
-static struct attribute_group mbc_attr_group = {
+static const struct attribute_group mbc_attr_group = {
 	.name	= NULL,			/* put in device directory */
 	.attrs	= pcf50633_mbc_sysfs_entries,
 };
@@ -393,7 +391,6 @@ static int pcf50633_mbc_probe(struct platform_device *pdev)
 {
 	struct power_supply_config psy_cfg = {};
 	struct pcf50633_mbc *mbc;
-	int ret;
 	int i;
 	u8 mbcs1;
 
@@ -419,8 +416,7 @@ static int pcf50633_mbc_probe(struct platform_device *pdev)
 					     &psy_cfg);
 	if (IS_ERR(mbc->adapter)) {
 		dev_err(mbc->pcf->dev, "failed to register adapter\n");
-		ret = PTR_ERR(mbc->adapter);
-		return ret;
+		return PTR_ERR(mbc->adapter);
 	}
 
 	mbc->usb = power_supply_register(&pdev->dev, &pcf50633_mbc_usb_desc,
@@ -428,8 +424,7 @@ static int pcf50633_mbc_probe(struct platform_device *pdev)
 	if (IS_ERR(mbc->usb)) {
 		dev_err(mbc->pcf->dev, "failed to register usb\n");
 		power_supply_unregister(mbc->adapter);
-		ret = PTR_ERR(mbc->usb);
-		return ret;
+		return PTR_ERR(mbc->usb);
 	}
 
 	mbc->ac = power_supply_register(&pdev->dev, &pcf50633_mbc_ac_desc,
@@ -438,12 +433,10 @@ static int pcf50633_mbc_probe(struct platform_device *pdev)
 		dev_err(mbc->pcf->dev, "failed to register ac\n");
 		power_supply_unregister(mbc->adapter);
 		power_supply_unregister(mbc->usb);
-		ret = PTR_ERR(mbc->ac);
-		return ret;
+		return PTR_ERR(mbc->ac);
 	}
 
-	ret = sysfs_create_group(&pdev->dev.kobj, &mbc_attr_group);
-	if (ret)
+	if (sysfs_create_group(&pdev->dev.kobj, &mbc_attr_group))
 		dev_err(mbc->pcf->dev, "failed to create sysfs entries\n");
 
 	mbcs1 = pcf50633_reg_read(mbc->pcf, PCF50633_REG_MBCS1);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * zcore module to export memory content and register sets for creating system
  * dumps on SCSI disks (zfcpdump). The "zcore/mem" debugfs file shows the same
@@ -7,7 +8,6 @@
  *
  * Copyright IBM Corp. 2003, 2008
  * Author(s): Michael Holzheu
- * License: GPL
  */
 
 #define KMSG_COMPONENT "zdump"
@@ -15,7 +15,6 @@
 
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <linux/miscdevice.h>
 #include <linux/debugfs.h>
 #include <linux/memblock.h>
 
@@ -153,7 +152,7 @@ static int zcore_memmap_open(struct inode *inode, struct file *filp)
 	char *buf;
 	int i = 0;
 
-	buf = kzalloc(memblock.memory.cnt * CHUNK_INFO_SIZE, GFP_KERNEL);
+	buf = kcalloc(memblock.memory.cnt, CHUNK_INFO_SIZE, GFP_KERNEL);
 	if (!buf) {
 		return -ENOMEM;
 	}
@@ -273,7 +272,7 @@ static int __init zcore_reipl_init(void)
 		rc = memcpy_hsa_kernel(ipl_block, ipib_info.ipib, PAGE_SIZE);
 	else
 		rc = memcpy_real(ipl_block, (void *) ipib_info.ipib, PAGE_SIZE);
-	if (rc || csum_partial(ipl_block, ipl_block->hdr.len, 0) !=
+	if (rc || (__force u32)csum_partial(ipl_block, ipl_block->hdr.len, 0) !=
 	    ipib_info.checksum) {
 		TRACE("Checksum does not match\n");
 		free_page((unsigned long) ipl_block);

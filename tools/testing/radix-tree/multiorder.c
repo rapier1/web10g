@@ -16,6 +16,7 @@
 #include <linux/radix-tree.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
+#include <pthread.h>
 
 #include "test.h"
 
@@ -30,7 +31,7 @@ static void __multiorder_tag_test(int index, int order)
 	/* our canonical entry */
 	base = index & ~((1 << order) - 1);
 
-	printf("Multiorder tag test with index %d, canonical entry %d\n",
+	printv(2, "Multiorder tag test with index %d, canonical entry %d\n",
 			index, base);
 
 	err = item_insert_order(&tree, index, order);
@@ -150,7 +151,7 @@ static void multiorder_check(unsigned long index, int order)
 	struct item *item2 = item_create(min, order);
 	RADIX_TREE(tree, GFP_KERNEL);
 
-	printf("Multiorder index %ld, order %d\n", index, order);
+	printv(2, "Multiorder index %ld, order %d\n", index, order);
 
 	assert(item_insert_order(&tree, index, order) == 0);
 
@@ -188,7 +189,7 @@ static void multiorder_shrink(unsigned long index, int order)
 	RADIX_TREE(tree, GFP_KERNEL);
 	struct radix_tree_node *node;
 
-	printf("Multiorder shrink index %ld, order %d\n", index, order);
+	printv(2, "Multiorder shrink index %ld, order %d\n", index, order);
 
 	assert(item_insert_order(&tree, 0, order) == 0);
 
@@ -209,7 +210,8 @@ static void multiorder_shrink(unsigned long index, int order)
 		item_check_absent(&tree, i);
 
 	if (!item_delete(&tree, 0)) {
-		printf("failed to delete index %ld (order %d)\n", index, order);		abort();
+		printv(2, "failed to delete index %ld (order %d)\n", index, order);
+		abort();
 	}
 
 	for (i = 0; i < 2*max; i++)
@@ -234,7 +236,7 @@ void multiorder_iteration(void)
 	void **slot;
 	int i, j, err;
 
-	printf("Multiorder iteration test\n");
+	printv(1, "Multiorder iteration test\n");
 
 #define NUM_ENTRIES 11
 	int index[NUM_ENTRIES] = {0, 2, 4, 8, 16, 32, 34, 36, 64, 72, 128};
@@ -275,7 +277,7 @@ void multiorder_tagged_iteration(void)
 	void **slot;
 	int i, j;
 
-	printf("Multiorder tagged iteration test\n");
+	printv(1, "Multiorder tagged iteration test\n");
 
 #define MT_NUM_ENTRIES 9
 	int index[MT_NUM_ENTRIES] = {0, 2, 4, 16, 32, 40, 64, 72, 128};
@@ -355,6 +357,10 @@ void multiorder_tagged_iteration(void)
 	item_kill_tree(&tree);
 }
 
+/*
+ * Basic join checks: make sure we can't find an entry in the tree after
+ * a larger entry has replaced it
+ */
 static void multiorder_join1(unsigned long index,
 				unsigned order1, unsigned order2)
 {
@@ -373,6 +379,10 @@ static void multiorder_join1(unsigned long index,
 	item_kill_tree(&tree);
 }
 
+/*
+ * Check that the accounting of exceptional entries is handled correctly
+ * by joining an exceptional entry to a normal pointer.
+ */
 static void multiorder_join2(unsigned order1, unsigned order2)
 {
 	RADIX_TREE(tree, GFP_KERNEL);
@@ -385,6 +395,9 @@ static void multiorder_join2(unsigned order1, unsigned order2)
 	item2 = __radix_tree_lookup(&tree, 1 << order2, &node, NULL);
 	assert(item2 == (void *)0x12UL);
 	assert(node->exceptional == 1);
+
+	item2 = radix_tree_lookup(&tree, 0);
+	free(item2);
 
 	radix_tree_join(&tree, 0, order1, item1);
 	item2 = __radix_tree_lookup(&tree, 1 << order2, &node, NULL);
@@ -453,7 +466,7 @@ static void check_mem(unsigned old_order, unsigned new_order, unsigned alloc)
 {
 	struct radix_tree_preload *rtp = &radix_tree_preloads;
 	if (rtp->nr != 0)
-		printf("split(%u %u) remaining %u\n", old_order, new_order,
+		printv(2, "split(%u %u) remaining %u\n", old_order, new_order,
 							rtp->nr);
 	/*
 	 * Can't check for equality here as some nodes may have been
@@ -461,7 +474,7 @@ static void check_mem(unsigned old_order, unsigned new_order, unsigned alloc)
 	 * nodes allocated since they should have all been preloaded.
 	 */
 	if (nr_allocated > alloc)
-		printf("split(%u %u) allocated %u %u\n", old_order, new_order,
+		printv(2, "split(%u %u) allocated %u %u\n", old_order, new_order,
 							alloc, nr_allocated);
 }
 
@@ -471,6 +484,7 @@ static void __multiorder_split(int old_order, int new_order)
 	void **slot;
 	struct radix_tree_iter iter;
 	unsigned alloc;
+	struct item *item;
 
 	radix_tree_preload(GFP_KERNEL);
 	assert(item_insert_order(&tree, 0, old_order) == 0);
@@ -479,7 +493,7 @@ static void __multiorder_split(int old_order, int new_order)
 	/* Wipe out the preloaded cache or it'll confuse check_mem() */
 	radix_tree_cpu_dead(0);
 
-	radix_tree_tag_set(&tree, 0, 2);
+	item = radix_tree_tag_set(&tree, 0, 2);
 
 	radix_tree_split_preload(old_order, new_order, GFP_KERNEL);
 	alloc = nr_allocated;
@@ -492,6 +506,7 @@ static void __multiorder_split(int old_order, int new_order)
 	radix_tree_preload_end();
 
 	item_kill_tree(&tree);
+	free(item);
 }
 
 static void __multiorder_split2(int old_order, int new_order)
@@ -604,8 +619,69 @@ static void multiorder_account(void)
 	__radix_tree_insert(&tree, 1 << 5, 5, (void *)0x12);
 	__radix_tree_lookup(&tree, 1 << 5, &node, &slot);
 	assert(node->count == node->exceptional * 2);
-	__radix_tree_replace(&tree, node, slot, NULL, NULL, NULL);
+	__radix_tree_replace(&tree, node, slot, NULL, NULL);
 	assert(node->exceptional == 0);
+
+	item_kill_tree(&tree);
+}
+
+bool stop_iteration = false;
+
+static void *creator_func(void *ptr)
+{
+	/* 'order' is set up to ensure we have sibling entries */
+	unsigned int order = RADIX_TREE_MAP_SHIFT - 1;
+	struct radix_tree_root *tree = ptr;
+	int i;
+
+	for (i = 0; i < 10000; i++) {
+		item_insert_order(tree, 0, order);
+		item_delete_rcu(tree, 0);
+	}
+
+	stop_iteration = true;
+	return NULL;
+}
+
+static void *iterator_func(void *ptr)
+{
+	struct radix_tree_root *tree = ptr;
+	struct radix_tree_iter iter;
+	struct item *item;
+	void **slot;
+
+	while (!stop_iteration) {
+		rcu_read_lock();
+		radix_tree_for_each_slot(slot, tree, &iter, 0) {
+			item = radix_tree_deref_slot(slot);
+
+			if (!item)
+				continue;
+			if (radix_tree_deref_retry(item)) {
+				slot = radix_tree_iter_retry(&iter);
+				continue;
+			}
+
+			item_sanity(item, iter.index);
+		}
+		rcu_read_unlock();
+	}
+	return NULL;
+}
+
+static void multiorder_iteration_race(void)
+{
+	const int num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+	pthread_t worker_thread[num_threads];
+	RADIX_TREE(tree, GFP_KERNEL);
+	int i;
+
+	pthread_create(&worker_thread[0], NULL, &creator_func, &tree);
+	for (i = 1; i < num_threads; i++)
+		pthread_create(&worker_thread[i], NULL, &iterator_func, &tree);
+
+	for (i = 0; i < num_threads; i++)
+		pthread_join(worker_thread[i], NULL);
 
 	item_kill_tree(&tree);
 }
@@ -630,6 +706,14 @@ void multiorder_checks(void)
 	multiorder_join();
 	multiorder_split();
 	multiorder_account();
+	multiorder_iteration_race();
 
 	radix_tree_cpu_dead(0);
+}
+
+int __weak main(void)
+{
+	radix_tree_init();
+	multiorder_checks();
+	return 0;
 }

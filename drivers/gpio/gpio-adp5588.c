@@ -12,11 +12,11 @@
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 
-#include <linux/i2c/adp5588.h>
+#include <linux/platform_data/adp5588.h>
 
 #define DRV_NAME	"adp5588-gpio"
 

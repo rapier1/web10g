@@ -150,6 +150,7 @@ struct omap_rng_dev {
 	const struct omap_rng_pdata	*pdata;
 	struct hwrng rng;
 	struct clk 			*clk;
+	struct clk			*clk_reg;
 };
 
 static inline u32 omap_rng_read(struct omap_rng_dev *priv, u16 reg)
@@ -397,17 +398,19 @@ static int of_get_omap_rng_device_details(struct omap_rng_dev *priv,
 				irq, err);
 			return err;
 		}
-		omap_rng_write(priv, RNG_INTMASK_REG, RNG_SHUTDOWN_OFLO_MASK);
 
-		priv->clk = of_clk_get(pdev->dev.of_node, 0);
-		if (IS_ERR(priv->clk) && PTR_ERR(priv->clk) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		if (!IS_ERR(priv->clk)) {
-			err = clk_prepare_enable(priv->clk);
-			if (err)
-				dev_err(&pdev->dev, "unable to enable the clk, "
-						    "err = %d\n", err);
-		}
+		/*
+		 * On OMAP4, enabling the shutdown_oflo interrupt is
+		 * done in the interrupt mask register. There is no
+		 * such register on EIP76, and it's enabled by the
+		 * same bit in the control register
+		 */
+		if (priv->pdata->regs[RNG_INTMASK_REG])
+			omap_rng_write(priv, RNG_INTMASK_REG,
+				       RNG_SHUTDOWN_OFLO_MASK);
+		else
+			omap_rng_write(priv, RNG_CONTROL_REG,
+				       RNG_SHUTDOWN_OFLO_MASK);
 	}
 	return 0;
 }
@@ -466,6 +469,31 @@ static int omap_rng_probe(struct platform_device *pdev)
 		goto err_ioremap;
 	}
 
+	priv->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(priv->clk) && PTR_ERR(priv->clk) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	if (!IS_ERR(priv->clk)) {
+		ret = clk_prepare_enable(priv->clk);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Unable to enable the clk: %d\n", ret);
+			goto err_register;
+		}
+	}
+
+	priv->clk_reg = devm_clk_get(&pdev->dev, "reg");
+	if (IS_ERR(priv->clk_reg) && PTR_ERR(priv->clk_reg) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	if (!IS_ERR(priv->clk_reg)) {
+		ret = clk_prepare_enable(priv->clk_reg);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Unable to enable the register clk: %d\n",
+				ret);
+			goto err_register;
+		}
+	}
+
 	ret = (dev->of_node) ? of_get_omap_rng_device_details(priv, pdev) :
 				get_omap_rng_device_details(priv);
 	if (ret)
@@ -485,8 +513,8 @@ err_register:
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 
-	if (!IS_ERR(priv->clk))
-		clk_disable_unprepare(priv->clk);
+	clk_disable_unprepare(priv->clk_reg);
+	clk_disable_unprepare(priv->clk);
 err_ioremap:
 	dev_err(dev, "initialization failed.\n");
 	return ret;
@@ -503,8 +531,8 @@ static int omap_rng_remove(struct platform_device *pdev)
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 
-	if (!IS_ERR(priv->clk))
-		clk_disable_unprepare(priv->clk);
+	clk_disable_unprepare(priv->clk);
+	clk_disable_unprepare(priv->clk_reg);
 
 	return 0;
 }

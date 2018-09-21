@@ -17,6 +17,9 @@
  */
 #include <linux/dma_remapping.h>
 #include <linux/pagemap.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/signal.h>
+
 #include "scif_main.h"
 #include "scif_map.h"
 
@@ -36,8 +39,7 @@ void scif_rma_ep_init(struct scif_endpt *ep)
 	struct scif_endpt_rma_info *rma = &ep->rma_info;
 
 	mutex_init(&rma->rma_lock);
-	init_iova_domain(&rma->iovad, PAGE_SIZE, SCIF_IOVA_START_PFN,
-			 SCIF_DMA_64BIT_PFN);
+	init_iova_domain(&rma->iovad, PAGE_SIZE, SCIF_IOVA_START_PFN);
 	spin_lock_init(&rma->tc_lock);
 	mutex_init(&rma->mmn_lock);
 	INIT_LIST_HEAD(&rma->reg_list);
