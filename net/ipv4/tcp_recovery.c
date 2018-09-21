@@ -13,6 +13,8 @@ void tcp_mark_skb_lost(struct sock *sk, struct sk_buff *skb)
 		tp->retrans_out -= tcp_skb_pcount(skb);
 		NET_ADD_STATS(sock_net(sk), LINUX_MIB_TCPLOSTRETRANSMIT,
 			      tcp_skb_pcount(skb));
+		/* add Web10g instrument to track lost retrans here -CJR 9/20/2018 */
+		TCP_ESTATS_VAR_ADD(tp, perf_table, LostRetransmitSegs, tcp_skb_pcount(skb));
 	}
 }
 
@@ -102,6 +104,8 @@ static void tcp_rack_detect_loss(struct sock *sk, u32 *reo_timeout)
 		if (remaining <= 0) {
 			tcp_mark_skb_lost(sk, skb);
 			list_del_init(&skb->tcp_tsorted_anchor);
+			/* Increment a Web10g instrument to track RACK timeouts CJR 9/20/2018 */
+			TCP_ESTATS_VAR_INC(tp, stack_table, RackTimeout);
 		} else {
 			/* Record maximum wait time */
 			*reo_timeout = max_t(u32, *reo_timeout, remaining);
