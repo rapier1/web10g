@@ -288,7 +288,7 @@ struct tcp_estats {
 	unsigned long			start_ts;
 	unsigned long			current_ts;
 #endif
-	struct timeval			start_tv;
+	struct timespec64	       	start_tv;
 
         int				queued;
         struct delayed_work		destroy_notify;
