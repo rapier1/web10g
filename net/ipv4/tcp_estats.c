@@ -189,7 +189,7 @@ int tcp_estats_create(struct sock *sk, enum tcp_estats_addrtype addrtype,
 #else
 	stats->start_ts = stats->current_ts = jiffies;
 #endif
-	do_gettimeofday(&stats->start_tv);
+	ktime_get_real_ts64(&stats->start_tv);
 
 	/* order is important -
 	 * must have stats hooked into tp and tcp_estats_enabled()
