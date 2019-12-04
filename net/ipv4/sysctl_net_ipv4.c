@@ -1323,6 +1323,22 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ONE
 	},
+#ifdef CONFIG_TCP_ESTATS
+	{
+		.procname	= "tcp_estats",
+		.data		= &init_net.ipv4.sysctl_tcp_estats,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec
+	},
+	{
+		.procname       = "estats_delay",
+		.data           = &init_net.ipv4.sysctl_estats_delay,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec
+	},
+#endif /* CONFIG TCP ESTATS */
 	{ }
 };
 
