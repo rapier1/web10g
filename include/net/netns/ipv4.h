@@ -221,5 +221,9 @@ struct netns_ipv4 {
 
 	atomic_t	rt_genid;
 	siphash_key_t	ip_id_key;
+#ifdef CONFIG_TCP_ESTATS
+	int             sysctl_tcp_estats;
+	int             sysctl_estats_delay;
+#endif
 };
 #endif

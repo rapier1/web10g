@@ -265,6 +265,10 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 
 	tp->rx_opt.mss_clamp = TCP_MSS_DEFAULT;
 
+#ifdef CONFIG_TCP_ESTATS
+        tp->rx_opt.rec_mss = 0;
+#endif
+	
 	/* Socket identity is still unknown (sport may be zero).
 	 * However we set state to SYN-SENT and not releasing socket
 	 * lock select source port, enter ourselves into the hash tables and
@@ -1430,6 +1434,8 @@ struct sock *tcp_v4_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 	if (!newsk)
 		goto exit_nonewsk;
 
+	tcp_estats_create(newsk, TCP_ESTATS_ADDRTYPE_IPV4, TCP_ESTATS_INACTIVE);
+
 	newsk->sk_gso_type = SKB_GSO_TCPV4;
 	inet_sk_rx_dst_set(newsk, skb);
 
@@ -1936,6 +1942,12 @@ process:
 
 	bh_lock_sock_nested(sk);
 	tcp_segs_in(tcp_sk(sk), skb);
+
+	/* should be able to remove this now. Might be interesting to see
+	   if the numbers align */
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_segrecv(tcp_sk(sk), skb));
+
 	ret = 0;
 	if (!sock_owned_by_user(sk)) {
 		skb_to_free = sk->sk_rx_skb_cache;
@@ -1946,6 +1958,8 @@ process:
 			goto discard_and_relse;
 		skb_to_free = NULL;
 	}
+	TCP_ESTATS_UPDATE(
+		tcp_sk(sk), tcp_estats_update_finish_segrecv(tcp_sk(sk)));
 	bh_unlock_sock(sk);
 	if (skb_to_free)
 		__kfree_skb(skb_to_free);
@@ -2085,6 +2099,8 @@ static int tcp_v4_init_sock(struct sock *sk)
 	tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
 #endif
 
+	tcp_estats_create(sk, TCP_ESTATS_ADDRTYPE_IPV4, TCP_ESTATS_ACTIVE);
+
 	return 0;
 }
 
@@ -2121,6 +2137,8 @@ void tcp_v4_destroy_sock(struct sock *sk)
 	/* Clean up a referenced TCP bind bucket. */
 	if (inet_csk(sk)->icsk_bind_hash)
 		inet_put_port(sk);
+
+	tcp_estats_destroy(sk);
 
 	BUG_ON(rcu_access_pointer(tp->fastopen_rsk));
 
@@ -2723,6 +2741,8 @@ static int __net_init tcp_sk_init(struct net *net)
 	spin_lock_init(&net->ipv4.tcp_fastopen_ctx_lock);
 	net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 60 * 60;
 	atomic_set(&net->ipv4.tfo_active_disable_times, 0);
+
+	net->ipv4.sysctl_estats_delay = TCP_ESTATS_PERSIST_DELAY_MSECS;
 
 	/* Reno is always built in */
 	if (!net_eq(net, &init_net) &&
