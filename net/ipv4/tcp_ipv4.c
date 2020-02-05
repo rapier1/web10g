@@ -2742,7 +2742,9 @@ static int __net_init tcp_sk_init(struct net *net)
 	net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 60 * 60;
 	atomic_set(&net->ipv4.tfo_active_disable_times, 0);
 
+#ifdef CONFIG_TCP_ESTATS
 	net->ipv4.sysctl_estats_delay = TCP_ESTATS_PERSIST_DELAY_MSECS;
+#endif	
 
 	/* Reno is always built in */
 	if (!net_eq(net, &init_net) &&
