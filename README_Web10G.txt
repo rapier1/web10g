@@ -22,7 +22,7 @@ structures in order to capture detailed TCP stack data. The git repo is
 built against the Linuc kernel as provided by the official Linux 
 repository at kernel.org.  
  
-The Web10G kernel module a netlink based application binary 
+The Web10G kernel module is a netlink based application binary 
 interface that allows userland access to internal kernel metrics. The 
 kernel module is provided as a separate code base in order to clearly 
 delineate the ABI form the core instrument set. The kernel module is 
@@ -82,8 +82,8 @@ CONFIG_TCP_ESTATS=y
 However, we do suggest that kernels be compiled with the 
 appropriate package manager in mind. As such - on RedHat 
 derived systems 'make rpm-pkg' will create an rpm of the 
-kernel. On  Debian derived systems you would use 'make deb-
-pkg'. Also, if you are on a multicore system you can dramatic 
+kernel. On Debian derived systems you would use 'make deb-pkg'.
+Also, if you are on a multicore system you can dramatic 
 speed up compilation using make -j[NumCores] where 
 NumCores corresponds to the number of CPU cores/threads 
 available. 
